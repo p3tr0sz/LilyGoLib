@@ -35,10 +35,22 @@ struct edge_swipe_t {
     bool threshold_feedback_sent;
 };
 
+static void edge_swipe_delete_cb(lv_event_t *e);
+
 static bool edge_swipe_contains(lv_obj_t *root, lv_obj_t *obj)
 {
     for (; obj; obj = lv_obj_get_parent(obj)) {
         if (obj == root) return true;
+    }
+    return false;
+}
+
+static bool edge_swipe_is_root(lv_obj_t *obj)
+{
+    uint32_t count = lv_obj_get_event_count(obj);
+    for (uint32_t i = 0; i < count; i++) {
+        lv_event_dsc_t *dsc = lv_obj_get_event_dsc(obj, i);
+        if (dsc && lv_event_dsc_get_cb(dsc) == edge_swipe_delete_cb) return true;
     }
     return false;
 }
@@ -237,7 +249,8 @@ static void edge_swipe_input_cb(lv_event_t *e)
     if (code == LV_EVENT_PRESSED) {
         edge_swipe_stop_tracking(state);
         state->pointer = NULL;
-        if (!lv_obj_is_visible(state->root) || !edge_swipe_contains(state->root, target)) return;
+        /* Pages can be stacked (ui_push_page), so only the innermost one under the finger goes back. */
+        if (!lv_obj_is_visible(state->root) || ui_swipe_back_root(target) != state->root) return;
 
         lv_point_t point;
         lv_indev_get_point(indev, &point);
@@ -326,4 +339,16 @@ void ui_enable_edge_swipe_back(lv_obj_t *root, lv_obj_t *back_target, lv_event_c
     LV_UNUSED(back_target);
     LV_UNUSED(back_event);
 #endif
+}
+
+lv_obj_t *ui_swipe_back_root(lv_obj_t *obj)
+{
+#if FACTORY_HAS_TOUCH_INPUT
+    for (; obj; obj = lv_obj_get_parent(obj)) {
+        if (edge_swipe_is_root(obj)) return obj;
+    }
+#else
+    LV_UNUSED(obj);
+#endif
+    return NULL;
 }

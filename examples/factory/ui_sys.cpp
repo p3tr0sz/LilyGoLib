@@ -76,6 +76,41 @@ static uint8_t sys_deferred_device_index = 0;
 static uint8_t sys_deferred_device_count = 0;
 static uint32_t sys_deferred_device_mask = 0;
 static lv_obj_t *sys_deferred_card = NULL;
+static lv_obj_t *sys_build_parent = NULL;   /* Where the build steps add cards */
+
+#if FACTORY_WATCH_UI
+/* Watch rows have no icons; each section's icon is on the Settings list. */
+#define SYS_ICON(symbol) NULL
+#else
+#define SYS_ICON(symbol) (symbol)
+#endif
+
+/* On the watch, sub-pages close while Settings stays open, so the refresh
+ * timer must forget their labels. */
+static void forget_value_label_cb(lv_event_t *e)
+{
+    lv_obj_t **slot = (lv_obj_t **)lv_event_get_user_data(e);
+    if (*slot == lv_event_get_target_obj(e)) {
+        *slot = NULL;
+    }
+}
+
+static void track_value_label(lv_obj_t **slot, lv_obj_t *row)
+{
+    *slot = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+    lv_obj_add_event_cb(*slot, forget_value_label_cb, LV_EVENT_DELETE, slot);
+}
+
+static lv_obj_t *sys_create_card(const char *title)
+{
+#if FACTORY_WATCH_UI
+    /* The sub-page header already names the first card. */
+    if (lv_obj_get_child_count(sys_build_parent) == 0) {
+        title = NULL;
+    }
+#endif
+    return ui_create_card(sys_build_parent, title);
+}
 
 static void update_storage_label()
 {
@@ -149,12 +184,14 @@ static void sys_timer_event_cb(lv_timer_t *t)
     update_storage_label();
 
 #ifdef USING_BME280
-    float temp,  humi,  press,  alt;
-    hw_bme_get_data(temp, humi, press, alt);
-    lv_label_set_text_fmt(temperature, "%.1f°C", temp);
-    lv_label_set_text_fmt(humidity, "%.0f%%", humi);
-    lv_label_set_text_fmt(pressure, "%.0fhPa", press);
-    lv_label_set_text_fmt(altitude, "%.0fm", alt);
+    if (temperature) {
+        float temp,  humi,  press,  alt;
+        hw_bme_get_data(temp, humi, press, alt);
+        lv_label_set_text_fmt(temperature, "%.1f°C", temp);
+        if (humidity) lv_label_set_text_fmt(humidity, "%.0f%%", humi);
+        if (pressure) lv_label_set_text_fmt(pressure, "%.0fhPa", press);
+        if (altitude) lv_label_set_text_fmt(altitude, "%.0fm", alt);
+    }
 #endif
 }
 
@@ -220,11 +257,43 @@ static void led_brightness_cb(lv_event_t *e)
     hw_set_led_backlight(val);
 }
 
+#if FACTORY_WATCH_UI
+/* A slider has no readout, so the watch picks from fixed timeouts (0 keeps the screen on). */
+static const uint8_t disp_timeout_presets[] = {0, 10, 15, 30, 60, 120, 180};
+#define DISP_TIMEOUT_OPTIONS "Never\n10 s\n15 s\n30 s\n1 min\n2 min\n3 min"
+
+static uint8_t disp_timeout_to_index(uint8_t seconds)
+{
+    uint8_t best = 0;
+    for (uint8_t i = 1; i < sizeof(disp_timeout_presets); i++) {
+        if (LV_ABS(disp_timeout_presets[i] - seconds) < LV_ABS(disp_timeout_presets[best] - seconds)) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+static void disp_timeout_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+    local_param.disp_timeout_second = disp_timeout_presets[lv_dropdown_get_selected(obj)];
+}
+#else
 static void disp_timeout_cb(lv_event_t *e)
 {
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
     uint8_t val =  lv_slider_get_value(obj);
     local_param.disp_timeout_second = val;
+}
+#endif
+
+static void set_nav_auto_hide(lv_obj_t *content, bool enabled)
+{
+    if (enabled) {
+        ui_app_page_enable_nav_auto_hide(content, 3000);
+    } else {
+        ui_app_page_disable_nav_auto_hide(content);
+    }
 }
 
 static void nav_auto_hide_cb(lv_event_t *e)
@@ -232,12 +301,14 @@ static void nav_auto_hide_cb(lv_event_t *e)
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
     bool enabled = lv_obj_has_state(obj, LV_STATE_CHECKED);
     hw_set_nav_auto_hide_enabled(enabled);
-
-    if (enabled) {
-        ui_app_page_enable_nav_auto_hide(page_container, 3000);
-    } else {
-        ui_app_page_disable_nav_auto_hide(page_container);
+    set_nav_auto_hide(page_container, enabled);
+#if FACTORY_WATCH_UI
+    /* The switch is on a sub-page with its own header; content is the page's child 2. */
+    lv_obj_t *page = ui_swipe_back_root(obj);
+    if (page && page != lv_obj_get_user_data(page_container)) {
+        set_nav_auto_hide(lv_obj_get_child(page, 2), enabled);
     }
+#endif
 }
 
 #if UI_SYS_HAS_KEYBOARD_NAV_SETTING
@@ -486,7 +557,7 @@ static bool run_sys_deferred_step()
 
     switch (sys_deferred_step) {
     case UI_SYS_BUILD_DISPLAY_CARD:
-        sys_deferred_card = ui_create_card(page_container, "Display");
+        sys_deferred_card = sys_create_card("Display");
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_BRIGHTNESS;
         break;
 
@@ -499,7 +570,7 @@ static bool run_sys_deferred_step()
         if (min_brightness < safe_min_brightness) {
             min_brightness = safe_min_brightness;
         }
-        ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "Brightness",
+        ui_create_card_slider(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Brightness",
                               min_brightness, max_brightness,
                               local_param.brightness_level, display_brightness_cb);
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_KEYBOARD;
@@ -508,7 +579,7 @@ static bool run_sys_deferred_step()
 
     case UI_SYS_BUILD_DISPLAY_KEYBOARD:
         if (hw_has_keyboard()) {
-            ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "Keyboard BL",
+            ui_create_card_slider(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Keyboard BL",
                                   0, 255, local_param.keyboard_bl_level, keyboard_brightness_cb);
         }
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_LED;
@@ -516,27 +587,33 @@ static bool run_sys_deferred_step()
 
     case UI_SYS_BUILD_DISPLAY_LED:
         if (hw_has_indicator_led()) {
-            ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "LED",
+            ui_create_card_slider(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "LED",
                                   0, 255, local_param.led_indicator_level, led_brightness_cb);
         }
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_TIMEOUT;
         break;
 
     case UI_SYS_BUILD_DISPLAY_TIMEOUT:
+#if FACTORY_WATCH_UI
+        ui_create_card_picker(sys_deferred_card, NULL, "Timeout", DISP_TIMEOUT_OPTIONS,
+                              disp_timeout_to_index(local_param.disp_timeout_second),
+                              disp_timeout_cb);
+#else
         ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "Timeout",
                               0, 180, local_param.disp_timeout_second, disp_timeout_cb);
+#endif
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_NAV;
         break;
 
     case UI_SYS_BUILD_DISPLAY_NAV:
-        ui_create_card_switch(sys_deferred_card, LV_SYMBOL_SETTINGS, "Auto Hide Bar",
+        ui_create_card_switch(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Auto Hide Bar",
                               hw_get_nav_auto_hide_enabled(), nav_auto_hide_cb);
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_FONT;
         break;
 
     case UI_SYS_BUILD_DISPLAY_FONT:
-        ui_create_card_dropdown(sys_deferred_card, LV_SYMBOL_SETTINGS, "Font Size",
-                                "Auto\nSmall\nMedium\nLarge", font_size_pref, font_size_cb);
+        ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Font Size",
+                              "Auto\nSmall\nMedium\nLarge", font_size_pref, font_size_cb);
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_THEME;
         break;
 
@@ -546,22 +623,22 @@ static bool run_sys_deferred_step()
             if (i > 0) lv_strcat(theme_options, "\n");
             lv_strcat(theme_options, ui_theme_presets[i].name);
         }
-        ui_create_card_dropdown(sys_deferred_card, LV_SYMBOL_SETTINGS, "Theme",
-                                theme_options, theme_preset_idx, theme_preset_cb);
+        ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Theme",
+                              theme_options, theme_preset_idx, theme_preset_cb);
         sys_deferred_step = UI_SYS_BUILD_ROTARY;
         break;
     }
 
     case UI_SYS_BUILD_ROTARY:
 #if UI_SYS_HAS_ROTARY_STEP_SETTING
-        sys_deferred_card = ui_create_card(page_container, "Input");
+        sys_deferred_card = sys_create_card("Input");
         if (hw_has_encoder()) {
             char rotary_step_options[32];
             build_rotary_step_divider_options(rotary_step_options, sizeof(rotary_step_options));
-            ui_create_card_dropdown(sys_deferred_card, LV_SYMBOL_SETTINGS, "Encoder Step",
-                                    rotary_step_options,
-                                    rotary_step_divider_index_from_value(local_rotary_step_divider),
-                                    rotary_step_divider_cb);
+            ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Encoder Step",
+                                  rotary_step_options,
+                                  rotary_step_divider_index_from_value(local_rotary_step_divider),
+                                  rotary_step_divider_cb);
         }
 #endif
         sys_deferred_step = UI_SYS_BUILD_KEYBOARD_NAV;
@@ -578,21 +655,21 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_AUDIO:
 #if UI_SYS_HAS_AUDIO_SETTING
         if (hw_has_audio_jack_mode_setting() || hw_has_mic_input_source_setting()) {
-            sys_deferred_card = ui_create_card(page_container, "Audio");
+            sys_deferred_card = sys_create_card("Audio");
 #if UI_SYS_HAS_AUDIO_JACK_SETTING
             if (hw_has_audio_jack_mode_setting()) {
-                ui_create_card_dropdown(sys_deferred_card, LV_SYMBOL_AUDIO, "Jack",
-                                        "CTIA\nTRRS",
-                                        audio_jack_mode_to_index(local_audio_jack_mode),
-                                        audio_jack_mode_cb);
+                ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_AUDIO), "Jack",
+                                      "CTIA\nTRRS",
+                                      audio_jack_mode_to_index(local_audio_jack_mode),
+                                      audio_jack_mode_cb);
             }
 #endif
 #if UI_SYS_HAS_MIC_INPUT_SOURCE_SETTING
             if (hw_has_mic_input_source_setting()) {
-                ui_create_card_dropdown(sys_deferred_card, LV_SYMBOL_AUDIO, "Mic Source",
-                                        "Internal\n3.5mm",
-                                        mic_input_source_to_index(local_mic_input_source),
-                                        mic_input_source_cb);
+                ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_AUDIO), "Mic Source",
+                                      "Internal\n3.5mm",
+                                      mic_input_source_to_index(local_mic_input_source),
+                                      mic_input_source_cb);
             }
 #endif
         }
@@ -602,7 +679,7 @@ static bool run_sys_deferred_step()
 
     case UI_SYS_BUILD_POWER_CARD:
 #if FACTORY_HAS_POWER_MANAGE
-        sys_deferred_card = ui_create_card(page_container, "Power");
+        sys_deferred_card = sys_create_card("Power");
         sys_deferred_step = UI_SYS_BUILD_POWER_OTG;
 #else
         sys_deferred_step = UI_SYS_BUILD_BUTTONS_CARD;
@@ -612,14 +689,14 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_POWER_OTG:
         if (hw_has_otg_function()) {
             bool enableOtg = hw_get_otg_enable();
-            ui_create_card_switch(sys_deferred_card, LV_SYMBOL_POWER, "OTG Output",
+            ui_create_card_switch(sys_deferred_card, SYS_ICON(LV_SYMBOL_POWER), "OTG Output",
                                   enableOtg, otg_output_cb);
         }
         sys_deferred_step = UI_SYS_BUILD_POWER_CHARGER;
         break;
 
     case UI_SYS_BUILD_POWER_CHARGER:
-        ui_create_card_switch(sys_deferred_card, LV_SYMBOL_POWER, "Charger",
+        ui_create_card_switch(sys_deferred_card, SYS_ICON(LV_SYMBOL_POWER), "Charger",
                               local_param.charger_enable, charger_enable_cb);
         sys_deferred_step = UI_SYS_BUILD_POWER_CHARGE_CURRENT;
         break;
@@ -627,7 +704,7 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_POWER_CHARGE_CURRENT: {
         uint8_t total_charge_level = hw_get_charge_level_nums();
         uint8_t curr_charge_level = hw_get_charger_current_level();
-        ui_create_card_slider(sys_deferred_card, LV_SYMBOL_POWER, "Charge Current",
+        ui_create_card_slider(sys_deferred_card, SYS_ICON(LV_SYMBOL_POWER), "Charge Current",
                               0, total_charge_level, curr_charge_level, charger_current_cb);
         sys_deferred_step = UI_SYS_BUILD_BUTTONS_CARD;
         break;
@@ -635,7 +712,7 @@ static bool run_sys_deferred_step()
 
     case UI_SYS_BUILD_BUTTONS_CARD:
         if (hw_has_button_monitor() || hw_has_pmu_button_monitor()) {
-            sys_deferred_card = ui_create_card(page_container, "Buttons");
+            sys_deferred_card = sys_create_card("Buttons");
             sys_deferred_step = UI_SYS_BUILD_BUTTON_DEVICE;
         } else {
             sys_deferred_step = UI_SYS_BUILD_ENV_CARD;
@@ -646,9 +723,9 @@ static bool run_sys_deferred_step()
         if (hw_has_button_monitor()) {
             char button_status[48];
             hw_get_button_monitor_status(button_status, sizeof(button_status));
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_OK,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_OK),
                                                 "Device Button", button_status);
-            sys_label.button_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&sys_label.button_label, row);
         }
         sys_deferred_step = UI_SYS_BUILD_BUTTON_PMU;
         break;
@@ -657,16 +734,16 @@ static bool run_sys_deferred_step()
         if (hw_has_pmu_button_monitor()) {
             char button_status[48];
             hw_get_pmu_button_monitor_status(button_status, sizeof(button_status));
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_POWER,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_POWER),
                                                 "PMU Button", button_status);
-            sys_label.pmu_button_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&sys_label.pmu_button_label, row);
         }
         sys_deferred_step = UI_SYS_BUILD_ENV_CARD;
         break;
 
     case UI_SYS_BUILD_ENV_CARD:
 #ifdef USING_BME280
-        sys_deferred_card = ui_create_card(page_container, "Environment");
+        sys_deferred_card = sys_create_card("Environment");
         sys_deferred_step = UI_SYS_BUILD_ENV_TEMPERATURE;
 #else
         sys_deferred_step = UI_SYS_BUILD_DEVICES_CARD;
@@ -676,9 +753,9 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_ENV_TEMPERATURE:
 #ifdef USING_BME280
         {
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_SETTINGS,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS),
                                                 "Temperature", "N.A");
-            temperature = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&temperature, row);
         }
 #endif
         sys_deferred_step = UI_SYS_BUILD_ENV_HUMIDITY;
@@ -687,9 +764,9 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_ENV_HUMIDITY:
 #ifdef USING_BME280
         {
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_SETTINGS,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS),
                                                 "Humidity", "N.A");
-            humidity = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&humidity, row);
         }
 #endif
         sys_deferred_step = UI_SYS_BUILD_ENV_PRESSURE;
@@ -698,9 +775,9 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_ENV_PRESSURE:
 #ifdef USING_BME280
         {
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_SETTINGS,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS),
                                                 "Pressure", "N.A");
-            pressure = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&pressure, row);
         }
 #endif
         sys_deferred_step = UI_SYS_BUILD_ENV_ALTITUDE;
@@ -709,16 +786,16 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_ENV_ALTITUDE:
 #ifdef USING_BME280
         {
-            lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_SETTINGS,
+            lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS),
                                                 "Altitude", "N.A");
-            altitude = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+            track_value_label(&altitude, row);
         }
 #endif
         sys_deferred_step = UI_SYS_BUILD_DEVICES_CARD;
         break;
 
     case UI_SYS_BUILD_DEVICES_CARD:
-        sys_deferred_card = ui_create_card(page_container, "Devices");
+        sys_deferred_card = sys_create_card("Devices");
         sys_deferred_device_index = 0;
         sys_deferred_device_count = hw_get_devices_nums();
         sys_deferred_device_mask = hw_get_device_online();
@@ -731,7 +808,7 @@ static bool run_sys_deferred_step()
             const char *device_name = hw_get_devices_name(index);
             if (lv_strcmp(device_name, "") != 0) {
                 const bool online = (sys_deferred_device_mask & (1UL << index)) != 0;
-                lv_obj_t *row = ui_create_card_info(sys_deferred_card, LV_SYMBOL_OK,
+                lv_obj_t *row = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_OK),
                                                     device_name, online ? "Online" : "Offline");
                 lv_obj_t *status_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
                 lv_obj_set_style_text_color(status_label,
@@ -745,13 +822,13 @@ static bool run_sys_deferred_step()
         break;
 
     case UI_SYS_BUILD_SYSTEM_CARD:
-        sys_deferred_card = ui_create_card(page_container, "System Info");
+        sys_deferred_card = sys_create_card("System Info");
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_EXPAND_FW;
         break;
 
     case UI_SYS_BUILD_SYSTEM_EXPAND_FW:
         if (hw_has_indicator_led()) {
-            ui_create_card_info(sys_deferred_card, LV_SYMBOL_BELL,
+            ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_BELL),
                                 "Expand FW", hw_get_expands_fw_version());
         }
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_MAC;
@@ -765,7 +842,7 @@ static bool run_sys_deferred_step()
             snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         }
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_WIFI, "MAC",
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_WIFI), "MAC",
                             has_mac ? buffer : "N.A");
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_WIFI_SSID;
         break;
@@ -774,15 +851,15 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_SYSTEM_WIFI_SSID: {
         char wifi_ssid[WIFI_SSID_MAX_LEN];
         hw_get_wifi_ssid(wifi_ssid, sizeof(wifi_ssid));
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_WIFI, "WiFi SSID", wifi_ssid);
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_WIFI), "WiFi SSID", wifi_ssid);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_RTC;
         break;
     }
 
     case UI_SYS_BUILD_SYSTEM_RTC: {
-        lv_obj_t *dt_item = ui_create_card_info(sys_deferred_card, LV_SYMBOL_BELL,
+        lv_obj_t *dt_item = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_BELL),
                                                 "RTC", "00:00:00");
-        sys_label.datetime_label = lv_obj_get_child(dt_item, lv_obj_get_child_count(dt_item) - 1);
+        track_value_label(&sys_label.datetime_label, dt_item);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_IP;
         break;
     }
@@ -790,15 +867,15 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_SYSTEM_IP: {
         static char ip_info[24] = "N.A";
         hw_get_ip_address(ip_info, sizeof(ip_info));
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_WIFI, "IP", ip_info);
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_WIFI), "IP", ip_info);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_RSSI;
         break;
     }
 
     case UI_SYS_BUILD_SYSTEM_RSSI: {
-        lv_obj_t *rssi_item = ui_create_card_info(sys_deferred_card, LV_SYMBOL_WIFI,
+        lv_obj_t *rssi_item = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_WIFI),
                                                   "RSSI", "N.A");
-        sys_label.wifi_rssi_label = lv_obj_get_child(rssi_item, lv_obj_get_child_count(rssi_item) - 1);
+        track_value_label(&sys_label.wifi_rssi_label, rssi_item);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_VOLTAGE;
         break;
     }
@@ -806,9 +883,9 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_SYSTEM_VOLTAGE: {
         char buffer[32];
         format_battery_voltage(buffer, sizeof(buffer));
-        lv_obj_t *volt_item = ui_create_card_info(sys_deferred_card, LV_SYMBOL_BATTERY_FULL,
+        lv_obj_t *volt_item = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_BATTERY_FULL),
                                                   "Voltage", buffer);
-        sys_label.batt_voltage_label = lv_obj_get_child(volt_item, lv_obj_get_child_count(volt_item) - 1);
+        track_value_label(&sys_label.batt_voltage_label, volt_item);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_STORAGE;
         break;
     }
@@ -819,9 +896,10 @@ static bool run_sys_deferred_step()
 #else
         const char *storage_label = "Storage";
 #endif
-        lv_obj_t *storage_item = ui_create_card_info(sys_deferred_card, LV_SYMBOL_SD_CARD,
+        lv_obj_t *storage_item = ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_SD_CARD),
                                                      storage_label, "Loading");
-        sys_label.storage_label = lv_obj_get_child(storage_item, lv_obj_get_child_count(storage_item) - 1);
+        track_value_label(&sys_label.storage_label, storage_item);
+        storage_size_loaded = false;
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_LVGL;
         break;
     }
@@ -830,7 +908,7 @@ static bool run_sys_deferred_step()
         char buffer[32];
         snprintf(buffer, sizeof(buffer), "V%d.%d.%d",
                  lv_version_major(), lv_version_minor(), lv_version_patch());
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_EYE_OPEN, "LVGL", buffer);
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_EYE_OPEN), "LVGL", buffer);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_ARDUINO;
         break;
     }
@@ -838,19 +916,19 @@ static bool run_sys_deferred_step()
     case UI_SYS_BUILD_SYSTEM_ARDUINO: {
         char ver[16];
         hw_get_arduino_version(ver, sizeof(ver));
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_EYE_OPEN, "Arduino", ver);
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_EYE_OPEN), "Arduino", ver);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_BUILD;
         break;
     }
 
     case UI_SYS_BUILD_SYSTEM_BUILD:
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_EYE_OPEN,
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_EYE_OPEN),
                             "Build", __DATE__ " " __TIME__);
         sys_deferred_step = UI_SYS_BUILD_SYSTEM_CHIP_ID;
         break;
 
     case UI_SYS_BUILD_SYSTEM_CHIP_ID:
-        ui_create_card_info(sys_deferred_card, LV_SYMBOL_EYE_OPEN,
+        ui_create_card_info(sys_deferred_card, SYS_ICON(LV_SYMBOL_EYE_OPEN),
                             "Chip ID", hw_get_chip_id_string());
         sys_deferred_step = UI_SYS_BUILD_DONE;
         break;
@@ -864,6 +942,7 @@ static bool run_sys_deferred_step()
     return sys_deferred_step == UI_SYS_BUILD_DONE;
 }
 
+#if !FACTORY_WATCH_UI
 static void finish_sys_deferred_build(lv_timer_t *t)
 {
     if (deferred_timer) {
@@ -903,6 +982,79 @@ static void start_sys_deferred_build()
         start_sys_refresh_timer();
     }
 }
+#else
+/* Watch: Settings opens on a list of sections. Each pushes a sub-page built
+ * by the same steps as the card layout, from `first` up to `end`. */
+typedef struct {
+    uint8_t first;
+    uint8_t end;
+} sys_step_range_t;
+
+typedef struct {
+    const char *title;
+    const char *icon;
+    sys_step_range_t ranges[2];
+} sys_section_t;
+
+static const sys_section_t sys_sections[] = {
+    {"Display", LV_SYMBOL_IMAGE,        {{UI_SYS_BUILD_DISPLAY_CARD, UI_SYS_BUILD_ROTARY}}},
+    {"Input",   LV_SYMBOL_KEYBOARD,     {{UI_SYS_BUILD_ROTARY, UI_SYS_BUILD_AUDIO}}},
+    {"Sound",   LV_SYMBOL_VOLUME_MAX,   {{UI_SYS_BUILD_AUDIO, UI_SYS_BUILD_POWER_CARD}}},
+    {"Power",   LV_SYMBOL_CHARGE,       {{UI_SYS_BUILD_POWER_CARD, UI_SYS_BUILD_BUTTONS_CARD}}},
+    {"Sensors", LV_SYMBOL_TINT,         {{UI_SYS_BUILD_ENV_CARD, UI_SYS_BUILD_DEVICES_CARD}}},
+    {"Devices", LV_SYMBOL_DRIVE,        {{UI_SYS_BUILD_DEVICES_CARD, UI_SYS_BUILD_SYSTEM_CARD},
+                                         {UI_SYS_BUILD_BUTTONS_CARD, UI_SYS_BUILD_ENV_CARD}}},
+    {"About",   LV_SYMBOL_LIST,         {{UI_SYS_BUILD_SYSTEM_CARD, UI_SYS_BUILD_DONE}}},
+};
+
+/* Sections whose steps would add nothing on this board stay off the list. */
+static bool sys_section_available(const sys_section_t *section)
+{
+    switch (section->ranges[0].first) {
+    case UI_SYS_BUILD_ROTARY:
+        return UI_SYS_HAS_ROTARY_STEP_SETTING || UI_SYS_HAS_KEYBOARD_NAV_SETTING;
+    case UI_SYS_BUILD_AUDIO:
+#if UI_SYS_HAS_AUDIO_SETTING
+        return hw_has_audio_jack_mode_setting() || hw_has_mic_input_source_setting();
+#else
+        return false;
+#endif
+    case UI_SYS_BUILD_POWER_CARD:
+        return FACTORY_HAS_POWER_MANAGE;
+    case UI_SYS_BUILD_ENV_CARD:
+#ifdef USING_BME280
+        return true;
+#else
+        return false;
+#endif
+    default:
+        return true;
+    }
+}
+
+static void sys_section_open_cb(lv_event_t *e)
+{
+    const sys_section_t *section = (const sys_section_t *)lv_event_get_user_data(e);
+    sys_build_parent = ui_push_page(lv_event_get_current_target_obj(e), section->title);
+    for (const sys_step_range_t &range : section->ranges) {
+        sys_deferred_step = range.first;
+        sys_deferred_card = NULL;
+        while (sys_deferred_step < range.end && !run_sys_deferred_step()) {
+        }
+    }
+    sys_build_parent = page_container;
+}
+
+static void build_sys_section_list()
+{
+    for (const sys_section_t &section : sys_sections) {
+        if (sys_section_available(&section)) {
+            ui_create_menu_row(page_container, section.icon, section.title,
+                               sys_section_open_cb, (void *)&section);
+        }
+    }
+}
+#endif
 
 void ui_sys_enter(lv_obj_t *parent)
 {
@@ -930,6 +1082,7 @@ void ui_sys_enter(lv_obj_t *parent)
 #endif
 
     page_container = ui_create_app_page(parent, "Setting", back_event_handler);
+    sys_build_parent = page_container;
 
 #ifdef USING_TOUCHPAD
     quit_btn = create_floating_button([](lv_event_t *e) {
@@ -938,7 +1091,12 @@ void ui_sys_enter(lv_obj_t *parent)
     }, NULL);
 #endif
 
+#if FACTORY_WATCH_UI
+    build_sys_section_list();
+    start_sys_refresh_timer();
+#else
     start_sys_deferred_build();
+#endif
 }
 
 

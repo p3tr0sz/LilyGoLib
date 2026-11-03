@@ -196,7 +196,10 @@ void ui_styles_init(void)
 /* Walk callback: invalidate every object in the tree */
 static lv_obj_tree_walk_res_t invalidate_cb(lv_obj_t *obj, void *user_data)
 {
-    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE)) {
+    /* Recolour only scrollbars that are already shown; scaled images overflow
+     * their box and would otherwise get scrollbars. */
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE) &&
+            lv_obj_get_style_bg_opa(obj, LV_PART_SCROLLBAR) > LV_OPA_TRANSP) {
         lv_obj_set_style_bg_color(obj, UI_COLOR_ACCENT, LV_PART_SCROLLBAR);
         lv_obj_set_style_bg_opa(obj, LV_OPA_60, LV_PART_SCROLLBAR);
         lv_obj_set_style_width(obj, 3, LV_PART_SCROLLBAR);

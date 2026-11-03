@@ -32,9 +32,11 @@ static void app_list_row_click_cb(lv_event_t *e)
 
 static void app_list_add_row(lv_obj_t *parent, const ui_app_entry_t *entry)
 {
+    /* Shared styles, so a theme change in Settings recolours the list too. */
+    ui_styles_init();
     lv_obj_t *row = lv_obj_create(parent);
     lv_obj_set_size(row, LV_PCT(100), APP_LIST_ROW_H);
-    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_BG, 0);
+    lv_obj_add_style(row, &ui_styles.card, 0);
     lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(row, 0, 0);
@@ -49,9 +51,7 @@ static void app_list_add_row(lv_obj_t *parent, const ui_app_entry_t *entry)
 
     lv_obj_t *disc = lv_obj_create(row);
     lv_obj_set_size(disc, APP_LIST_ICON_DISC, APP_LIST_ICON_DISC);
-    lv_obj_set_style_bg_color(disc, UI_COLOR_ACCENT, 0);
-    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(disc, 0, 0);
+    lv_obj_add_style(disc, &ui_styles.accent_btn, 0);
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_pad_all(disc, 0, 0);
     lv_obj_remove_flag(disc, LV_OBJ_FLAG_SCROLLABLE);

@@ -213,6 +213,8 @@ lv_obj_t *create_radius_button(lv_obj_t *parent, const void *image, lv_event_cb_
 lv_obj_t *ui_create_app_page(lv_obj_t *parent, const char *title, lv_event_cb_t back_cb);
 void ui_enable_edge_swipe_back(lv_obj_t *root, lv_obj_t *back_target,
                                lv_event_code_t back_event = LV_EVENT_CLICKED);
+/* Innermost object containing obj that has swipe-back (an app page or pushed page), or NULL. */
+lv_obj_t *ui_swipe_back_root(lv_obj_t *obj);
 void ui_destroy_app_page(lv_obj_t *content);
 void ui_app_page_enable_nav_auto_hide(lv_obj_t *content, uint32_t timeout_ms);
 void ui_app_page_disable_nav_auto_hide(lv_obj_t *content);
@@ -237,12 +239,28 @@ lv_obj_t *ui_create_card_switch(lv_obj_t *card, const char *icon, const char *ti
                                  bool checked, lv_event_cb_t cb);
 lv_obj_t *ui_create_card_dropdown(lv_obj_t *card, const char *icon, const char *title,
                                    const char *options, uint8_t sel, lv_event_cb_t cb);
+/* Same arguments as ui_create_card_dropdown(), and the row's last child is still the
+ * lv_dropdown that holds the choice and sends LV_EVENT_VALUE_CHANGED. On the watch,
+ * tapping the row opens a list page instead of the dropdown popup. */
+lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *title,
+                                 const char *options, uint8_t sel, lv_event_cb_t cb);
 lv_obj_t *ui_create_card_button(lv_obj_t *card, const char *icon, const char *title,
                                  const char *btn_text, lv_event_cb_t cb);
 lv_obj_t *ui_create_card_info(lv_obj_t *card, const char *icon, const char *title,
                                const char *value);
 lv_obj_t *ui_create_status_bar(lv_obj_t *parent);
 void ui_status_bar_update(void);
+
+#if FACTORY_WATCH_UI
+/* ── Nested pages (ui_watch_pages.cpp) ──
+ * ui_push_page() slides a sub-page, laid out like ui_create_app_page(), over the
+ * page that holds `from` and returns its content. Swiping right pops it. */
+lv_obj_t *ui_push_page(lv_obj_t *from, const char *title);
+void ui_pop_page(lv_obj_t *content);
+/* A tappable list row: icon in an accent disc, title and a chevron. */
+lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
+                             lv_event_cb_t cb, void *user_data);
+#endif
 
 bool is_screen_small(void);
 void ui_set_font_size_pref(uint8_t pref);
