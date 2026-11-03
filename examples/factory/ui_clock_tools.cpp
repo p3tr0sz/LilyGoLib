@@ -132,7 +132,10 @@ static lv_obj_t *card_dropdown(lv_obj_t *card, const char *icon, const char *tit
 {
     lv_obj_t *row = ui_create_card_dropdown(card, icon, title, options, sel, NULL);
     lv_obj_t *dd = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+#if !FACTORY_WATCH_UI
+    /* The watch keeps the shared helper's wider dropdown, sized for its larger font */
     lv_obj_set_width(dd, 118);
+#endif
     return dd;
 }
 
@@ -306,7 +309,7 @@ void ui_clock_tools_enter(lv_obj_t *parent)
     status_label = lv_label_create(card);
     lv_label_set_text(status_label, "Ready.");
     lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
 
     card = ui_create_card(page_container, "Timezone");
     timezone_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Zone", timezone_options,

@@ -185,7 +185,7 @@ static lv_obj_t *create_touch_guide_button(lv_obj_t *parent, const char *text,
     lv_obj_set_width(label, LV_PCT(100));
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
-    lv_obj_set_style_text_font(label, compact ? &lv_font_montserrat_10 : &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(label, compact ? UI_FONT_TINY : UI_FONT_CAPTION, 0);
     lv_obj_center(label);
 
     if (touch_guide_group) {
@@ -262,7 +262,7 @@ static void show_touch_guide(void)
     lv_obj_set_width(description, LV_PCT(100));
     lv_obj_set_style_text_align(description, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(description, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(description, compact ? &lv_font_montserrat_10 : &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(description, compact ? UI_FONT_TINY : UI_FONT_CAPTION, 0);
 
     lv_obj_t *button_row = lv_obj_create(panel);
     lv_obj_set_size(button_row, LV_PCT(100), compact ? 44 : 42);
@@ -404,6 +404,81 @@ static void power_menu_action_cb(lv_event_t *e)
     }
 }
 
+#if FACTORY_WATCH_UI
+/* Watch power menu: full screen, one large row per action, swipe right to cancel. */
+static void power_menu_add_row(lv_obj_t *parent, const char *symbol, const char *text,
+                               lv_color_t color, bool filled, power_menu_action_t action)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), 76);
+    lv_obj_set_style_bg_color(row, filled ? color : UI_COLOR_CARD_BG, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_70, LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_hor(row, 28, 0);
+    lv_obj_set_style_pad_column(row, 20, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(row, power_menu_action_cb, LV_EVENT_CLICKED, (void *)(intptr_t)action);
+
+    lv_obj_t *icon = lv_label_create(row);
+    lv_label_set_text(icon, symbol);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(icon, filled ? lv_color_white() : color, 0);
+
+    lv_obj_t *label = lv_label_create(row);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+}
+
+static void show_power_menu(void)
+{
+    if (power_menu_overlay) return;
+
+    power_menu_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_t *overlay = power_menu_overlay;
+    lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 0, 0);
+    lv_obj_set_style_pad_hor(overlay, 40, 0);
+    lv_obj_set_style_pad_ver(overlay, 16, 0);
+    lv_obj_set_style_pad_row(overlay, 12, 0);
+    lv_obj_set_flex_flow(overlay, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(overlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(overlay);
+    lv_label_set_text(title, "Power");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(title, UI_COLOR_TEXT_SECONDARY, 0);
+
+    power_menu_add_row(overlay, LV_SYMBOL_POWER, power_menu_primary_label(false),
+                       power_menu_primary_color(), true, POWER_MENU_SHUTDOWN);
+    power_menu_add_row(overlay, LV_SYMBOL_REFRESH, "Restart", UI_COLOR_ACCENT, false,
+                       POWER_MENU_RESTART);
+    if (hw_get_power_off_mode() != HW_POWER_OFF_DEEP_SLEEP) {
+        power_menu_add_row(overlay, LV_SYMBOL_PAUSE, "Sleep", lv_color_hex(0x2B7DE9), false,
+                           POWER_MENU_SLEEP);
+    }
+
+    lv_obj_t *hint = lv_label_create(overlay);
+    lv_label_set_text(hint, "Swipe right to cancel");
+    lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
+
+    /* The back swipe cancels through this hidden target. */
+    lv_obj_t *cancel = lv_obj_create(overlay);
+    lv_obj_add_flag(cancel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(cancel, power_menu_action_cb, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)POWER_MENU_CANCEL);
+    ui_enable_edge_swipe_back(overlay, cancel);
+}
+#else
 static lv_obj_t *power_menu_create_button(lv_obj_t *parent, const char *symbol, const char *text,
         lv_color_t color, power_menu_action_t action)
 {
@@ -502,6 +577,8 @@ static void show_power_menu(void)
     lv_obj_set_width(hint, LV_PCT(100));
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
 }
+
+#endif
 
 static void power_menu_timer_cb(lv_timer_t *t)
 {

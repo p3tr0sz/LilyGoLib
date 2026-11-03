@@ -782,7 +782,7 @@ static void build_device_list(void)
         lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(empty, LV_PCT(100));
         lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(empty, UI_FONT_CAPTION, 0);
         return;
     }
 
@@ -846,14 +846,14 @@ static void build_device_list(void)
         lv_label_set_long_mode(name_label, LV_LABEL_LONG_DOT);
         lv_obj_set_width(name_label, LV_PCT(100));
         lv_obj_set_style_text_color(name_label, UI_COLOR_TEXT_PRIMARY, 0);
-        lv_obj_set_style_text_font(name_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(name_label, UI_FONT_CAPTION, 0);
 
         lv_obj_t *meta_label = lv_label_create(text_col);
         lv_label_set_text(meta_label, meta);
         lv_label_set_long_mode(meta_label, LV_LABEL_LONG_DOT);
         lv_obj_set_width(meta_label, LV_PCT(100));
         lv_obj_set_style_text_color(meta_label, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(meta_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(meta_label, UI_FONT_CAPTION, 0);
 
         lv_obj_t *right = lv_obj_create(row);
         lv_obj_set_size(right, 58, LV_SIZE_CONTENT);
@@ -867,7 +867,7 @@ static void build_device_list(void)
         lv_obj_t *rssi_label = lv_label_create(right);
         lv_label_set_text(rssi_label, right_text);
         lv_obj_set_style_text_color(rssi_label, rssi_color(dev.rssi), 0);
-        lv_obj_set_style_text_font(rssi_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(rssi_label, UI_FONT_CAPTION, 0);
 
         lv_obj_t *bar = lv_bar_create(right);
         lv_obj_set_size(bar, 52, 6);
@@ -1056,7 +1056,7 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     status_label = lv_label_create(card);
     lv_label_set_text(status_label, "Ready.");
     lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
 
     add_info_row(card, LV_SYMBOL_LIST, "Shown", "0", &count_label);
     add_info_row(card, LV_SYMBOL_BLUETOOTH, "All Seen", "0", &total_label);
@@ -1066,7 +1066,7 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     scan_label = lv_label_create(card);
     lv_label_set_text(scan_label, "No scan yet.");
     lv_obj_set_style_text_color(scan_label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(scan_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(scan_label, UI_FONT_CAPTION, 0);
 
     card = ui_create_card(page_container, "Controls");
     ui_create_card_button(card, LV_SYMBOL_REFRESH, "Scan", "Now", refresh_btn_cb);
@@ -1084,7 +1084,7 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(empty, LV_PCT(100));
     lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(empty, UI_FONT_CAPTION, 0);
 
     card = ui_create_card(page_container, "Selected Device");
     add_info_row(card, LV_SYMBOL_BLUETOOTH, "Name", "--", &selected_name_label);

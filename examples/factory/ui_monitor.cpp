@@ -374,13 +374,13 @@ static void monitor_create_overview(lv_obj_t *parent, const power_monitor_snapsh
     lv_label_set_text(overview_state_label, "--");
     lv_obj_set_style_text_color(overview_state_label, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_align(overview_state_label, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_font(overview_state_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(overview_state_label, UI_FONT_CAPTION, 0);
 
     overview_source_label = lv_label_create(state_box);
     lv_label_set_text(overview_source_label, "--");
     lv_obj_set_style_text_color(overview_source_label, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_align(overview_source_label, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_font(overview_source_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(overview_source_label, UI_FONT_CAPTION, 0);
     lv_label_set_long_mode(overview_source_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(overview_source_label, LV_PCT(100));
 

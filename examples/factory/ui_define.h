@@ -103,6 +103,26 @@ extern uint32_t ui_active_track;
 #define UI_COLOR_TRACK        lv_color_hex(ui_active_track)
 #define UI_COLOR_KNOB         lv_color_white()
 
+/* ── Size tokens ──
+ * The watch shell's screen is ~315 ppi, so it uses larger type and touch
+ * targets. On other boards each font token is the size it replaces. */
+#if FACTORY_WATCH_UI
+#define UI_FONT_TINY          (&lv_font_montserrat_16)   /* was 10 px */
+#define UI_FONT_CAPTION       (&lv_font_montserrat_16)   /* was 12 px */
+#define UI_FONT_SMALL         (&lv_font_montserrat_18)   /* was 14 px */
+#define UI_ROW_MIN_H          76
+#define UI_APP_NAV_H          44
+#define UI_APP_PAD_HOR        12
+#else
+#define UI_FONT_TINY          (&lv_font_montserrat_10)
+#define UI_FONT_CAPTION       (&lv_font_montserrat_12)
+#define UI_FONT_SMALL         (&lv_font_montserrat_14)
+#define UI_ROW_MIN_H          0
+#define UI_APP_NAV_H          32
+#define UI_APP_PAD_HOR        8
+#endif
+#define UI_FONT_BODY          (MAIN_FONT)
+
 /* ── Shared styles ── */
 typedef struct {
     lv_style_t card;

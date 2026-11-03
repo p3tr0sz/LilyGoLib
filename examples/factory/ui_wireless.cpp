@@ -225,7 +225,7 @@ static void add_empty_row(const char *text)
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, LV_PCT(100));
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_CAPTION, 0);
 }
 
 static void close_connect_modal(void)
@@ -361,7 +361,7 @@ static void show_connecting_result(bool success, const char *detail)
     lv_obj_set_width(label, LV_PCT(100));
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_CAPTION, 0);
 
     wifi_connecting_deadline = 0;
     wifi_connecting_timer = lv_timer_create(wifi_result_close_timer_cb, success ? 1100 : 2600, NULL);
@@ -578,7 +578,7 @@ static void open_connect_modal(void)
     lv_label_set_text_fmt(connect_detail_label, "CH%d  %d dBm  %s",
                           (int)ap.channel, ap.rssi, auth_mode_str(ap.authmode));
     lv_obj_set_style_text_color(connect_detail_label, rssi_color(ap.rssi), 0);
-    lv_obj_set_style_text_font(connect_detail_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(connect_detail_label, UI_FONT_CAPTION, 0);
 
     if (!open_ap) {
         lv_obj_t *password_row = lv_obj_create(panel);
@@ -629,7 +629,7 @@ static void open_connect_modal(void)
         lv_obj_t *show_label = lv_label_create(show_row);
         lv_label_set_text(show_label, "Show password");
         lv_obj_set_style_text_color(show_label, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(show_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(show_label, UI_FONT_CAPTION, 0);
 
         connect_show_switch = lv_switch_create(show_row);
         lv_obj_set_size(connect_show_switch, 42, 22);
@@ -639,7 +639,7 @@ static void open_connect_modal(void)
         lv_obj_t *open_label = lv_label_create(panel);
         lv_label_set_text(open_label, "Open network");
         lv_obj_set_style_text_color(open_label, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(open_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(open_label, UI_FONT_CAPTION, 0);
     }
 
     lv_obj_t *btn_row = lv_obj_create(panel);
@@ -730,7 +730,7 @@ static void rebuild_ap_list(void)
         lv_label_set_long_mode(ssid, LV_LABEL_LONG_DOT);
         lv_obj_set_width(ssid, LV_PCT(100));
         lv_obj_set_style_text_color(ssid, UI_COLOR_TEXT_PRIMARY, 0);
-        lv_obj_set_style_text_font(ssid, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(ssid, UI_FONT_SMALL, 0);
         bind_ap_click(ssid, i);
 
         lv_obj_t *meta = lv_label_create(text_col);
@@ -738,7 +738,7 @@ static void rebuild_ap_list(void)
         lv_label_set_long_mode(meta, LV_LABEL_LONG_DOT);
         lv_obj_set_width(meta, LV_PCT(100));
         lv_obj_set_style_text_color(meta, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(meta, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(meta, UI_FONT_CAPTION, 0);
         bind_ap_click(meta, i);
 
         lv_obj_t *right = lv_obj_create(row);
@@ -754,7 +754,7 @@ static void rebuild_ap_list(void)
         lv_obj_t *rssi = lv_label_create(right);
         lv_label_set_text_fmt(rssi, "%d dBm", ap.rssi);
         lv_obj_set_style_text_color(rssi, rssi_color(ap.rssi), 0);
-        lv_obj_set_style_text_font(rssi, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(rssi, UI_FONT_CAPTION, 0);
         bind_ap_click(rssi, i);
 
         lv_obj_t *bar = lv_bar_create(right);
@@ -912,9 +912,9 @@ static lv_obj_t *add_info_row(lv_obj_t *card, const char *icon, const char *titl
 static const lv_font_t *wifi_action_font(void)
 {
     uint8_t pref = ui_get_font_size_pref();
-    if (pref == 1) return &lv_font_montserrat_12;
+    if (pref == 1) return UI_FONT_CAPTION;
     if (pref >= 3) return &lv_font_montserrat_16;
-    return &lv_font_montserrat_14;
+    return UI_FONT_SMALL;
 }
 
 static lv_obj_t *add_right_action_button(lv_obj_t *card, const char *icon, const char *text, lv_event_cb_t cb)

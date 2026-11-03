@@ -164,8 +164,8 @@ static void ui_app_page_nav_set_hidden(ui_nav_auto_hide_t *state, bool hidden)
     } else {
         lv_obj_remove_flag(state->nav, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(state->divider, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_height(state->content, screen_h - 33 - bottom_bar_h);
-        lv_obj_align(state->content, LV_ALIGN_TOP_MID, 0, 33);
+        lv_obj_set_height(state->content, screen_h - (UI_APP_NAV_H + 1) - bottom_bar_h);
+        lv_obj_align(state->content, LV_ALIGN_TOP_MID, 0, UI_APP_NAV_H + 1);
     }
 }
 
@@ -1031,6 +1031,26 @@ bool is_screen_small()
  *  New card-style UI components
  * ============================================================ */
 
+#if FACTORY_WATCH_UI
+/* Watch pages show the time in the header, since there is no status bar. */
+static void ui_app_page_clock_update(lv_obj_t *label)
+{
+    struct tm timeinfo = {0};
+    hw_get_date_time(timeinfo);
+    lv_label_set_text_fmt(label, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+}
+
+static void ui_app_page_clock_timer_cb(lv_timer_t *timer)
+{
+    ui_app_page_clock_update((lv_obj_t *)lv_timer_get_user_data(timer));
+}
+
+static void ui_app_page_clock_delete_cb(lv_event_t *e)
+{
+    lv_timer_delete((lv_timer_t *)lv_event_get_user_data(e));
+}
+#endif
+
 lv_obj_t *ui_create_app_page(lv_obj_t *parent, const char *title, lv_event_cb_t back_cb)
 {
     ui_styles_init();
@@ -1053,7 +1073,7 @@ lv_obj_t *ui_create_app_page(lv_obj_t *parent, const char *title, lv_event_cb_t 
 
     /* Top navigation bar */
     lv_obj_t *nav = lv_obj_create(page);
-    lv_obj_set_size(nav, LV_PCT(100), 32);
+    lv_obj_set_size(nav, LV_PCT(100), UI_APP_NAV_H);
     lv_obj_set_style_bg_color(nav, UI_COLOR_BG, 0);
     lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(nav, 0, 0);
@@ -1096,6 +1116,19 @@ lv_obj_t *ui_create_app_page(lv_obj_t *parent, const char *title, lv_event_cb_t 
     lv_obj_set_style_text_font(title_label, title_font, 0);
     lv_obj_set_style_text_color(title_label, UI_COLOR_TEXT_PRIMARY, 0);
     lv_obj_center(title_label);
+#if FACTORY_WATCH_UI
+    /* Leave room for the clock on the right */
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_max_width(title_label, lv_display_get_horizontal_resolution(NULL) - 220, 0);
+
+    lv_obj_t *clock_label = lv_label_create(nav);
+    lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(clock_label, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_align(clock_label, LV_ALIGN_RIGHT_MID, -24, 0);
+    ui_app_page_clock_update(clock_label);
+    lv_timer_t *clock_timer = lv_timer_create(ui_app_page_clock_timer_cb, 1000, clock_label);
+    lv_obj_add_event_cb(clock_label, ui_app_page_clock_delete_cb, LV_EVENT_DELETE, clock_timer);
+#endif
 
     /* Divider line under nav */
     lv_obj_t *div_line = lv_obj_create(page);
@@ -1112,21 +1145,21 @@ lv_obj_t *ui_create_app_page(lv_obj_t *parent, const char *title, lv_event_cb_t 
 
 
     /* Scrollable content area */
-    int content_h = lv_display_get_vertical_resolution(NULL) - 33 - bottom_bar_h;
+    int content_h = lv_display_get_vertical_resolution(NULL) - (UI_APP_NAV_H + 1) - bottom_bar_h;
     lv_obj_t *content = lv_obj_create(page);
     lv_obj_set_size(content, LV_PCT(100), content_h);
     lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(content, 0, 0);
     lv_obj_set_style_radius(content, 0, 0);
-    lv_obj_set_style_pad_hor(content, 8, 0);
+    lv_obj_set_style_pad_hor(content, UI_APP_PAD_HOR, 0);
     lv_obj_set_style_pad_ver(content, 8, 0);
-    lv_obj_set_style_pad_row(content, 8, 0);
+    lv_obj_set_style_pad_row(content, FACTORY_WATCH_UI ? 12 : 8, 0);
     lv_obj_set_style_bg_color(content, UI_COLOR_ACCENT, LV_PART_SCROLLBAR);
     lv_obj_set_style_bg_opa(content, LV_OPA_60, LV_PART_SCROLLBAR);
     lv_obj_set_style_width(content, 3, LV_PART_SCROLLBAR);
     lv_obj_set_style_radius(content, 2, LV_PART_SCROLLBAR);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
-    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 33);
+    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, UI_APP_NAV_H + 1);
 
     /* Store root page reference in content's user_data for proper cleanup */
     lv_obj_set_user_data(content, page);
@@ -1244,8 +1277,8 @@ lv_obj_t *ui_create_card(lv_obj_t *parent, const char *title)
         lv_obj_t *lbl = lv_label_create(card);
         lv_label_set_text(lbl, title);
         lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_pad_bottom(lbl, 8, 0);
+        lv_obj_set_style_text_font(lbl, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_pad_bottom(lbl, FACTORY_WATCH_UI ? 4 : 8, 0);
     }
 
     return card;
@@ -1311,7 +1344,12 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     ui_styles_init();
     const bool widget_is_slider = widget && lv_obj_check_type(widget, &lv_slider_class);
     const bool widget_is_dropdown = widget && lv_obj_check_type(widget, &lv_dropdown_class);
+#if FACTORY_WATCH_UI
+    /* Watch rows: a slider gets its own full-width line. */
+    const bool small_full_width_widget = widget_is_slider;
+#else
     const bool small_full_width_widget = is_screen_small() && (widget_is_slider || widget_is_dropdown);
+#endif
     const bool widget_owns_focus = ui_widget_owns_card_focus(widget);
 
     /* Non-touch: use lv_btn so encoder can focus; touch: use lv_obj */
@@ -1343,12 +1381,18 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 0, 0);
     lv_obj_set_style_shadow_width(row, 0, 0);
+#if FACTORY_WATCH_UI
+    /* Final padding is set below, once the row's content height is known. */
+    lv_obj_set_style_pad_top(row, 10, 0);
+    lv_obj_set_style_pad_bottom(row, 10, 0);
+#else
     lv_obj_set_style_pad_top(row, 6, 0);
     lv_obj_set_style_pad_bottom(row, 6, 0);
+#endif
     lv_obj_set_flex_flow(row, small_full_width_widget ? LV_FLEX_FLOW_ROW_WRAP : LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 8, 0);
-    lv_obj_set_style_pad_row(row, small_full_width_widget ? 6 : 0, 0);
+    lv_obj_set_style_pad_column(row, FACTORY_WATCH_UI ? 12 : 8, 0);
+    lv_obj_set_style_pad_row(row, small_full_width_widget ? (FACTORY_WATCH_UI ? 12 : 6) : 0, 0);
     lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -1363,11 +1407,18 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
         lv_label_set_text(lbl, title);
         lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_PRIMARY, 0);
         if (use_small_font()) {
-            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_font(lbl, UI_FONT_CAPTION, 0);
         }
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+#if FACTORY_WATCH_UI
+        /* One line, up to about half the row; dots if it still does not fit. */
+        lv_obj_set_width(lbl, LV_SIZE_CONTENT);
+        lv_obj_set_style_max_width(lbl, LV_PCT(55), 0);
+        lv_obj_set_height(lbl, lv_font_get_line_height(lv_obj_get_style_text_font(lbl, LV_PART_MAIN)));
+#else
         /* Fixed title width keeps controls aligned without forcing overflow on small screens. */
         lv_obj_set_width(lbl, use_small_font() ? (small_full_width_widget ? 58 : 70) : 100);
+#endif
     }
 
     if (widget && lv_obj_get_style_flex_grow(widget, LV_PART_MAIN) == 0) {
@@ -1429,6 +1480,21 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
         }
     }
 
+#if FACTORY_WATCH_UI
+    /* Pad one-line rows to UI_ROW_MIN_H with the content centred; a value that
+     * wraps still grows the row. (Flex ignores min_height when centring.) */
+    if (!small_full_width_widget) {
+        int32_t content_h = lv_font_get_line_height(lv_obj_get_style_text_font(row, LV_PART_MAIN));
+        if (widget) {
+            int32_t widget_h = lv_obj_get_style_height(widget, LV_PART_MAIN);
+            if (LV_COORD_IS_PX(widget_h)) content_h = LV_MAX(content_h, widget_h);
+        }
+        int32_t pad = LV_MAX(8, (UI_ROW_MIN_H - content_h) / 2);
+        lv_obj_set_style_pad_top(row, pad, 0);
+        lv_obj_set_style_pad_bottom(row, pad, 0);
+    }
+#endif
+
     /* Divider */
     lv_obj_t *div = lv_obj_create(card);
     lv_obj_set_size(div, LV_PCT(95), 1);
@@ -1444,7 +1510,14 @@ lv_obj_t *ui_create_card_slider(lv_obj_t *card, const char *icon, const char *ti
                                  int32_t min, int32_t max, int32_t val, lv_event_cb_t cb)
 {
     lv_obj_t *slider = lv_slider_create(lv_obj_create(card)); /* temp parent, re-parented */
+#if FACTORY_WATCH_UI
+    /* Thicker track, bigger knob and a wider hit area for fingers */
+    lv_obj_set_size(slider, LV_PCT(50), 14);
+    lv_obj_set_style_pad_all(slider, 8, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider, 16);
+#else
     lv_obj_set_size(slider, LV_PCT(50), 12);
+#endif
 
     lv_slider_set_range(slider, min, max);
     lv_slider_set_value(slider, val, LV_ANIM_OFF);
@@ -1462,7 +1535,7 @@ lv_obj_t *ui_create_card_switch(lv_obj_t *card, const char *icon, const char *ti
                                  bool checked, lv_event_cb_t cb)
 {
     lv_obj_t *sw = lv_switch_create(lv_obj_create(card)); /* temp parent, re-parented */
-    lv_obj_set_size(sw, 44, 24);
+    lv_obj_set_size(sw, FACTORY_WATCH_UI ? 64 : 44, FACTORY_WATCH_UI ? 36 : 24);
     if (checked) {
         lv_obj_add_state(sw, LV_STATE_CHECKED);
     }
@@ -1479,8 +1552,12 @@ lv_obj_t *ui_create_card_dropdown(lv_obj_t *card, const char *icon, const char *
     lv_obj_t *dd = lv_dropdown_create(lv_obj_create(card)); /* temp parent */
     lv_dropdown_set_options(dd, options);
     lv_dropdown_set_selected(dd, sel);
+#if FACTORY_WATCH_UI
+    lv_obj_set_size(dd, 190, 48);
+#else
     lv_obj_set_width(dd, is_screen_small() ? LV_PCT(100) : 100);
     lv_obj_set_height(dd, 32);
+#endif
     ui_prepare_dropdown_for_encoder(dd);
 
     if (cb) {
@@ -1494,7 +1571,8 @@ lv_obj_t *ui_create_card_button(lv_obj_t *card, const char *icon, const char *ti
                                  const char *btn_text, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_btn_create(lv_obj_create(card));
-    lv_obj_set_size(btn, LV_SIZE_CONTENT, 32);
+    lv_obj_set_size(btn, LV_SIZE_CONTENT, FACTORY_WATCH_UI ? 48 : 32);
+    if (FACTORY_WATCH_UI) lv_obj_set_style_pad_hor(btn, 20, 0);
     lv_obj_set_style_bg_color(btn, UI_COLOR_ACCENT, 0);
     lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_set_style_border_width(btn, 0, 0);
@@ -1518,7 +1596,7 @@ lv_obj_t *ui_create_card_info(lv_obj_t *card, const char *icon, const char *titl
     lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_RIGHT, 0);
     if (use_small_font()) {
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(lbl, UI_FONT_CAPTION, 0);
     }
     lv_obj_set_flex_grow(lbl, 1);
 

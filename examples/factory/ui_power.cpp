@@ -228,14 +228,14 @@ static lv_obj_t *create_action_button(lv_obj_t *parent, const char *icon, const 
     lv_obj_t *title_label = lv_label_create(text_column);
     lv_label_set_text(title_label, title);
     lv_obj_set_width(title_label, LV_PCT(100));
-    lv_obj_set_style_text_font(title_label, small ? &lv_font_montserrat_14 : &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(title_label, small ? UI_FONT_SMALL : &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title_label, UI_COLOR_TEXT_PRIMARY, 0);
 
     lv_obj_t *detail_label = lv_label_create(text_column);
     lv_label_set_text(detail_label, detail);
     lv_label_set_long_mode(detail_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(detail_label, LV_PCT(100));
-    lv_obj_set_style_text_font(detail_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(detail_label, UI_FONT_CAPTION, 0);
     lv_obj_set_style_text_color(detail_label,
                                 primary ? lv_color_hex(0xF4F4F4) : UI_COLOR_TEXT_SECONDARY, 0);
 
@@ -273,7 +273,7 @@ static void create_power_overview(lv_obj_t *parent, hw_power_off_mode_t mode)
 
     lv_obj_t *eyebrow = lv_label_create(overview);
     lv_label_set_text(eyebrow, power_mode_eyebrow(mode));
-    lv_obj_set_style_text_font(eyebrow, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(eyebrow, UI_FONT_CAPTION, 0);
     lv_obj_set_style_text_color(eyebrow, mode_color, 0);
 
     lv_obj_t *title = lv_label_create(overview);
@@ -286,7 +286,7 @@ static void create_power_overview(lv_obj_t *parent, hw_power_off_mode_t mode)
     lv_label_set_text(description, hw_get_device_power_tips_string());
     lv_label_set_long_mode(description, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(description, LV_PCT(100));
-    lv_obj_set_style_text_font(description, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(description, UI_FONT_CAPTION, 0);
     lv_obj_set_style_text_color(description, UI_COLOR_TEXT_SECONDARY, 0);
 
     lv_obj_t *meta = lv_obj_create(overview);
@@ -302,11 +302,11 @@ static void create_power_overview(lv_obj_t *parent, hw_power_off_mode_t mode)
 
     lv_obj_t *controller = lv_label_create(meta);
     lv_label_set_text_fmt(controller, "CTRL  %s", hw_get_power_controller_name());
-    lv_obj_set_style_text_font(controller, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(controller, UI_FONT_CAPTION, 0);
     lv_obj_set_style_text_color(controller, UI_COLOR_TEXT_SECONDARY, 0);
 
     power_status_label = lv_label_create(meta);
-    lv_obj_set_style_text_font(power_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(power_status_label, UI_FONT_CAPTION, 0);
 }
 
 void ui_power_enter(lv_obj_t *parent)

@@ -16,7 +16,7 @@ LV_FONT_DECLARE(font_alibaba_100);
 LV_FONT_DECLARE(font_alibaba_24);
 
 #define FACE_SLOT_COUNT        4
-#define FACE_SLOT_W            168
+#define FACE_SLOT_W            196
 #define FACE_SLOT_H            64
 #define FACE_SLOT_MARGIN_X     28   /* Keeps slots clear of the rounded screen corners */
 #define FACE_SLOT_MARGIN_Y     22
@@ -155,7 +155,9 @@ static void face_slot_create(face_slot_t *slot, uint32_t index, const face_slot_
     lv_obj_set_style_text_font(slot->value, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(slot->value, UI_COLOR_TEXT_PRIMARY, 0);
     lv_label_set_long_mode(slot->value, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(slot->value, 1);
     lv_obj_set_flex_grow(slot->value, 1);
+    lv_obj_set_height(slot->value, lv_font_get_line_height(&lv_font_montserrat_20));
     if (slot->type == FACE_SLOT_APP) {
         lv_label_set_text(slot->value, entry->name);
     }
