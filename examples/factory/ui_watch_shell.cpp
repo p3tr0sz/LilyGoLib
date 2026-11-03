@@ -7,6 +7,7 @@
  *   watch face --swipe up--> app list --tap--> app
  *   back (swipe right) returns app -> list (or face, if launched from a face slot) -> face.
  * Idle time on the face or list turns the screen off; any wake source returns to the face.
+ * With lock mode "Clock", idle first shows a clock page for one more timeout.
  */
 #include "ui_define.h"
 #include "ui_watch_shell.h"
@@ -158,8 +159,28 @@ void watch_shell_on_app_exit(void)
     }
 }
 
+static void lock_show(void)
+{
+    list_reset_hidden();
+    app_list_scroll_to_top();
+    view = WATCH_VIEW_LOCK;
+    lock_clock_show();
+    /* The screen turns off after another full timeout. */
+    lv_display_trigger_activity(NULL);
+}
+
+void watch_shell_unlock(void)
+{
+    if (view != WATCH_VIEW_LOCK) return;
+    lock_clock_hide();
+    view = WATCH_VIEW_FACE;
+    watch_face_update();
+    lv_display_trigger_activity(NULL);
+}
+
 static void screen_wake(uint8_t brightness)
 {
+    lock_clock_hide();
     list_reset_hidden();
     app_list_scroll_to_top();
     view = WATCH_VIEW_FACE;
@@ -231,6 +252,10 @@ void watch_shell_poll(void)
     uint32_t timeout = hw_get_disp_timeout_ms();
     if (timeout == 0 || !get_enter_low_power_flag()) return;
     if (lv_display_get_inactive_time(NULL) < timeout) return;
+    if (view != WATCH_VIEW_LOCK && hw_get_watch_lock_mode() == WATCH_LOCK_CLOCK) {
+        lock_show();
+        return;
+    }
     screen_off();
 }
 

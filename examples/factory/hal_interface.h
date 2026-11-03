@@ -1305,6 +1305,45 @@ void hw_set_keyboard_navigation_enabled(bool enabled);
 bool hw_get_touch_guide_dismissed(void);
 void hw_set_touch_guide_dismissed(bool dismissed);
 
+/* ── Watch face and lock screen (FACTORY_WATCH_UI) ──
+ * Stored in spare settings bytes; zero means the built-in default, so
+ * settings saved before these existed still load. */
+#define WATCH_FACE_SLOT_COUNT   4
+
+typedef enum {
+    WATCH_LOCK_OFF = 0,     /* Screen off when idle */
+    WATCH_LOCK_CLOCK,       /* Clock page for one more timeout, then screen off */
+    WATCH_LOCK_MODE_COUNT,
+} watch_lock_mode_t;
+
+typedef enum {
+    WATCH_SLOT_DEFAULT = 0, /* The built-in choice for that corner */
+    WATCH_SLOT_NONE,
+    WATCH_SLOT_APP,
+    WATCH_SLOT_BATTERY,
+    WATCH_SLOT_WIFI,
+    WATCH_SLOT_DATE,
+    WATCH_SLOT_STEPS,
+    WATCH_SLOT_CALORIES,
+    WATCH_SLOT_TYPE_COUNT,
+} watch_slot_type_t;
+
+typedef struct {
+    uint8_t type;           /* watch_slot_type_t */
+    uint32_t app_hash;      /* WATCH_SLOT_APP: hash of the app's name */
+} watch_slot_setting_t;
+
+uint8_t hw_get_watch_lock_mode(void);
+void hw_set_watch_lock_mode(uint8_t mode);
+watch_slot_setting_t hw_get_watch_face_slot(uint8_t index);
+void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot);
+
+/* Pedometer: the BHI260AP step counter on boards with USING_BHI260_SENSOR,
+ * a fixed count on desktop. It runs only while enabled, to save power. */
+void hw_set_step_counter_enabled(bool enabled);
+/* Steps since midnight; false while no pedometer is available. */
+bool hw_get_step_count(uint32_t &steps);
+
 /**
  * @brief Get the display timeout in milliseconds.
  *

@@ -47,9 +47,15 @@ typedef struct {
     uint8_t haptic_effect;
     uint8_t touch_guide_dismissed;
     uint8_t keyboard_navigation_mode;
+    // Watch UI. Byte fields only, so the layout and blob size stay the same.
+    uint8_t watch_lock_mode;
+    uint8_t watch_face_slots[WATCH_FACE_SLOT_COUNT][5]; // type, then app hash (little endian)
     // Keep the blob size stable when adding small persisted settings later.
-    uint8_t reserved[59];
+    uint8_t reserved[38];
 } app_settings_storage_t;
+static_assert(offsetof(app_settings_storage_t, reserved) + 38 ==
+              offsetof(app_settings_storage_t, watch_lock_mode) + 59,
+              "Watch settings must fit in the old spare bytes");
 
 static user_setting_params_t user_setting;
 static app_settings_storage_t app_settings;
@@ -366,6 +372,14 @@ static void normalize_app_settings(app_settings_storage_t &settings)
     settings.keyboard_navigation_mode =
         settings.keyboard_navigation_mode == KEYBOARD_NAV_DISABLED ?
         KEYBOARD_NAV_DISABLED : KEYBOARD_NAV_ENABLED;
+    if (settings.watch_lock_mode >= WATCH_LOCK_MODE_COUNT) {
+        settings.watch_lock_mode = WATCH_LOCK_OFF;
+    }
+    for (uint8_t i = 0; i < WATCH_FACE_SLOT_COUNT; i++) {
+        if (settings.watch_face_slots[i][0] >= WATCH_SLOT_TYPE_COUNT) {
+            settings.watch_face_slots[i][0] = WATCH_SLOT_DEFAULT;
+        }
+    }
 }
 
 static void apply_app_settings(const app_settings_storage_t &settings)
@@ -2325,6 +2339,47 @@ void hw_set_touch_guide_dismissed(bool dismissed)
 #endif
 }
 
+uint8_t hw_get_watch_lock_mode(void)
+{
+    return app_settings.watch_lock_mode < WATCH_LOCK_MODE_COUNT ?
+           app_settings.watch_lock_mode : (uint8_t)WATCH_LOCK_OFF;
+}
+
+void hw_set_watch_lock_mode(uint8_t mode)
+{
+    if (mode >= WATCH_LOCK_MODE_COUNT || mode == app_settings.watch_lock_mode) return;
+    app_settings.watch_lock_mode = mode;
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
+watch_slot_setting_t hw_get_watch_face_slot(uint8_t index)
+{
+    watch_slot_setting_t slot = {WATCH_SLOT_DEFAULT, 0};
+    if (index >= WATCH_FACE_SLOT_COUNT) return slot;
+    const uint8_t *stored = app_settings.watch_face_slots[index];
+    slot.type = stored[0] < WATCH_SLOT_TYPE_COUNT ? stored[0] : (uint8_t)WATCH_SLOT_DEFAULT;
+    slot.app_hash = (uint32_t)stored[1] | ((uint32_t)stored[2] << 8) |
+                    ((uint32_t)stored[3] << 16) | ((uint32_t)stored[4] << 24);
+    return slot;
+}
+
+void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot)
+{
+    if (index >= WATCH_FACE_SLOT_COUNT || slot.type >= WATCH_SLOT_TYPE_COUNT) return;
+    uint8_t stored[5] = {
+        slot.type,
+        (uint8_t)slot.app_hash, (uint8_t)(slot.app_hash >> 8),
+        (uint8_t)(slot.app_hash >> 16), (uint8_t)(slot.app_hash >> 24),
+    };
+    if (memcmp(app_settings.watch_face_slots[index], stored, sizeof(stored)) == 0) return;
+    memcpy(app_settings.watch_face_slots[index], stored, sizeof(stored));
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
 const uint32_t hw_get_disp_timeout_ms()
 {
     return user_setting.disp_timeout_second * 1000UL;
@@ -4199,6 +4254,101 @@ void hw_unregister_imu_process()
 #endif // ARDUINO
 }
 
+/* ── Pedometer ── */
+#if defined(ARDUINO) && defined(USING_BHI260_SENSOR)
+static bool step_counter_wanted = false;
+static bool step_counter_configured = false;
+static bool step_counter_have_raw = false;
+static uint32_t step_counter_last_raw = 0;
+static uint32_t step_count_today = 0;
+static int step_count_day = -1;     /* tm_yday that step_count_today belongs to */
+
+static void step_count_roll_day(void)
+{
+    struct tm timeinfo = {};
+    hw_get_date_time(timeinfo);
+    if (timeinfo.tm_yday != step_count_day) {
+        step_count_day = timeinfo.tm_yday;
+        step_count_today = 0;
+    }
+}
+
+static void step_counter_data_process(uint8_t sensor_id, const uint8_t *data, uint32_t size,
+                                      uint64_t *timestamp, void *user_data)
+{
+    (void)sensor_id;
+    (void)size;
+    (void)timestamp;
+    (void)user_data;
+
+    uint32_t raw = bhy2_parse_step_counter(data);
+    step_count_roll_day();
+    /* The sensor counts from its own reset, so add only the difference. */
+    if (step_counter_have_raw) {
+        step_count_today += raw >= step_counter_last_raw ? raw - step_counter_last_raw : raw;
+    }
+    step_counter_last_raw = raw;
+    step_counter_have_raw = true;
+}
+
+/* The BHI260AP comes online after a deferred init, so this is retried on each read. */
+static void step_counter_apply(void)
+{
+    if (step_counter_wanted == step_counter_configured ||
+            !(hw_get_device_online() & HW_BHI260AP_ONLINE)) {
+        return;
+    }
+    if (step_counter_wanted) {
+        // On-change sensor: it reports only when the count changes.
+        bool ok = instance.sensor.configure(BoschSensorID::STEP_COUNTER, 1.0f, 0);
+        ok = instance.sensor.onResultEvent(BoschSensorID::STEP_COUNTER,
+                                           step_counter_data_process) && ok;
+        if (!ok) {
+            instance.sensor.configure(BoschSensorID::STEP_COUNTER, 0, 0);
+            instance.sensor.removeResultEvent(BoschSensorID::STEP_COUNTER, step_counter_data_process);
+            step_counter_wanted = false;    /* Retry only when asked again */
+            LILYGO_LOG_E("BHI260 step counter enable failed");
+            return;
+        }
+        step_counter_have_raw = false;
+        step_counter_configured = true;
+        LILYGO_LOG_I("BHI260 step counter enabled");
+    } else {
+        instance.sensor.configure(BoschSensorID::STEP_COUNTER, 0, 0);
+        instance.sensor.removeResultEvent(BoschSensorID::STEP_COUNTER, step_counter_data_process);
+        step_counter_configured = false;
+        LILYGO_LOG_I("BHI260 step counter disabled");
+    }
+}
+#endif
+
+void hw_set_step_counter_enabled(bool enabled)
+{
+#if defined(ARDUINO) && defined(USING_BHI260_SENSOR)
+    step_counter_wanted = enabled;
+    step_counter_apply();
+#else
+    (void)enabled;
+#endif
+}
+
+bool hw_get_step_count(uint32_t &steps)
+{
+#if defined(ARDUINO) && defined(USING_BHI260_SENSOR)
+    step_counter_apply();
+    if (!step_counter_configured) return false;
+    step_count_roll_day();
+    steps = step_count_today;
+    return true;
+#elif defined(ARDUINO)
+    steps = 0;
+    return false;
+#else
+    steps = 6420;   /* Desktop: fixed value for repeatable screenshots */
+    return true;
+#endif
+}
+
 void hw_set_keyboard_read_callback(void(*read)(int state, char &c))
 {
 #if defined(ARDUINO) && (defined(USING_INPUT_DEV_KEYBOARD) || defined(USING_TDECK_KEYBOARD))
@@ -4280,6 +4430,13 @@ void hw_low_power_loop()
     // 测试深度睡眠
     // instance.sleep();
     instance.lightSleep();
+#if defined(USING_BHI260_SENSOR)
+    /* The sensor interrupt doesn't wake the watch. Read what the step counter
+     * queued during sleep, or its interrupt line stays high and no new edge comes. */
+    if (step_counter_configured) {
+        instance.sensor.update();
+    }
+#endif
 #endif
 }
 

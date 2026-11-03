@@ -28,6 +28,7 @@ typedef enum {
     WATCH_VIEW_FACE,
     WATCH_VIEW_LIST,
     WATCH_VIEW_APP,
+    WATCH_VIEW_LOCK,    /* Lock mode "Clock": idle clock page before the screen turns off */
 } watch_view_t;
 
 /* Shell (ui_watch_shell.cpp) */
@@ -40,10 +41,26 @@ void watch_shell_list_drag(int32_t dy);
 void watch_shell_list_drag_end(bool open);
 bool watch_shell_input_guard_active(void);
 watch_view_t watch_shell_get_view(void);
+void watch_shell_unlock(void);
+
+/* Lock clock page (setupClock() in ui_main.cpp) */
+void lock_clock_show(void);
+void lock_clock_hide(void);
 
 /* Watch face (ui_watch_face.cpp) */
 lv_obj_t *watch_face_create(lv_obj_t *parent);
 void watch_face_update(void);
+void watch_face_rebuild(void);   /* After the slot settings change */
+/* What a slot shows, with the built-in default resolved. */
+watch_slot_setting_t watch_face_slot_resolved(uint8_t index);
+
+/* Face editor and lock screen pages (ui_watch_face_edit.cpp) */
+uint32_t watch_app_name_hash(const char *name);
+const ui_app_entry_t *watch_app_find_by_hash(uint32_t hash);
+void watch_face_editor_build(lv_obj_t *content);
+void watch_lock_screen_build(lv_obj_t *content);
+/* Open the face editor as an app; slot >= 0 also opens that slot's choices. */
+void watch_face_editor_open(int slot);
 
 /* App list (ui_app_list.cpp) */
 lv_obj_t *app_list_create(lv_obj_t *parent);

@@ -7,6 +7,7 @@
  *
  */
 #include "ui_define.h"
+#include "ui_watch_shell.h"
 
 #define UI_SYS_DEFERRED_PERIOD_MS 10
 #define UI_SYS_LOW_RES_SAFE_MIN_BRIGHTNESS 1
@@ -994,9 +995,12 @@ typedef struct {
     const char *title;
     const char *icon;
     sys_step_range_t ranges[2];
+    void (*build)(lv_obj_t *content);   /* Builds the page instead of the steps */
 } sys_section_t;
 
 static const sys_section_t sys_sections[] = {
+    {"Watch face",  LV_SYMBOL_HOME,     {}, watch_face_editor_build},
+    {"Lock screen", LV_SYMBOL_EYE_CLOSE, {}, watch_lock_screen_build},
     {"Display", LV_SYMBOL_IMAGE,        {{UI_SYS_BUILD_DISPLAY_CARD, UI_SYS_BUILD_ROTARY}}},
     {"Input",   LV_SYMBOL_KEYBOARD,     {{UI_SYS_BUILD_ROTARY, UI_SYS_BUILD_AUDIO}}},
     {"Sound",   LV_SYMBOL_VOLUME_MAX,   {{UI_SYS_BUILD_AUDIO, UI_SYS_BUILD_POWER_CARD}}},
@@ -1010,6 +1014,7 @@ static const sys_section_t sys_sections[] = {
 /* Sections whose steps would add nothing on this board stay off the list. */
 static bool sys_section_available(const sys_section_t *section)
 {
+    if (section->build) return true;
     switch (section->ranges[0].first) {
     case UI_SYS_BUILD_ROTARY:
         return UI_SYS_HAS_ROTARY_STEP_SETTING || UI_SYS_HAS_KEYBOARD_NAV_SETTING;
@@ -1036,6 +1041,11 @@ static void sys_section_open_cb(lv_event_t *e)
 {
     const sys_section_t *section = (const sys_section_t *)lv_event_get_user_data(e);
     sys_build_parent = ui_push_page(lv_event_get_current_target_obj(e), section->title);
+    if (section->build) {
+        section->build(sys_build_parent);
+        sys_build_parent = page_container;
+        return;
+    }
     for (const sys_step_range_t &range : section->ranges) {
         sys_deferred_step = range.first;
         sys_deferred_card = NULL;

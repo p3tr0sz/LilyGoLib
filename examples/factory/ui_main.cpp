@@ -1177,9 +1177,14 @@ lv_obj_t *setupClock()
         font = &font_alibaba_60;
     }
 
+    /* The watch's idle clock has no unlock hint: it sits lower, fills the
+     * screen edge to edge and drops the box-shaped digit shadows. */
+    const bool watch = FACTORY_WATCH_UI;
+
     /* Background with image + dark overlay */
     lv_obj_t *page = lv_obj_create(lv_screen_active());
     lv_obj_set_size(page, LV_PCT(100), LV_PCT(100));
+    if (watch) lv_obj_set_style_pad_all(page, 0, 0);
     lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(page, LV_OBJ_FLAG_CLICKABLE); /* NOT clickable — prevents tap wake */
     lv_obj_set_style_border_width(page, 0, 0);
@@ -1321,7 +1326,7 @@ lv_obj_t *setupClock()
 #endif /* ENABLE_LOCKSCREEN_PARTICLES */
 
     /* ── Time display ── */
-    int y_time = small ? -(phy_ver / 6) : -(phy_ver / 5);
+    int y_time = watch ? -40 : small ? -(phy_ver / 6) : -(phy_ver / 5);
     int gap = small ? 2 : 4; /* gap between digits and colon */
 
     /* Measure digit width to position hour and minute symmetrically */
@@ -1349,7 +1354,7 @@ lv_obj_t *setupClock()
     label = lv_label_create(page);
     lv_obj_set_style_text_font(label, font, 0);
     lv_obj_add_style(label, &ui_styles.accent_text, 0);
-    lv_obj_set_style_shadow_width(label, 20, 0);
+    lv_obj_set_style_shadow_width(label, watch ? 0 : 20, 0);
     lv_obj_set_style_shadow_opa(label, LV_OPA_20, 0);
     lv_obj_set_style_shadow_spread(label, 5, 0);
     lv_label_set_text(label, "12");
@@ -1360,7 +1365,7 @@ lv_obj_t *setupClock()
     label = lv_label_create(page);
     lv_obj_set_style_text_font(label, font, 0);
     lv_obj_add_style(label, &ui_styles.accent_text, 0);
-    lv_obj_set_style_shadow_width(label, 20, 0);
+    lv_obj_set_style_shadow_width(label, watch ? 0 : 20, 0);
     lv_obj_set_style_shadow_opa(label, LV_OPA_20, 0);
     lv_obj_set_style_shadow_spread(label, 5, 0);
     lv_label_set_text(label, "34");
@@ -1374,8 +1379,9 @@ lv_obj_t *setupClock()
     lv_obj_set_style_bg_opa(div, LV_OPA_30, 0);
     lv_obj_set_style_border_width(div, 0, 0);
     lv_obj_set_style_radius(div, 1, 0);
-    lv_obj_align(div, LV_ALIGN_CENTER, 0, y_time + (small ? 30 : 40));
+    lv_obj_align(div, LV_ALIGN_CENTER, 0, y_time + (watch ? 62 : small ? 30 : 40));
 
+#if !FACTORY_WATCH_UI   /* The watch's idle clock goes back to the face on any tap */
     /* ── Unlock hint at bottom ── */
     lv_obj_t *hint = lv_label_create(page);
 #if LOCKSCREEN_HAS_TOUCH_UNLOCK && LOCKSCREEN_HAS_BOOT_UNLOCK
@@ -1402,6 +1408,7 @@ lv_obj_t *setupClock()
     lv_anim_set_repeat_count(&hint_anim, LV_ANIM_REPEAT_INFINITE);
     lv_anim_set_exec_cb(&hint_anim, colon_anim_exec_cb);
     lv_anim_start(&hint_anim);
+#endif
 
     /* BOOT button (GPIO0) unlocks on DeckV2 and non-touch boards. */
 #if LOCKSCREEN_HAS_BOOT_UNLOCK
@@ -1462,7 +1469,11 @@ lv_obj_t *setupClock()
                 lv_anim_set_ready_cb(&a, [](lv_anim_t *a) {
                     hw_enable_feedback();
                     hw_feedback();
+#if FACTORY_WATCH_UI
+                    watch_shell_unlock();
+#else
                     clock_swipe_wake = true;
+#endif
                 });
                 lv_anim_start(&a);
             } else {
@@ -1484,6 +1495,13 @@ lv_obj_t *setupClock()
                 lv_anim_start(&a);
             }
         }
+#if FACTORY_WATCH_UI
+        else if (code == LV_EVENT_CLICKED && LV_ABS(swipe_start_y - p.y) < 20) {
+            /* A tap also goes back to the face; a swipe finishes in its animation. */
+            hw_feedback();
+            watch_shell_unlock();
+        }
+#endif
     }, LV_EVENT_ALL, NULL);
 
     /* ── Date label — below divider ── */
@@ -1491,22 +1509,22 @@ lv_obj_t *setupClock()
     lv_obj_set_style_text_font(label, &font_alibaba_24, 0);
     lv_label_set_text(label, "03-24 Mon");
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_align(label, LV_ALIGN_CENTER, 0, y_time + (small ? 50 : 65));
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, y_time + (watch ? 92 : small ? 50 : 65));
     clock_label.date = label;
 
     /* ── Battery indicator — centered below date ── */
-    int batt_y = y_time + (small ? 70 : 105);
+    int batt_y = y_time + (watch ? 132 : small ? 70 : 105);
 
     lv_obj_t *batt_icon = lv_label_create(page);
     lv_label_set_text(batt_icon, LV_SYMBOL_BATTERY_FULL);
     lv_obj_set_style_text_color(batt_icon, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(batt_icon, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(batt_icon, UI_FONT_CAPTION, 0);
     lv_obj_align(batt_icon, LV_ALIGN_CENTER, -30, batt_y);
     clock_label.battery_icon = batt_icon;
     clock_label.battery_y = batt_y;
 
     label = lv_label_create(page);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_CAPTION, 0);
     lv_label_set_text(label, "100%");
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_align_to(label, batt_icon, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
@@ -1520,6 +1538,32 @@ lv_obj_t *setupClock()
 
     return page;
 }
+
+#if FACTORY_WATCH_UI
+/* Lock mode "Clock": the shell shows this page when idle, over the hidden menu. */
+void lock_clock_show(void)
+{
+    if (!clock_page || !lv_obj_has_flag(clock_page, LV_OBJ_FLAG_HIDDEN)) return;
+    lv_obj_add_flag(main_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_y(clock_page, 0);
+    lv_obj_remove_flag(clock_page, LV_OBJ_FLAG_HIDDEN);
+    if (charge_edge_ref) lv_obj_remove_flag(charge_edge_ref, LV_OBJ_FLAG_HIDDEN);
+    clock_update_datetime(NULL);
+    lv_timer_resume(clock_timer);
+    hw_set_cpu_freq(80);
+}
+
+void lock_clock_hide(void)
+{
+    if (!clock_page || lv_obj_has_flag(clock_page, LV_OBJ_FLAG_HIDDEN)) return;
+    lv_anim_delete(clock_page, NULL);
+    lv_obj_add_flag(clock_page, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_y(clock_page, 0);
+    lv_obj_remove_flag(main_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_pause(clock_timer);
+    hw_set_cpu_freq(240);
+}
+#endif
 
 
 /* ── Battery low handler ── */
@@ -2151,6 +2195,10 @@ void setupGui()
 #if FACTORY_WATCH_UI
     /* ── Watch face home + app list ── */
     watch_shell_setup(menu_panel);
+
+    /* ── Idle clock for lock mode "Clock" ── */
+    clock_page = setupClock();
+    lv_obj_add_flag(clock_page, LV_OBJ_FLAG_HIDDEN);
 #else
     /* ── Build the grid menu ── */
     build_grid_menu(menu_panel);

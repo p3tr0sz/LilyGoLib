@@ -21,8 +21,8 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
 |---|---|---|
 | 1 | Navigation shell: face, app list, swipe-right back, screen off | Done (`78c918b`) |
 | 2 | Readable app pages and full-screen power menu | Done (`36a851d`) |
-| 3 | Settings as nested lists | Done |
-| 4 | Configurable face and lock screen | To do |
+| 3 | Settings as nested lists | Done (`2b433e3`) |
+| 4 | Configurable face and lock screen | Done; steps need checking on hardware |
 
 ### What phases 1–2 changed
 
@@ -61,11 +61,54 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
 - Rows have no icons. Font Size, Theme and Timeout are pickers.
 - Timeout offers Never, 10 s, 15 s, 30 s, 1 min, 2 min and 3 min, instead of a slider with no readout.
 - Button status rows go on the Devices page. They show only on hardware; the simulator has no button monitor.
-- Watch face and Lock screen entries come with phase 4.
 
 **Theme changes:**
 - The app list uses the shared styles, so it follows a new theme.
 - `ui_theme_apply()` no longer adds scrollbars to scaled images such as the face's slot icons.
+
+### What phase 4 changed
+
+**Settings storage (`hal_interface.cpp/.h`):**
+- The lock mode and the 4 face slots take 21 of the 59 spare bytes in `app_settings_storage_t`. They are byte fields only, so the blob keeps its layout and size; a `static_assert` checks this.
+- Zero means "default", so settings saved before phase 4 still load.
+- A slot is `{type, app_hash}`. Apps are stored by an FNV-1a hash of their name, so the order apps are registered in doesn't matter.
+- Accessors: `hw_get/set_watch_lock_mode()` and `hw_get/set_watch_face_slot()`. On desktop they live in memory only, like the other settings.
+
+**Watch face (`ui_watch_face.cpp`):**
+- Slot values: None, Battery, Wi-Fi, Date, Steps, Calories, or any app.
+- Calories are estimated from steps at 0.04 kcal a step.
+- Battery opens Power, Wi-Fi opens WiFi and Date opens Clock Tools. Steps and Calories open nothing.
+- Long-pressing a slot opens the editor straight at that slot's choices; long-pressing elsewhere opens the editor.
+- After a theme change, the slot icons pick up the new accent within a second.
+
+**Face editor and lock screen pages (new `ui_watch_face_edit.cpp`):**
+- Settings now starts with "Watch face" and "Lock screen".
+- Watch face: one picker per corner, listing the values first and then the apps in app-list order.
+- Lock screen: "When idle" is either Screen off (the old behaviour) or Clock.
+- A long press on the face opens the editor as an app of its own, so going back returns to the face.
+
+**Lock mode "Clock" (`ui_watch_shell.cpp`, `ui_main.cpp`):**
+- After the screen timeout, the watch shows the old clock page (`setupClock()`) at 80 MHz.
+  - After another full timeout, the screen turns off.
+  - A tap or a swipe up returns to the face.
+  - Waking from screen off always returns to the face.
+- On the watch, the clock page has no unlock hint. It fills the screen, sits lower, and its digits have no box-shaped shadows. The battery line uses `UI_FONT_CAPTION`. Other boards keep the old lock screen.
+
+**Pedometer (`hal_interface.cpp`):**
+- `hw_get_step_count()` returns steps since midnight. It reads the BHI260AP's step counter (`BoschSensorID::STEP_COUNTER`, on-change, 1 Hz). Desktop returns a fixed 6420.
+- The counter runs only while a face slot shows steps or calories, to save power.
+- Its interrupt can't wake the watch from light sleep. After each wake, `hw_low_power_loop()` reads the sensor's queued data, so the interrupt line doesn't stay high and stall later updates.
+- Steps start counting from 0 when the counter is switched on or the watch boots. The count resets at midnight.
+
+## Phase 4 follow-ups
+
+- **Check on hardware:**
+  - Steps count while walking, keep counting through screen off, and reset at midnight.
+  - Light-sleep current with and without a steps slot. The BHI260AP keeps running while the counter is on.
+  - The settings survive a reboot, and a watch flashed with older settings still boots to the default face.
+- **Steps survive only until reboot.** Keeping today's count across a reboot would need it saved, e.g. to NVS a few times a day.
+- **Corner picker length:** values plus every app make a long list (about 35 rows). Grouping apps on their own page, with icons, would be quicker to scroll.
+- **Lock clock:** the page still has two breathing glow animations. They redraw large areas while the clock is shown; drop them on the watch if the lock mode costs too much battery.
 
 ## Phase 3 follow-ups
 
@@ -76,29 +119,16 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
   - Apps that build `lv_dropdown` directly (the rest of the 23 files) need a closer look.
 - **Charge Current** is a slider of charger levels with no readout. A picker of currents in mA would be clearer.
 - **Theme picker:** the options could show a colour swatch.
-- **Watch face:** the slot icons keep the old accent colour until a reboot after a theme change. Fix this as part of phase 4.
 
 ## Phase 2 follow-ups
 
-- **Font migration:** 147 hard-coded `lv_font_montserrat_10/12/14` uses remain in 39 files. The ones in `ui_main.cpp` are in the old launcher and lock-screen code, which the watch no longer uses.
+- **Font migration:** about 145 hard-coded `lv_font_montserrat_10/12/14` uses remain in 39 files. Most of those in `ui_main.cpp` are in the old launcher, which the watch doesn't use. The lock-screen page is used again for lock mode "Clock", and its battery line now uses the token.
   - Migrate the rest as each app is reviewed in the simulator.
   - For each file: replace `_10`, `_12` and `_14` with `UI_FONT_TINY`, `UI_FONT_CAPTION` and `UI_FONT_SMALL`, then fix anything that no longer fits.
   - Largest: `ui_compass` 14, `ui_wifi_analyzer` 9, `ui_nfc_emulation` 9, `ui_ina219` 8, `ui_thermal` 7, `ui_music_player` 7, `ui_sensor` 6, `ui_sd_manager` 6, `ui_lora_hub` 6.
 - **Compass** isn't in the simulator build (`EXCLUDE_COMPASS` on desktop). Its dial is laid out by hand, so it needs checking on hardware after its fonts change.
 - **Apps that set their own sizes:** some override sizes after using the shared helpers, e.g. `lv_obj_set_width(dd, …)` on dropdowns. Clock Tools was fixed; check the others (23 files use dropdowns), or move them to pickers (see Phase 3 follow-ups).
 - **App names:** shown as registered (e.g. "Setting", "DisplayTest"). Watch-friendly names could be passed to `register_app()` under the flag.
-
-## Phase 4: Configurable face and lock screen
-
-- **Persisted settings** go in the 59 spare bytes of `app_settings_storage_t` (`hal_interface.cpp`). Spare bytes read as zero, which means "default", so existing saved settings still load.
-  - `lock_mode`: 0 = Off (black, current behaviour), 1 = Clock.
-  - 4 face slots, each `{type, id}`. An app is stored by a hash of its name, so the order apps are registered in doesn't matter.
-  - New `hw_get/set_watch_*` functions, kept in memory on desktop.
-- **Settings entries:** add "Watch face" and "Lock screen" at the top of the Settings list (`sys_sections` in `ui_sys.cpp`), using `ui_push_page()` for their pages.
-- **Slot editor:** opened from Settings → Watch face, or by long-pressing the face. Tap a slot, then choose a value or an app with the Phase 3 picker.
-- **Values for slots:** battery and Wi-Fi exist today. Add date, steps and calories (estimated from steps).
-  - Steps needs HAL work: the Ultra's BHI260AP is only used as an IMU, so its step-counter sensor must be enabled. This can only be verified on hardware; desktop returns fixed values.
-- **Lock mode "Clock":** reuse the old clock page (`setupClock()` in `ui_main.cpp`, without the unlock hint) until the display timeout, then go black.
 
 ## Later
 
@@ -129,10 +159,12 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
   ```
   - Swipe up on the face for the app list, and swipe right to go back.
   - Settings: open a section, then a picker (e.g. Display → Theme). Each swipe right goes back one page.
+  - Long-press a face corner to change it. Steps show a fixed 6420 on desktop.
+  - Lock mode: set Settings → Display → Timeout to 10 s and Settings → Lock screen to Clock. Then leave the face idle; set the timeout back afterwards.
   - F2 opens the power menu, standing in for holding PWR.
   - When the screen times out it shows a black overlay; click to wake.
 - **Hardware:**
   ```bash
   pio run -e twatch_ultra -t upload
   ```
-  Check that PWR, BOOT and touch wake the watch to the face, and that light-sleep current is unchanged.
+  Check that PWR, BOOT and touch wake the watch to the face, and that light-sleep current is unchanged. For phase 4, also see the hardware checks under Phase 4 follow-ups.
