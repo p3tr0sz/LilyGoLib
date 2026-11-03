@@ -864,7 +864,9 @@ void ui_sd_manager_enter(lv_obj_t *parent)
                                     LV_SYMBOL_EYE_OPEN " View", UI_COLOR_ACCENT, view_btn_cb);
     delete_btn = create_action_button(card, LV_SYMBOL_TRASH, "Delete",
                                       LV_SYMBOL_TRASH " Delete", UI_COLOR_WARNING, delete_btn_cb);
-    ui_create_card_button(card, LV_SYMBOL_TRASH, "Logs", "Clean Logs", clean_logs_cb);
+    ui_require_hold(delete_btn);
+    lv_obj_t *logs_row = ui_create_card_button(card, LV_SYMBOL_TRASH, "Logs", "Clean Logs", clean_logs_cb);
+    ui_require_hold(lv_obj_get_child(logs_row, -1));
 
     card = ui_create_card(page_container, "Selected");
     add_info_row(card, LV_SYMBOL_FILE, "Path", "--", &selected_label);

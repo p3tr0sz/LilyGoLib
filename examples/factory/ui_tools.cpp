@@ -326,6 +326,10 @@ static void ui_slider_encoder_guard_event_cb(lv_event_t *e)
         break;
     case LV_EVENT_PRESSED:
     case LV_EVENT_PRESSING:
+#if FACTORY_WATCH_UI
+        /* Touch: a vertical drag scrolls the page instead, and LVGL then leaves the slider alone. */
+        if (indev_type == LV_INDEV_TYPE_POINTER) break;
+#endif
         ui_slider_lock_parent_scroll(slider);
         break;
     case LV_EVENT_VALUE_CHANGED: {
@@ -371,6 +375,11 @@ static void ui_slider_encoder_guard_event_cb(lv_event_t *e)
 
     /* LVGL slider re-enables scroll-chain on size/release; keep it local. */
     lv_obj_remove_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN);
+#if FACTORY_WATCH_UI
+    /* ...except across the slider, so the page can scroll from it. */
+    lv_obj_add_flag(slider, lv_obj_get_width(slider) >= lv_obj_get_height(slider) ?
+                    LV_OBJ_FLAG_SCROLL_CHAIN_VER : LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+#endif
 }
 
 void ui_prepare_slider_for_encoder(lv_obj_t *slider)
@@ -382,6 +391,9 @@ void ui_prepare_slider_for_encoder(lv_obj_t *slider)
         lv_group_add_obj(group, slider);
     }
     lv_obj_remove_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN);
+#if FACTORY_WATCH_UI
+    lv_obj_add_flag(slider, LV_OBJ_FLAG_SCROLL_CHAIN_VER);
+#endif
     lv_obj_add_flag(slider, LV_OBJ_FLAG_SCROLL_ON_FOCUS);
     lv_obj_set_style_margin_left(slider, is_screen_small() ? 0 : 8, 0);
     lv_obj_set_style_margin_right(slider, is_screen_small() ? 0 : 8, 0);
@@ -732,6 +744,79 @@ static void ui_msgbox_keyboard_back_cb(lv_event_t *e)
     lv_async_call(ui_msgbox_keyboard_back_async_cb, cancel_button);
 }
 
+#if FACTORY_WATCH_UI
+/* Single-button messages close on a tap anywhere. Deferred like the keyboard back,
+ * because the button's handler deletes the message. */
+static void ui_msgbox_tap_anywhere_cb(lv_event_t *e)
+{
+    lv_async_call(ui_msgbox_keyboard_back_async_cb, lv_event_get_user_data(e));
+}
+
+/* Watch messages fill the screen. Buttons become stacked pills; the last one
+ * (cancel, as for Esc) is plain text and a swipe right presses it. */
+static void ui_msgbox_watch_layout(lv_obj_t *msgbox, lv_obj_t *title_obj, lv_obj_t *text_obj,
+                                   lv_obj_t *last_btn, uint32_t btn_cnt)
+{
+    lv_obj_set_size(msgbox, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_radius(msgbox, 0, 0);
+    lv_obj_set_style_border_width(msgbox, 0, 0);
+    lv_obj_set_style_bg_color(msgbox, UI_COLOR_BG, 0);
+    lv_obj_set_style_pad_hor(msgbox, 40, 0);
+    lv_obj_set_style_pad_ver(msgbox, 20, 0);
+
+    lv_obj_t *header = lv_msgbox_get_header(msgbox);
+    if (header) {
+        lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+        lv_obj_set_height(header, LV_SIZE_CONTENT);
+    }
+    if (title_obj) {
+        lv_obj_set_flex_grow(title_obj, 1);
+        lv_obj_set_style_text_align(title_obj, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(title_obj, &lv_font_montserrat_24, 0);
+    }
+    if (text_obj) {
+        lv_obj_set_style_text_align(text_obj, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(text_obj, UI_FONT_BODY, 0);
+    }
+
+    lv_obj_t *content = lv_msgbox_get_content(msgbox);
+    if (content) {
+        lv_obj_set_flex_align(content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
+    }
+
+    lv_obj_t *footer = lv_msgbox_get_footer(msgbox);
+    if (footer) {
+        lv_obj_set_style_bg_opa(footer, LV_OPA_TRANSP, 0);
+        lv_obj_set_height(footer, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(footer, 8, 0);
+        uint32_t count = lv_obj_get_child_count(footer);
+        for (uint32_t i = 0; i < count; i++) {
+            lv_obj_t *b = lv_obj_get_child(footer, i);
+            bool plain = count > 1 && b == last_btn;
+            lv_obj_set_size(b, LV_PCT(100), plain ? 52 : 64);
+            lv_obj_set_flex_grow(b, 0);
+            lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_shadow_width(b, 0, 0);
+            lv_obj_set_style_bg_color(b, UI_COLOR_ACCENT, 0);
+            lv_obj_set_style_bg_opa(b, plain ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+            lv_obj_set_style_text_font(b, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_color(b, UI_COLOR_TEXT_PRIMARY, 0);
+        }
+    }
+
+    if (!last_btn) return;
+    ui_enable_edge_swipe_back(msgbox, last_btn, LV_EVENT_CLICKED);
+    if (btn_cnt == 1) {
+        lv_obj_t *areas[] = { msgbox, header, content };
+        for (size_t i = 0; i < sizeof(areas) / sizeof(areas[0]); i++) {
+            if (areas[i]) lv_obj_add_event_cb(areas[i], ui_msgbox_tap_anywhere_cb, LV_EVENT_CLICKED, last_btn);
+        }
+    }
+}
+#endif
+
 lv_obj_t *create_msgbox(lv_obj_t *parent, const char *title_txt,
                         const char *msg_txt, const char **btns,
                         lv_event_cb_t btns_event_cb, void *user_data)
@@ -803,6 +888,10 @@ lv_obj_t *create_msgbox(lv_obj_t *parent, const char *title_txt,
         lv_obj_set_style_text_color(text_obj, UI_COLOR_TEXT_PRIMARY, 0);
         lv_obj_set_style_text_font(text_obj, &lv_font_montserrat_14, 0);
     }
+
+#if FACTORY_WATCH_UI
+    ui_msgbox_watch_layout(msgbox, title_obj, text_obj, btn, btn_cnt);
+#endif
 
     return msgbox;
 
@@ -1509,6 +1598,10 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
 lv_obj_t *ui_create_card_slider(lv_obj_t *card, const char *icon, const char *title,
                                  int32_t min, int32_t max, int32_t val, lv_event_cb_t cb)
 {
+#if FACTORY_WATCH_UI
+    /* No sliders in scrolling lists: the row opens a level page. */
+    return ui_create_card_level(card, icon, title, min, max, val, cb);
+#endif
     lv_obj_t *slider = lv_slider_create(lv_obj_create(card)); /* temp parent, re-parented */
 #if FACTORY_WATCH_UI
     /* Thicker track, bigger knob and a wider hit area for fingers */
@@ -1531,6 +1624,21 @@ lv_obj_t *ui_create_card_slider(lv_obj_t *card, const char *icon, const char *ti
     return ui_create_card_item(card, icon, title, slider);
 }
 
+#if FACTORY_WATCH_UI
+static void ui_switch_row_click_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_user_data(e);
+    if (lv_obj_has_state(sw, LV_STATE_DISABLED)) return;
+    if (lv_obj_has_state(sw, LV_STATE_CHECKED)) {
+        lv_obj_remove_state(sw, LV_STATE_CHECKED);
+    } else {
+        lv_obj_add_state(sw, LV_STATE_CHECKED);
+    }
+    hw_feedback();
+    lv_obj_send_event(sw, LV_EVENT_VALUE_CHANGED, NULL);
+}
+#endif
+
 lv_obj_t *ui_create_card_switch(lv_obj_t *card, const char *icon, const char *title,
                                  bool checked, lv_event_cb_t cb)
 {
@@ -1543,7 +1651,18 @@ lv_obj_t *ui_create_card_switch(lv_obj_t *card, const char *icon, const char *ti
         lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
     }
 
+#if FACTORY_WATCH_UI
+    /* The whole row is the tap target, so taps on the switch fall through to it. */
+    lv_obj_remove_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *row = ui_create_card_item(card, icon, title, sw);
+    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_add_event_cb(row, ui_switch_row_click_cb, LV_EVENT_CLICKED, sw);
+    return row;
+#else
     return ui_create_card_item(card, icon, title, sw);
+#endif
 }
 
 lv_obj_t *ui_create_card_dropdown(lv_obj_t *card, const char *icon, const char *title,

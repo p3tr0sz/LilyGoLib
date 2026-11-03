@@ -1623,6 +1623,7 @@ void ui_lorawan_lr1121_enter(lv_obj_t *parent)
     send_button = row_widget(row);
     row = ui_create_card_button(card, LV_SYMBOL_TRASH, "Session", "Reset", reset_session_cb);
     reset_button = row_widget(row);
+    ui_require_hold(reset_button);
 
     bool created = false;
     bool ok = load_config_file(&created);

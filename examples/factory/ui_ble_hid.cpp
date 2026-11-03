@@ -349,8 +349,9 @@ void ui_ble_hid_enter(lv_obj_t *parent)
     delta_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
     row = ui_create_card_info(status_card, LV_SYMBOL_OK, "Button", "--  0");
     button_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
-    ui_create_card_button(status_card, LV_SYMBOL_CLOSE, "Connection", "Forget",
-                          disconnect_forget_cb);
+    row = ui_create_card_button(status_card, LV_SYMBOL_CLOSE, "Connection", "Forget",
+                                disconnect_forget_cb);
+    ui_require_hold(lv_obj_get_child(row, -1));
 
     lv_obj_t *slider = lv_slider_create(lv_obj_create(status_card));
     lv_slider_set_range(slider, BLE_HID_SENS_MIN, BLE_HID_SENS_MAX);

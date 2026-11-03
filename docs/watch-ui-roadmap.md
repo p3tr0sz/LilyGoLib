@@ -15,6 +15,18 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
   - PWR: wake, long press opens the power menu, 6 s hard power-off.
   - BOOT: download mode.
 
+### Interaction rules (Mi Band style)
+
+Every control is used with one gesture: a tap, a vertical scroll, a swipe right or a long press.
+
+- **Tap:** a whole row is the tap target. A row opens a page, toggles a switch, or runs one action. There is never a small button inside a row.
+- **Choosing an option:** a radio list with a check mark (`ui_create_card_picker()`), never a dropdown.
+- **Changing a level:** the row shows the value ("Brightness 60% ›"). Tapping it opens a full-screen page with −/+ and a big bar. Sliders never sit in a scrolling list.
+- **Actions:** a full-width pill with one verb ("Scan", "Set clock"). On a page with a question, one pill and a swipe right to go back.
+- **Actions that can't be undone** (power off, restart, delete, forget): press and hold until the fill completes. A short tap only shows "Hold to confirm".
+- **Messages:** full screen. A tap anywhere or a swipe right closes a message with one button.
+- **No typing on the watch where it can be avoided:** pick from presets. A keyboard, if one is still needed, is full screen.
+
 ## Status
 
 | Phase | What | State |
@@ -23,6 +35,69 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
 | 2 | Readable app pages and full-screen power menu | Done (`36a851d`) |
 | 3 | Settings as nested lists | Done (`2b433e3`) |
 | 4 | Configurable face and lock screen | Done; steps need checking on hardware |
+| 5 | One-gesture shared controls: level pages, hold to confirm, whole-row switches, full-screen messages | Done |
+| 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Planned |
+| 7 | No typing: presets instead of keyboards | Planned |
+
+## Next phases
+
+An audit on 2026-11-03 compared every app in the simulator with the Mi Band (see "Interaction rules" above). Navigation already matched; app pages did not.
+
+### Phase 5: one-gesture shared controls
+
+Changes in the shared helpers, so every app gets them at once:
+- **Level rows** (`ui_create_card_slider()` on the watch): the row shows the value and a chevron and opens a full-screen page with −/+ (hold to repeat) and a thick bar. The row keeps a hidden `lv_slider` as its last child, so callbacks that call `lv_slider_get_value()` keep working.
+  - **Bug this fixes:** a vertical scroll that started on a slider set the slider to the touch point instead of scrolling (Vibration jumped from Effect 1 to 59). The slider guard turned off the parent's scrolling on every press.
+  - Sliders that apps build themselves no longer lock the parent's scrolling on a touch press, so a vertical drag scrolls the page. LVGL then leaves the slider alone.
+- **Hold to confirm** (`ui_require_hold()`): on the watch a short tap shows "Hold to confirm", and holding fills the control for about 0.8 s and then runs it. Used for:
+  - Power menu: Power Off and Restart.
+  - Power app: Power Off and Restart.
+  - SD Manager: Delete and Clean Logs.
+  - WiFi Forget, BLE HID Forget, LoRaWAN session reset.
+- **Whole-row switches** (`ui_create_card_switch()`): a tap anywhere on the row toggles it.
+- **Full-screen messages** (`create_msgbox()` on the watch): full screen, larger text, buttons as stacked full-width pills. A swipe right presses the last button (the same one Esc presses). A message with one button also closes on a tap anywhere.
+
+### What phase 5 changed
+
+**`ui_watch_pages.cpp`** (declared in `ui_define.h`):
+- **`ui_create_card_level()`:** what `ui_create_card_slider()` returns on the watch.
+  - The row shows "24% ›". 0–100 and 0–255 ranges show a share of the maximum; other ranges (e.g. Waveform 1–117) show the number.
+  - The row's children end with value, chevron and a hidden `lv_slider` (the model). `row_widget()`-style `lv_obj_get_child(row, -1)` still returns the slider.
+  - The page has −/+ (96 px, hold to repeat, 20 steps from end to end) and a 28 px bar. It doesn't scroll. A swipe right that starts on the bar moves the bar instead of going back.
+  - The page sets the model and sends `LV_EVENT_VALUE_CHANGED` to it, then shows the value the app kept.
+- **`ui_require_hold(obj)`:** a preprocess `LV_EVENT_CLICKED` handler blocks the control's own click handlers. Holding for 800 ms sweeps a white fill across it, then sends the click. A short tap shows the "Hold to confirm" toast; a scroll cancels the hold. It does nothing on other boards.
+- **`ui_toast(text)`:** a pill at the bottom of the top layer that goes away after 1.4 s.
+
+**`ui_tools.cpp`, on the watch:**
+- `ui_create_card_switch()`: the switch isn't clickable, so the whole row takes the tap, toggles it and sends `LV_EVENT_VALUE_CHANGED` to the switch.
+- `create_msgbox()`: fills the screen. The title is 24 px, the text `UI_FONT_BODY`, both centred. Buttons are stacked full-width pills; with several buttons the last one (always Cancel/Close in this codebase) is plain text. A swipe right presses the last button; a one-button message also closes on a tap anywhere.
+- Slider guard: a touch press no longer turns off the parent's scrolling, and sliders keep `LV_OBJ_FLAG_SCROLL_CHAIN_VER`. A vertical drag from a slider an app built itself now scrolls the page.
+
+**Hold to confirm is on:** power menu Power Off and Restart (the hint says "Hold to confirm, swipe right to cancel"), Power app Power Off and Restart, SD Manager Delete and Clean Logs, WiFi Forget, BLE HID Forget, LoRaWAN session Reset. Sleep stays a tap, because PWR wakes the watch again.
+
+### Phase 5 follow-ups
+
+- **Messages with several buttons** (LoRa Hub save/delete, NFC Wi-Fi, LoRa CW) aren't in the simulator build. Check their layout on hardware.
+- **Level rows don't notice `lv_slider_set_value()` on the model** without an event. No caller does this today; an app that does must also send `LV_EVENT_VALUE_CHANGED` or the row's label stays stale.
+- **Brightness starts above 0** (the safe minimum), so its bar is empty at about 24%. Showing the share of the range instead would read 0% at the dimmest setting; decide after trying it on the watch.
+- **Hold time:** 800 ms. Check on hardware whether it feels too slow or too quick.
+
+### Phase 6: one-gesture app controls
+
+App by app, checked in the simulator:
+- **Pickers instead of dropdowns:** switch `ui_create_card_dropdown()` to `ui_create_card_picker()` (QRCode, WiFi Tools, BLE Scan, WiFi Analyzer, LoRa Hub, Bad USB, I2S Test, INA219, Track/Sensor Log). Then the apps that create `lv_dropdown` themselves: NFC Card 2, Sub-G 7, NRF24 6, Radio 8, IR Universal, Walkie.
+- **Action pills instead of "label + button" rows:** a new `ui_create_card_action(card, icon, label, cb)` draws one full-width pill. Each `ui_create_card_button()` call (about 30) gets one clear verb, e.g. "Scan [Scan Now]" → "Scan", "Generate [Update]" → "Update code", "Export [CSV]" → "Export CSV".
+- **Clock Tools:** replace the 6 date and time dropdowns, "Load Now" and "Apply" with a "Set time" page of scroll wheels (`lv_roller`) and one "Set" pill. Network Time stays one pill.
+- **Charge Current:** a picker of currents in mA (Phase 3 follow-up).
+- **Display Test:** tap anywhere for the next pattern, swipe right to leave; drop the 4 small buttons.
+- **App sliders:** volume in Player, Net Radio and Recorder, and the Mi Light Bar sliders, open the level page from phase 5.
+
+### Phase 7: no typing
+
+- **WiFi Tools host:** a list of presets (gateway, 1.1.1.1, 8.8.8.8, example.com, last used).
+- **QRCode:** content from templates only (device info, Wi-Fi, URL); the free-text field goes on other boards.
+- **WiFi password:** keep the keyboard, but full screen with large keys. Check whether provisioning from a phone (BLE or SoftAP) is worth it.
+- **LoRa Hub, Walkie, IR:** review each text field; replace with presets or numeric pickers where possible.
 
 ### What phases 1–2 changed
 
@@ -128,7 +203,7 @@ All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_inter
   - Largest: `ui_compass` 14, `ui_wifi_analyzer` 9, `ui_nfc_emulation` 9, `ui_ina219` 8, `ui_thermal` 7, `ui_music_player` 7, `ui_sensor` 6, `ui_sd_manager` 6, `ui_lora_hub` 6.
 - **Compass** isn't in the simulator build (`EXCLUDE_COMPASS` on desktop). Its dial is laid out by hand, so it needs checking on hardware after its fonts change.
 - **Apps that set their own sizes:** some override sizes after using the shared helpers, e.g. `lv_obj_set_width(dd, …)` on dropdowns. Clock Tools was fixed; check the others (23 files use dropdowns), or move them to pickers (see Phase 3 follow-ups).
-- **App names:** shown as registered (e.g. "Setting", "DisplayTest"). Watch-friendly names could be passed to `register_app()` under the flag.
+- **App names:** shown as registered (e.g. "DisplayTest"). Watch-friendly names could be passed to `register_app()` under the flag.
 
 ## Later
 

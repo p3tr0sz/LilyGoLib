@@ -422,6 +422,9 @@ static void power_menu_add_row(lv_obj_t *parent, const char *symbol, const char 
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(row, power_menu_action_cb, LV_EVENT_CLICKED, (void *)(intptr_t)action);
+    if (action == POWER_MENU_SHUTDOWN || action == POWER_MENU_RESTART) {
+        ui_require_hold(row);
+    }
 
     lv_obj_t *icon = lv_label_create(row);
     lv_label_set_text(icon, symbol);
@@ -467,7 +470,7 @@ static void show_power_menu(void)
     }
 
     lv_obj_t *hint = lv_label_create(overlay);
-    lv_label_set_text(hint, "Swipe right to cancel");
+    lv_label_set_text(hint, "Hold to confirm, swipe right to cancel");
     lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
     lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
 

@@ -991,7 +991,8 @@ void ui_wireless_enter(lv_obj_t *parent)
     add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
     add_info_row(card, LV_SYMBOL_WIFI, "RSSI", "--", &rssi_label);
     add_info_row(card, LV_SYMBOL_SETTINGS, "MAC", "--", &mac_label);
-    add_right_action_button(card, LV_SYMBOL_CLOSE, "Forget", disconnect_event_cb);
+    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE, "Forget", disconnect_event_cb);
+    ui_require_hold(lv_obj_get_child(forget_row, -1));
 
     ap_list_card = ui_create_card(page_container, "Networks");
     lv_obj_t *scan_row = ui_create_card_info(ap_list_card, LV_SYMBOL_LIST, "Scan", "Not scanned");

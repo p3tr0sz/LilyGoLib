@@ -317,9 +317,9 @@ void ui_power_enter(lv_obj_t *parent)
 
     create_power_overview(page_container, mode);
 
-    create_action_button(page_container, LV_SYMBOL_POWER, power_mode_title(mode),
-                         power_mode_action_detail(mode), power_mode_color(mode), true,
-                         shutdown_event_cb);
+    ui_require_hold(create_action_button(page_container, LV_SYMBOL_POWER, power_mode_title(mode),
+                                         power_mode_action_detail(mode), power_mode_color(mode),
+                                         true, shutdown_event_cb));
 
     if (mode != HW_POWER_OFF_DEEP_SLEEP) {
         create_action_button(page_container, LV_SYMBOL_PAUSE, "Sleep",
@@ -327,9 +327,9 @@ void ui_power_enter(lv_obj_t *parent)
                              sleep_event_cb);
     }
 
-    create_action_button(page_container, LV_SYMBOL_REFRESH, "Restart",
-                         "Reboot the device now", UI_COLOR_ACCENT, false,
-                         restart_event_cb);
+    ui_require_hold(create_action_button(page_container, LV_SYMBOL_REFRESH, "Restart",
+                                         "Reboot the device now", UI_COLOR_ACCENT, false,
+                                         restart_event_cb));
 
     refresh_power_status();
     if (mode == HW_POWER_OFF_SHIP_MODE) {

@@ -260,7 +260,18 @@ void ui_pop_page(lv_obj_t *content);
 /* A tappable list row: icon in an accent disc, title and a chevron. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);
+/* ui_create_card_slider() on the watch: the row shows the value ("60% >") and opens
+ * a full-screen −/+ page. Its last child is a hidden lv_slider that holds the value
+ * and sends LV_EVENT_VALUE_CHANGED. */
+lv_obj_t *ui_create_card_level(lv_obj_t *card, const char *icon, const char *title,
+                                int32_t min, int32_t max, int32_t val, lv_event_cb_t cb);
+/* A short message at the bottom of the screen that goes away by itself. */
+void ui_toast(const char *text);
 #endif
+/* For actions that can't be undone: on the watch, the control's LV_EVENT_CLICKED
+ * handlers run only after it is held for about a second; a tap shows "Hold to
+ * confirm". Does nothing on other boards. */
+void ui_require_hold(lv_obj_t *obj);
 
 bool is_screen_small(void);
 void ui_set_font_size_pref(uint8_t pref);
