@@ -31,6 +31,7 @@
  */
 #include <LilyGoLog.h>
 #include "ui_define.h"
+#ifdef ARDUINO
 #include "esp_arduino_version.h"
 
 #define WALKIE_EXCLUDE_ARDUINO_CORE4 \
@@ -38,6 +39,11 @@
 
 #define WALKIE_USE_ESPNOW_CLASS \
     (ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3,3,0))
+#else
+/* Desktop builds have no ESP-NOW, and ui_main.cpp only registers Walkie on Arduino */
+#define WALKIE_EXCLUDE_ARDUINO_CORE4 1
+#define WALKIE_USE_ESPNOW_CLASS 0
+#endif
 
 /*&& (defined(ARDUINO_T_LORA_PAGER) || defined(ARDUINO_T_DECK_V2)) */
 #if !defined(EXCLUDE_WALKIE) && !WALKIE_EXCLUDE_ARDUINO_CORE4

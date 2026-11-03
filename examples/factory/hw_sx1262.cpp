@@ -376,6 +376,7 @@ float radio_get_tx_power_from_index(uint8_t index)
 }
 
 /* ── Spectral Scan (SX126x only) ── */
+#ifdef ARDUINO
 #include <modules/SX126x/patches/SX126x_patch_scan.h>
 
 static bool spectral_scan_active = false;
@@ -466,5 +467,15 @@ void hw_radio_spectral_scan_deinit()
     spectral_scan_active = false;
     hw_set_radio_default();
 }
+#else
+/* Spectral scan needs the SX126x patch, which the desktop build does not have */
+bool hw_has_spectral_scan() { return false; }
+int16_t hw_radio_spectral_scan_init() { return -1; }
+int16_t hw_radio_spectral_scan_start(uint16_t) { return -1; }
+int16_t hw_radio_spectral_scan_status() { return -1; }
+int16_t hw_radio_spectral_scan_result(uint16_t*) { return -1; }
+void hw_radio_spectral_scan_abort() {}
+void hw_radio_spectral_scan_deinit() {}
+#endif /* ARDUINO */
 
 #endif
