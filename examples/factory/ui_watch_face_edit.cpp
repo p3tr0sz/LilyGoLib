@@ -40,12 +40,33 @@ uint32_t watch_app_name_hash(const char *name)
     return hash;
 }
 
+/* Apps that were renamed, so slots saved under the old name still find them */
+static const struct {
+    const char *old_name;
+    const char *name;
+} app_renames[] = {
+    { "Setting", "Settings" },
+};
+
+static bool app_matches_hash(const ui_app_entry_t *entry, uint32_t hash)
+{
+    if (!entry) return false;
+    if (watch_app_name_hash(entry->name) == hash) return true;
+    for (size_t i = 0; i < sizeof(app_renames) / sizeof(app_renames[0]); i++) {
+        if (strcmp(entry->name, app_renames[i].name) == 0 &&
+                watch_app_name_hash(app_renames[i].old_name) == hash) {
+            return true;
+        }
+    }
+    return false;
+}
+
 const ui_app_entry_t *watch_app_find_by_hash(uint32_t hash)
 {
     uint32_t count = ui_app_registry_count();
     for (uint32_t i = 0; i < count; i++) {
         const ui_app_entry_t *entry = ui_app_registry_get(i);
-        if (entry && watch_app_name_hash(entry->name) == hash) return entry;
+        if (app_matches_hash(entry, hash)) return entry;
     }
     return NULL;
 }
@@ -55,7 +76,7 @@ static uint16_t slot_option_index(const watch_slot_setting_t &slot)
     if (slot.type == WATCH_SLOT_APP) {
         uint32_t count = ui_app_registry_count();
         for (uint32_t i = 0; i < count; i++) {
-            if (watch_app_name_hash(ui_app_registry_get(i)->name) == slot.app_hash) {
+            if (app_matches_hash(ui_app_registry_get(i), slot.app_hash)) {
                 return SLOT_VALUE_COUNT + i;
             }
         }

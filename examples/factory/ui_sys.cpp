@@ -1091,7 +1091,7 @@ void ui_sys_enter(lv_obj_t *parent)
     local_mic_input_source = hw_get_mic_input_source();
 #endif
 
-    page_container = ui_create_app_page(parent, "Setting", back_event_handler);
+    page_container = ui_create_app_page(parent, "Settings", back_event_handler);
     sys_build_parent = page_container;
 
 #ifdef USING_TOUCHPAD

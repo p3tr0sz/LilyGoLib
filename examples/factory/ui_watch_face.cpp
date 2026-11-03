@@ -4,8 +4,8 @@
  * @date      2026-11-03
  *
  * Watch face (home screen): time, date and four corner slots. A slot shows an
- * app shortcut or a value (battery, Wi-Fi, date, steps, calories); tapping it
- * opens the related app. Slots are set in Settings > Watch face, or by
+ * app shortcut or Wi-Fi state as a round icon, or a value (battery, date,
+ * steps, calories) as a pill; tapping it opens the related app. Slots are set in Settings > Watch face, or by
  * long-pressing the face. Swiping up anywhere on the face pulls up the app list.
  */
 #include "ui_define.h"
@@ -20,6 +20,8 @@ LV_IMG_DECLARE(img_energy);
 
 #define FACE_SLOT_W            196
 #define FACE_SLOT_H            64
+#define FACE_ROUND_SLOT_SIZE   84   /* Diameter of icon-only slots */
+#define FACE_ROUND_ICON_SIZE   48
 #define FACE_SLOT_MARGIN_X     28   /* Keeps slots clear of the rounded screen corners */
 #define FACE_SLOT_MARGIN_Y     22
 #define FACE_SLOT_ICON_SIZE    32
@@ -36,7 +38,7 @@ static const face_slot_default_t face_slot_defaults[WATCH_FACE_SLOT_COUNT] = {
     { WATCH_SLOT_BATTERY, NULL          },  /* Top left */
     { WATCH_SLOT_WIFI,    NULL          },  /* Top right */
     { WATCH_SLOT_APP,     "Clock Tools" },  /* Bottom left */
-    { WATCH_SLOT_APP,     "Setting"     },  /* Bottom right */
+    { WATCH_SLOT_APP,     "Settings"    },  /* Bottom right */
 };
 
 static const lv_align_t face_slot_align[WATCH_FACE_SLOT_COUNT] = {
@@ -145,15 +147,15 @@ static void face_long_press_cb(lv_event_t *e)
     watch_face_editor_open(slot);
 }
 
-static void face_slot_set_image(face_slot_t *slot, const lv_image_dsc_t *image)
+static void face_slot_set_image(face_slot_t *slot, const lv_image_dsc_t *image, int32_t size)
 {
     slot->icon = lv_image_create(slot->obj);
     lv_image_set_src(slot->icon, image);
     lv_obj_set_style_image_recolor(slot->icon, UI_COLOR_ACCENT, 0);
     lv_obj_set_style_image_recolor_opa(slot->icon, LV_OPA_COVER, 0);
     uint32_t img_max = LV_MAX(image->header.w, image->header.h);
-    if (img_max > 0) lv_image_set_scale(slot->icon, FACE_SLOT_ICON_SIZE * 256 / img_max);
-    lv_obj_set_size(slot->icon, FACE_SLOT_ICON_SIZE, FACE_SLOT_ICON_SIZE);
+    if (img_max > 0) lv_image_set_scale(slot->icon, size * 256 / img_max);
+    lv_obj_set_size(slot->icon, size, size);
     lv_image_set_inner_align(slot->icon, LV_IMAGE_ALIGN_CENTER);
     lv_obj_remove_flag(slot->icon, LV_OBJ_FLAG_SCROLLABLE);
 }
@@ -173,23 +175,32 @@ static void face_slot_create(face_slot_t *slot, uint32_t index)
         return;
     }
 
+    /* Shortcuts and Wi-Fi need no words; an app without an icon keeps its name. */
+    bool icon_only = (slot->type == WATCH_SLOT_APP && entry->icon) ||
+                     slot->type == WATCH_SLOT_WIFI;
+
     lv_obj_t *obj = lv_obj_create(face_ui.root);
     slot->obj = obj;
-    lv_obj_set_size(obj, FACE_SLOT_W, FACE_SLOT_H);
+    if (icon_only) lv_obj_set_size(obj, FACE_ROUND_SLOT_SIZE, FACE_ROUND_SLOT_SIZE);
+    else lv_obj_set_size(obj, FACE_SLOT_W, FACE_SLOT_H);
     lv_obj_add_style(obj, &ui_styles.card, 0);     /* Follows the theme */
     lv_obj_set_style_bg_color(obj, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(obj, 0, 0);
     lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_pad_hor(obj, 16, 0);
+    lv_obj_set_style_pad_hor(obj, icon_only ? 0 : 16, 0);
     lv_obj_set_style_pad_ver(obj, 0, 0);
     lv_obj_set_style_pad_column(obj, 10, 0);
     lv_obj_set_flex_flow(obj, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(obj, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(obj, icon_only ? LV_FLEX_ALIGN_CENTER : LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(obj, LV_OBJ_FLAG_EVENT_BUBBLE);   /* Lets a swipe up start on a slot */
     int32_t x = (index % 2 == 0) ? FACE_SLOT_MARGIN_X : -FACE_SLOT_MARGIN_X;
-    int32_t y = (index < 2) ? FACE_SLOT_MARGIN_Y : -FACE_SLOT_MARGIN_Y;
+    /* Round slots share their centre line with a pill in the same row. */
+    int32_t margin_y = FACE_SLOT_MARGIN_Y -
+                       (icon_only ? (FACE_ROUND_SLOT_SIZE - FACE_SLOT_H) / 2 : 0);
+    int32_t y = (index < 2) ? margin_y : -margin_y;
     lv_obj_align(obj, face_slot_align[index], x, y);
     /* Slots without an app stay clickable, so a long press can still pick them. */
     if (entry) {
@@ -197,17 +208,19 @@ static void face_slot_create(face_slot_t *slot, uint32_t index)
     }
 
     if (slot->type == WATCH_SLOT_APP && entry->icon) {
-        face_slot_set_image(slot, entry->icon);
+        face_slot_set_image(slot, entry->icon, FACE_ROUND_ICON_SIZE);
     } else if (slot->type == WATCH_SLOT_STEPS) {
-        face_slot_set_image(slot, &img_gps_track);
+        face_slot_set_image(slot, &img_gps_track, FACE_SLOT_ICON_SIZE);
     } else if (slot->type == WATCH_SLOT_CALORIES) {
-        face_slot_set_image(slot, &img_energy);
+        face_slot_set_image(slot, &img_energy, FACE_SLOT_ICON_SIZE);
     } else {
         slot->icon = lv_label_create(obj);
-        lv_obj_set_style_text_font(slot->icon, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(slot->icon, icon_only ? &lv_font_montserrat_32 :
+                                   &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(slot->icon, UI_COLOR_ACCENT, 0);
     }
     lv_obj_remove_flag(slot->icon, LV_OBJ_FLAG_CLICKABLE);
+    if (icon_only) return;
 
     slot->value = lv_label_create(obj);
     lv_obj_set_style_text_font(slot->value, &lv_font_montserrat_20, 0);
@@ -240,7 +253,6 @@ static void face_slot_update(face_slot_t *slot, const monitor_params_t &params,
         lv_label_set_text(slot->icon, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(slot->icon,
                                     connected ? UI_COLOR_ACCENT : UI_COLOR_TEXT_SECONDARY, 0);
-        lv_label_set_text(slot->value, connected ? "Online" : "Offline");
         break;
     }
     case WATCH_SLOT_DATE:

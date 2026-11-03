@@ -727,7 +727,7 @@ static const char *grid_short_app_name(const char *name)
     if (strcmp(name, "SD Info") == 0) return "SD";
     if (strcmp(name, "File Manager") == 0) return "Files";
     if (strcmp(name, "USB Disk") == 0) return "USB";
-    if (strcmp(name, "Setting") == 0) return "Set";
+    if (strcmp(name, "Settings") == 0) return "Set";
     if (strcmp(name, "WiFi Analyzer") == 0) return "Analyzer";
     if (strcmp(name, "WiFi Tools") == 0) return "Tools";
     if (strcmp(name, "Keyboard") == 0) return "Keys";
@@ -2061,7 +2061,7 @@ void setupGui()
 
 #endif
 
-    register_app("Setting", &img_configuration, &ui_sys_main);
+    register_app("Settings", &img_configuration, &ui_sys_main);
 
     register_app("WiFi", &img_wifi, &ui_wireless_main);
 
