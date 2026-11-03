@@ -2369,6 +2369,15 @@ void hw_set_usb_rf_switch(bool to_usb);
 #endif
 #endif
 
+/* Smartwatch shell: watch face home, swipe-up app list, swipe-right back */
+#ifndef FACTORY_WATCH_UI
+#if defined(ARDUINO_T_WATCH_S3_ULTRA) && FACTORY_HAS_TOUCH_INPUT
+#define FACTORY_WATCH_UI               1
+#else
+#define FACTORY_WATCH_UI               0
+#endif
+#endif
+
 #ifndef FACTORY_HAS_TOUCHSCREEN
 #if defined(HAS_TOUCHSCREEN)
 #define FACTORY_HAS_TOUCHSCREEN        1

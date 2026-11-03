@@ -31,6 +31,20 @@ static lv_indev_t *lvMouseWheel;
 static lv_indev_t *lvKeyboard;
 
 
+#if FACTORY_WATCH_UI
+extern "C" void lilygo_power_menu_request(void);
+
+/* Simulator stand-in for holding the PWR button: F2 opens the power menu. */
+static int sdl_power_key_watch(void *userdata, SDL_Event *event)
+{
+    LV_UNUSED(userdata);
+    if (event->type == SDL_KEYDOWN && event->key.keysym.sym == SDLK_F2 && !event->key.repeat) {
+        lilygo_power_menu_request();
+    }
+    return 1;
+}
+#endif
+
 #if LV_USE_LOG != 0
 static void lv_log_print_g_cb(lv_log_level_t level, const char * buf)
 {
@@ -61,6 +75,9 @@ void hal_setup(void)
     lvMouse = lv_sdl_mouse_create();
     lvMouseWheel = lv_sdl_mousewheel_create();
     lvKeyboard = lv_sdl_keyboard_create();
+#if FACTORY_WATCH_UI
+    SDL_AddEventWatch(sdl_power_key_watch, NULL);
+#endif
 }
 
 void hal_loop(void)

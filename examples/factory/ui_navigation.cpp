@@ -43,6 +43,29 @@ static bool edge_swipe_contains(lv_obj_t *root, lv_obj_t *obj)
     return false;
 }
 
+#if FACTORY_WATCH_UI
+/* The watch back swipe may start anywhere, so leave horizontal drags to controls that use them. */
+static bool edge_swipe_starts_on_horizontal_control(lv_obj_t *root, lv_obj_t *obj)
+{
+    for (; obj && obj != root; obj = lv_obj_get_parent(obj)) {
+        if (lv_obj_check_type(obj, &lv_slider_class) ||
+                lv_obj_check_type(obj, &lv_textarea_class) ||
+                lv_obj_has_class(obj, &lv_buttonmatrix_class)) {
+            return true;
+        }
+        if (lv_obj_check_type(obj, &lv_arc_class) && lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE)) {
+            return true;
+        }
+        if (lv_obj_has_flag(obj, LV_OBJ_FLAG_SCROLLABLE) &&
+                (lv_obj_get_scroll_dir(obj) & LV_DIR_HOR) &&
+                (lv_obj_get_scroll_left(obj) > 0 || lv_obj_get_scroll_right(obj) > 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 static void edge_swipe_indicator_x_anim(void *obj, int32_t x)
 {
     lv_obj_set_x((lv_obj_t *)obj, x);
@@ -133,7 +156,12 @@ static bool edge_swipe_update_indicator(edge_swipe_t *state, lv_indev_t *indev,
     lv_display_t *display = lv_indev_get_display(indev);
     int32_t width = lv_display_get_horizontal_resolution(display);
     int32_t height = lv_display_get_vertical_resolution(display);
-    if (inward < INDICATOR_START_DISTANCE_PX) {
+    bool show = inward >= INDICATOR_START_DISTANCE_PX;
+#if FACTORY_WATCH_UI
+    /* Swipes start anywhere, so don't flash the indicator while scrolling a list. */
+    show = show && inward > vertical;
+#endif
+    if (!show) {
         lv_obj_add_flag(state->indicator, LV_OBJ_FLAG_HIDDEN);
         return threshold_reached;
     }
@@ -215,9 +243,15 @@ static void edge_swipe_input_cb(lv_event_t *e)
         lv_indev_get_point(indev, &point);
         int32_t width = lv_display_get_horizontal_resolution(lv_indev_get_display(indev));
         if (point.x < 0 || point.x >= width) return;
+#if FACTORY_WATCH_UI
+        /* Watch: back is a left-to-right swipe started anywhere. */
+        if (edge_swipe_starts_on_horizontal_control(state->root, target)) return;
+        state->direction = 1;
+#else
         if (point.x < EDGE_WIDTH_PX) state->direction = 1;
         else if (point.x >= width - EDGE_WIDTH_PX) state->direction = -1;
         else return;
+#endif
 
         state->pointer = indev;
         state->start = point;

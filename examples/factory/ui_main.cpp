@@ -8,6 +8,7 @@
  */
 #include <LilyGoLog.h>
 #include "ui_define.h"
+#include "ui_watch_shell.h"
 #if defined(ARDUINO)
 #include "esp_arduino_version.h"
 #endif
@@ -83,11 +84,7 @@ static lv_timer_t *dev_timer = NULL;
 static uint32_t disp_time_ms = 0;
 
 /* ── App registry for grid layout ── */
-typedef struct {
-    const char *name;
-    const lv_img_dsc_t *icon;
-    app_t *app_func;
-} app_entry_t;
+typedef ui_app_entry_t app_entry_t;
 
 static app_entry_t app_registry[GRID_MAX_APPS];
 static uint32_t app_count = 0;
@@ -243,15 +240,24 @@ static void show_touch_guide(void)
     lv_obj_set_style_text_font(title, compact ? &lv_font_montserrat_16 : &lv_font_montserrat_18, 0);
 
     lv_obj_t *gesture = lv_label_create(panel);
+#if FACTORY_WATCH_UI
+    lv_label_set_text(gesture, "SWIPE   " LV_SYMBOL_RIGHT);
+#else
     lv_label_set_text(gesture, LV_SYMBOL_RIGHT "   SWIPE   " LV_SYMBOL_LEFT);
+#endif
     lv_obj_set_width(gesture, LV_PCT(100));
     lv_obj_set_style_text_align(gesture, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(gesture, UI_COLOR_ACCENT, 0);
     lv_obj_set_style_text_font(gesture, compact ? &lv_font_montserrat_18 : &lv_font_montserrat_22, 0);
 
     lv_obj_t *description = lv_label_create(panel);
+#if FACTORY_WATCH_UI
+    lv_label_set_text(description,
+                      "Swipe right anywhere to go back.\nSwipe up on the watch face for apps.");
+#else
     lv_label_set_text(description,
                       "Swipe inward from either screen edge\nto return to the previous page.");
+#endif
     lv_label_set_long_mode(description, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(description, LV_PCT(100));
     lv_obj_set_style_text_align(description, LV_TEXT_ALIGN_CENTER, 0);
@@ -501,7 +507,11 @@ static void power_menu_timer_cb(lv_timer_t *t)
 {
     if (!power_menu_pending) return;
     power_menu_pending = false;
+#if FACTORY_WATCH_UI
+    if (!main_screen) return;
+#else
     if (!main_screen || !clock_page) return;
+#endif
     lv_display_trigger_activity(NULL);
     show_power_menu();
 }
@@ -526,6 +536,9 @@ bool get_enter_low_power_flag()
 void menu_show()
 {
     set_default_group(menu_g);
+#if FACTORY_WATCH_UI
+    watch_shell_on_app_exit();
+#endif
     // lv_obj_t *menu_tile = lv_obj_get_child(main_screen, 0);
     // if (menu_tile) {
     //     lv_tileview_set_tile(main_screen, menu_tile, LV_ANIM_ON);
@@ -594,19 +607,23 @@ void update_page_indicator(void)
     }
 }
 
-/* ── Grid icon button callbacks ── */
-static void grid_icon_click_cb(lv_event_t *e)
+void ui_launch_app(app_t *app)
 {
-    app_t *func_cb = (app_t *)lv_event_get_user_data(e);
     if (lv_obj_has_flag(main_screen, LV_OBJ_FLAG_HIDDEN)) return;
 
     set_default_group(app_g);
     hw_feedback();
-    if (func_cb && func_cb->setup_func_cb) {
+    if (app && app->setup_func_cb) {
         lv_obj_t *parent = lv_obj_get_child(main_screen, 1);
-        (*func_cb->setup_func_cb)(parent);
+        (*app->setup_func_cb)(parent);
     }
     menu_hidden();
+}
+
+/* ── Grid icon button callbacks ── */
+static void grid_icon_click_cb(lv_event_t *e)
+{
+    ui_launch_app((app_t *)lv_event_get_user_data(e));
 }
 
 static void grid_icon_focus_cb(lv_event_t *e)
@@ -881,6 +898,24 @@ static void register_app(const char *name, const lv_img_dsc_t *img, app_t *app_f
     app_registry[app_count].icon = img;
     app_registry[app_count].app_func = app_fun;
     app_count++;
+}
+
+uint32_t ui_app_registry_count(void)
+{
+    return app_count;
+}
+
+const ui_app_entry_t *ui_app_registry_get(uint32_t index)
+{
+    return index < app_count ? &app_registry[index] : NULL;
+}
+
+const ui_app_entry_t *ui_app_registry_find(const char *name)
+{
+    for (uint32_t i = 0; name && i < app_count; i++) {
+        if (strcmp(app_registry[i].name, name) == 0) return &app_registry[i];
+    }
+    return NULL;
 }
 
 static bool device_has_external_i2c()
@@ -1445,6 +1480,14 @@ static uint32_t clock_display_off_tick = 0;
 /* ── Sleep/wake poll timer ── */
 static void ui_poll_timer_callback(lv_timer_t *t)
 {
+#if FACTORY_WATCH_UI
+    /* The watch shell has no lock screen page; it handles idle and wake itself. */
+    if (!power_menu_overlay) {
+        watch_shell_poll();
+    }
+    return;
+#endif
+
     /* ── Clock page is showing ── */
     if (!lv_obj_has_flag(clock_page, LV_OBJ_FLAG_HIDDEN)) {
 
@@ -2028,6 +2071,10 @@ void setupGui()
     // register_app("Sensor Log", &img_gyroscope, &ui_sensor_logger_main);
 #endif
 
+#if FACTORY_WATCH_UI
+    /* ── Watch face home + app list ── */
+    watch_shell_setup(menu_panel);
+#else
     /* ── Build the grid menu ── */
     build_grid_menu(menu_panel);
 
@@ -2037,6 +2084,7 @@ void setupGui()
     /* ── Clock page ── */
     clock_page = setupClock();
     lv_obj_add_flag(clock_page, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     /* ── Sleep/wake timer — 200ms for responsive button wake ── */
     disp_timer = lv_timer_create(ui_poll_timer_callback, 200, NULL);
