@@ -318,9 +318,165 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
 #define TEXT_KEY_GAP        6
 #define TEXT_VALUE_MAX      24      /* Characters shown in a row before the dots */
 
+/* ── Two-tap keyboard ──
+ * A QWERTY row of ten keys is about 40 px wide here, too small for a finger.
+ * Instead the first tap picks a group of letters, laid out as on a phone keypad
+ * (.,?! abc def / ghi jkl mno / pqrs tuv wxyz), and the second tap picks one of
+ * them, shown in lower and upper case on keys a third of the screen wide. So no
+ * shift key is needed. "123" opens the
+ * digits; "#+=" and "123" switch between digits and symbols, which stay open
+ * for runs until "abc". Number-only fields get a number pad.
+ *
+ * One lv_buttonmatrix; each view swaps its map. */
+
+typedef enum {
+    KB_GROUPS,      /* .,?! abc def … plus 123, space and backspace */
+    KB_LETTERS,     /* The letters of one group */
+    KB_DIGITS,
+    KB_SYMBOLS,
+    KB_NUMPAD,      /* Number-only fields */
+} kb_view_t;
+
+#define KB_BACK     LV_SYMBOL_LEFT
+#define KB_SPACE    "space"
+#define KB_DEL      LV_SYMBOL_BACKSPACE
+#define KB_ABC      "abc"   /* From digits or symbols back to the letter groups */
+#define KB_OK_SIZE  60      /* The round ✓ beside the field; every key grid is three wide */
+#define KB_MAP_MAX  32
+
+/* Group 0 is the keypad's "1": punctuation, in two rows instead of two cases. */
+#define KB_PUNCT    ".,?!"
+static const char *const kb_groups[] = {KB_PUNCT, "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"};
+static const char kb_group_digit[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+static const char kb_punct_rows[2][5] = {".,?!", "'-@:"};
+
+/* ── Accented letters ──
+ * Settings > Keyboard picks a language; its letters join their base letter's
+ * group, after it (abc → a ą b c ć for Polish). Each entry lists, per base
+ * letter, the base followed by its accented forms. Capitals come from
+ * kb_upper(). The fonts hold all of Latin-1 and Latin Extended-A (font_latin.c). */
+typedef struct {
+    const char *name;
+    const char *letters;
+} kb_language_t;
+
+static const kb_language_t kb_languages[] = {
+    {"None", ""},
+    {"Polish", "aą cć eę lł nń oó sś zźż"},
+    {"Czech & Slovak", "aáä cč dď eéě ií lĺľ nň oóô rřŕ sš tť uúů yý zž"},
+    {"German", "aä oö sß uü"},
+    {"French", "aàâæ cç eéèêë iîï oôœ uùûü yÿ"},
+    {"Spanish", "aá eé ií nñ oó uúü"},
+    {"Portuguese", "aáâãà cç eéê ií oóôõ uú"},
+    {"Italian", "aà eèé iì oò uù"},
+    {"Nordic", "aåäæ oöø"},
+    {"Hungarian", "aá eé ií oóöő uúüű"},
+    {"Turkish", "cç gğ iı oö sş uü"},
+};
+#define KB_LANGUAGE_COUNT   (sizeof(kb_languages) / sizeof(kb_languages[0]))
+#define KB_GROUP_MAX        10      /* Letters a group page can hold, accents included */
+
+/* Decodes one UTF-8 character (up to 3 bytes); returns its length. */
+static size_t kb_utf8_decode(const char *s, uint32_t *out)
+{
+    const uint8_t *u = (const uint8_t *)s;
+    if (u[0] < 0x80) { *out = u[0]; return 1; }
+    if ((u[0] & 0xE0) == 0xC0 && u[1]) { *out = ((u[0] & 0x1Fu) << 6) | (u[1] & 0x3Fu); return 2; }
+    if ((u[0] & 0xF0) == 0xE0 && u[1] && u[2]) {
+        *out = ((u[0] & 0x0Fu) << 12) | ((u[1] & 0x3Fu) << 6) | (u[2] & 0x3Fu);
+        return 3;
+    }
+    *out = '?';
+    return 1;
+}
+
+static void kb_utf8_encode(uint32_t c, char out[4])
+{
+    if (c < 0x80) {
+        out[0] = (char)c; out[1] = 0;
+    } else if (c < 0x800) {
+        out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); out[2] = 0;
+    } else {
+        out[0] = (char)(0xE0 | (c >> 12)); out[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (c & 0x3F)); out[3] = 0;
+    }
+}
+
+/* Capital of a Latin-1 or Latin Extended-A letter. */
+static uint32_t kb_upper(uint32_t c)
+{
+    if (c >= 'a' && c <= 'z') return c - 32;
+    if (c == 0xDF) return c;                            /* ß has no common capital */
+    if (c >= 0xE0 && c <= 0xFE && c != 0xF7) return c - 0x20;
+    if (c == 0xFF) return 0x178;
+    if (c == 0x131) return 'I';                         /* Dotless ı */
+    if (c >= 0x100 && c <= 0x17F) {
+        if (c == 0x138 || c == 0x149 || c == 0x17F) return c;
+        /* Two runs pair odd capitals with even small letters; elsewhere it's even, odd. */
+        if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E)) return (c % 2 == 0) ? c - 1 : c;
+        return (c % 2 == 1) ? c - 1 : c;
+    }
+    return c;
+}
+
+/* The accented forms of `base` in the chosen language, or "". */
+static const char *kb_accents_for(char base)
+{
+    uint8_t lang = hw_get_watch_keyboard_accents();
+    if (lang >= KB_LANGUAGE_COUNT) return "";
+    for (const char *p = kb_languages[lang].letters; *p; ) {
+        if (*p == ' ') { ++p; continue; }
+        const char *end = strchr(p, ' ');
+        if (!end) end = p + strlen(p);
+        if (*p == base) {
+            static char buf[24];
+            size_t len = LV_MIN((size_t)(end - p - 1), sizeof(buf) - 1);
+            memcpy(buf, p + 1, len);
+            buf[len] = 0;
+            return buf;
+        }
+        p = end;
+    }
+    return "";
+}
+
+static const char *const kb_map_groups[] = {
+    KB_PUNCT, "abc", "def", "\n",
+    "ghi", "jkl", "mno", "\n",
+    "pqrs", "tuv", "wxyz", "\n",
+    "123", KB_SPACE, KB_DEL, "",
+};
+static const char *const kb_map_digits[] = {
+    "1", "2", "3", "\n",
+    "4", "5", "6", "\n",
+    "7", "8", "9", "\n",
+    KB_ABC, "0", "#+=", "",
+};
+static const char *const kb_map_symbols[] = {
+    ".", ",", "?", "!", ":", "\n",
+    "@", "-", "_", "/", ";", "\n",
+    "#", "&", "%", "$", "*", "\n",
+    "+", "=", "(", ")", "'", "\n",
+    KB_ABC, "123", "",
+};
+static const char *const kb_map_numpad[] = {
+    "1", "2", "3", "\n",
+    "4", "5", "6", "\n",
+    "7", "8", "9", "\n",
+    ".", "0", KB_DEL, "",
+};
+
 typedef struct {
     lv_obj_t *target;       /* The app's field */
     lv_obj_t *edit;         /* The copy on the page */
+    lv_obj_t *keys;         /* The button matrix */
+    kb_view_t view;
+    bool numeric;
+    const char *map[KB_MAP_MAX];
+    lv_buttonmatrix_ctrl_t ctrl[KB_MAP_MAX];
+    char letters[2][KB_GROUP_MAX][4];   /* KB_LETTERS: lower and upper case, UTF-8 */
+    char digit[2];
+    uint8_t letter_count;   /* KB_LETTERS: keys in each of the two letter rows */
 } text_page_t;
 
 static bool text_is_numeric(lv_obj_t *ta)
@@ -338,19 +494,133 @@ static void text_page_delete_cb(lv_event_t *e)
     lv_free(lv_event_get_user_data(e));
 }
 
-static void text_keyboard_cb(lv_event_t *e)
+static bool kb_is(const char *text, const char *key)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    text_page_t *state = (text_page_t *)lv_event_get_user_data(e);
-    lv_obj_t *kb = lv_event_get_current_target_obj(e);
-    lv_obj_t *content = lv_obj_get_parent(kb);
-    if (code == LV_EVENT_READY) {
-        lv_textarea_set_text(state->target, lv_textarea_get_text(state->edit));
-        lv_obj_send_event(state->target, LV_EVENT_READY, NULL);
-        hw_feedback();
-        ui_pop_page(content);
-    } else if (code == LV_EVENT_CANCEL) {
-        ui_pop_page(content);
+    return text && strcmp(text, key) == 0;
+}
+
+/* Maps end with ""; the symbols map has an empty slot after its last row. */
+static void kb_set_map(text_page_t *st, const char *const *map)
+{
+    size_t n = 0;
+    while (n + 1 < KB_MAP_MAX && map[n][0]) {
+        st->map[n] = map[n];
+        ++n;
+    }
+    st->map[n] = "";
+    lv_buttonmatrix_set_map(st->keys, st->map);
+}
+
+/* Every key's flags are set again for each view: lv_buttonmatrix keeps the old
+ * ones when a new map has as many keys. */
+static void kb_style_keys(text_page_t *st, uint32_t wide_key)
+{
+    lv_obj_t *keys = st->keys;
+    for (uint32_t i = 0;; ++i) {
+        const char *text = lv_buttonmatrix_get_button_text(keys, i);
+        if (!text) break;
+        /* Act on release, so a swipe across the keys goes back instead of typing. */
+        uint32_t ctrl = LV_BUTTONMATRIX_CTRL_CLICK_TRIG;   /* An enum in C++ */
+        if (!kb_is(text, KB_DEL)) ctrl |= LV_BUTTONMATRIX_CTRL_NO_REPEAT;   /* Only ⌫ repeats */
+        /* Keys that change view or edit are "checked": accent text on lighter grey. */
+        if (kb_is(text, KB_BACK) || kb_is(text, "123") || kb_is(text, "#+=") ||
+                (st->view != KB_GROUPS && kb_is(text, KB_ABC)) ||
+                kb_is(text, KB_DEL) || kb_is(text, KB_SPACE)) {
+            ctrl |= LV_BUTTONMATRIX_CTRL_CHECKED;
+        }
+        ctrl |= i == wide_key ? 2 : 1;   /* Width */
+        st->ctrl[i] = (lv_buttonmatrix_ctrl_t)ctrl;
+    }
+    lv_buttonmatrix_set_ctrl_map(keys, st->ctrl);
+}
+
+static void kb_show(text_page_t *st, kb_view_t view, int group)
+{
+    st->view = view;
+    switch (view) {
+    case KB_GROUPS:  kb_set_map(st, kb_map_groups); break;
+    case KB_DIGITS:  kb_set_map(st, kb_map_digits); break;
+    case KB_SYMBOLS: kb_set_map(st, kb_map_symbols); break;
+    case KB_NUMPAD:  kb_set_map(st, kb_map_numpad); break;
+    case KB_LETTERS: {
+        /* Small letters, each followed by its accents, then the same in capitals. */
+        uint32_t codes[KB_GROUP_MAX];
+        size_t count = 0;
+        for (const char *b = kb_groups[group]; *b && count < KB_GROUP_MAX; ++b) {
+            if (group == 0) break;
+            codes[count++] = (uint8_t)*b;
+            for (const char *a = kb_accents_for(*b); *a && count < KB_GROUP_MAX; ) {
+                a += kb_utf8_decode(a, &codes[count++]);
+            }
+        }
+        size_t n = 0;
+        for (int row = 0; row < 2; ++row) {
+            size_t cols = group == 0 ? strlen(kb_punct_rows[row]) : count;
+            for (size_t i = 0; i < cols; ++i) {
+                uint32_t c = group == 0 ? (uint8_t)kb_punct_rows[row][i] : (row ? kb_upper(codes[i]) : codes[i]);
+                kb_utf8_encode(c, st->letters[row][i]);
+                st->map[n++] = st->letters[row][i];
+            }
+            st->map[n++] = "\n";
+        }
+        st->letter_count = (uint8_t)(group == 0 ? strlen(kb_punct_rows[0]) : count);
+        st->digit[0] = kb_group_digit[group];
+        st->digit[1] = 0;
+        st->map[n++] = KB_BACK;
+        st->map[n++] = st->digit;
+        st->map[n] = "";
+        lv_buttonmatrix_set_map(st->keys, st->map);
+        break;
+    }
+    }
+    /* In a group the back key is wide: it's what a mis-tap needs. */
+    kb_style_keys(st, view == KB_LETTERS ? (uint32_t)(2 * st->letter_count) : UINT32_MAX);
+}
+
+static void kb_commit(text_page_t *st)
+{
+    lv_obj_t *content = lv_obj_get_parent(st->keys);
+    lv_textarea_set_text(st->target, lv_textarea_get_text(st->edit));
+    lv_obj_send_event(st->target, LV_EVENT_READY, NULL);
+    ui_pop_page(content);
+}
+
+static void kb_ok_cb(lv_event_t *e)
+{
+    hw_feedback();
+    kb_commit((text_page_t *)lv_event_get_user_data(e));
+}
+
+static void kb_event_cb(lv_event_t *e)
+{
+    text_page_t *st = (text_page_t *)lv_event_get_user_data(e);
+    uint32_t id = lv_buttonmatrix_get_selected_button(st->keys);
+    if (id == LV_BUTTONMATRIX_BUTTON_NONE) return;
+    const char *text = lv_buttonmatrix_get_button_text(st->keys, id);
+    if (!text || !text[0]) return;
+    hw_feedback();
+
+    if (kb_is(text, KB_DEL)) {
+        lv_textarea_delete_char(st->edit);
+    } else if (kb_is(text, KB_SPACE)) {
+        lv_textarea_add_char(st->edit, ' ');
+    } else if (kb_is(text, KB_BACK) || (st->view != KB_GROUPS && kb_is(text, KB_ABC))) {
+        kb_show(st, KB_GROUPS, 0);
+    } else if (kb_is(text, "123")) {
+        kb_show(st, KB_DIGITS, 0);
+    } else if (kb_is(text, "#+=")) {
+        kb_show(st, KB_SYMBOLS, 0);
+    } else if (st->view == KB_GROUPS) {
+        for (int g = 0; g < (int)(sizeof(kb_groups) / sizeof(kb_groups[0])); ++g) {
+            if (kb_is(text, kb_groups[g])) {
+                kb_show(st, KB_LETTERS, g);
+                break;
+            }
+        }
+    } else {
+        lv_textarea_add_text(st->edit, text);
+        /* A letter is one pick; digits and symbols often come in runs. */
+        if (st->view == KB_LETTERS) kb_show(st, KB_GROUPS, 0);
     }
 }
 
@@ -370,7 +640,16 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     state->target = ta;
     lv_obj_add_event_cb(content, text_page_delete_cb, LV_EVENT_DELETE, state);
 
-    lv_obj_t *edit = lv_textarea_create(content);
+    /* The field and its round ✓, so the key grid below stays three columns. */
+    lv_obj_t *field_row = lv_obj_create(content);
+    lv_obj_remove_style_all(field_row);
+    lv_obj_set_size(field_row, LV_PCT(100), TEXT_FIELD_H);
+    lv_obj_set_flex_flow(field_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(field_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(field_row, TEXT_KEY_GAP, 0);
+    lv_obj_remove_flag(field_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *edit = lv_textarea_create(field_row);
     state->edit = edit;
     lv_textarea_set_one_line(edit, true);
     lv_textarea_set_password_mode(edit, lv_textarea_get_password_mode(ta));
@@ -380,7 +659,8 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     if (accepted) lv_textarea_set_accepted_chars(edit, accepted);
     lv_textarea_set_placeholder_text(edit, lv_textarea_get_placeholder_text(ta));
     lv_textarea_set_text(edit, lv_textarea_get_text(ta));
-    lv_obj_set_size(edit, LV_PCT(100), TEXT_FIELD_H);
+    lv_obj_set_size(edit, 1, TEXT_FIELD_H);
+    lv_obj_set_flex_grow(edit, 1);
     lv_obj_set_style_text_font(edit, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(edit, UI_COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_color(edit, UI_COLOR_TEXT_SECONDARY, LV_PART_TEXTAREA_PLACEHOLDER);
@@ -390,39 +670,62 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_set_style_radius(edit, TEXT_FIELD_H / 2, 0);
     lv_obj_set_style_pad_hor(edit, 24, 0);
     lv_obj_set_style_pad_ver(edit, (TEXT_FIELD_H - 36) / 2, 0);
-    lv_obj_set_style_bg_color(edit, UI_COLOR_ACCENT, LV_PART_CURSOR);
-    lv_obj_set_style_bg_opa(edit, LV_OPA_COVER, LV_PART_CURSOR);
+    /* A thin steady bar: a block cursor changes width with the letter under it,
+     * and blinking made it look jumpy. */
+    /* The theme styles the cursor of a focused field, so set it for that state. */
+    const lv_style_selector_t cursor = (lv_style_selector_t)LV_PART_CURSOR | LV_STATE_FOCUSED;
+    lv_obj_set_style_bg_opa(edit, LV_OPA_TRANSP, cursor);
+    lv_obj_set_style_border_side(edit, LV_BORDER_SIDE_LEFT, cursor);
+    lv_obj_set_style_border_width(edit, 3, cursor);
+    lv_obj_set_style_border_color(edit, UI_COLOR_ACCENT, cursor);
+    lv_obj_set_style_border_opa(edit, LV_OPA_COVER, cursor);
+    lv_obj_set_style_anim_duration(edit, 0, cursor);     /* No blinking */
     lv_obj_set_scrollbar_mode(edit, LV_SCROLLBAR_MODE_OFF);
     lv_obj_add_state(edit, LV_STATE_FOCUSED);   /* Shows the cursor */
     lv_obj_remove_flag(edit, LV_OBJ_FLAG_CLICKABLE);
     lv_group_remove_obj(edit);
 
-    lv_obj_t *kb = lv_keyboard_create(content);
-    lv_keyboard_set_textarea(kb, edit);
-    lv_keyboard_set_mode(kb, text_is_numeric(ta) ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_t *ok = lv_button_create(field_row);
+    lv_obj_add_style(ok, &ui_styles.accent_btn, 0);
+    lv_obj_set_size(ok, KB_OK_SIZE, KB_OK_SIZE);
+    lv_obj_set_style_radius(ok, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(ok, 0, 0);
+    lv_obj_set_style_shadow_width(ok, 0, 0);
+    lv_obj_set_style_pad_all(ok, 0, 0);
+    lv_obj_set_style_bg_color(ok, UI_COLOR_ACCENT_DIM, LV_STATE_PRESSED);
+    lv_group_remove_obj(ok);
+    lv_obj_t *ok_icon = lv_label_create(ok);
+    lv_label_set_text(ok_icon, LV_SYMBOL_OK);
+    lv_obj_set_style_text_font(ok_icon, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_color(ok_icon, lv_color_black(), 0);
+    lv_obj_center(ok_icon);
+    lv_obj_add_event_cb(ok, kb_ok_cb, LV_EVENT_CLICKED, state);
+
+    lv_obj_t *kb = lv_buttonmatrix_create(content);
+    state->keys = kb;
+    state->numeric = text_is_numeric(ta);
     lv_obj_set_width(kb, LV_PCT(100));
     lv_obj_set_flex_grow(kb, 1);
     lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(kb, 0, 0);
     lv_obj_set_style_pad_all(kb, 0, 0);
     lv_obj_set_style_pad_gap(kb, TEXT_KEY_GAP, 0);
-    lv_obj_set_style_text_font(kb, &lv_font_montserrat_24, LV_PART_ITEMS);
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_32, LV_PART_ITEMS);
     lv_obj_set_style_text_color(kb, UI_COLOR_TEXT_PRIMARY, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_BG, LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
-    lv_obj_set_style_radius(kb, 12, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb, 16, LV_PART_ITEMS);
     lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_FOCUS, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_PRESSED);
-    /* Mode, punctuation and OK keys are "checked" in LVGL's maps: a lighter grey,
-     * with the accent on their text, so the letters stand out. */
     lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_FOCUS, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_set_style_text_color(kb, UI_COLOR_ACCENT, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_BG,
                               (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED | LV_STATE_PRESSED);
     lv_group_remove_obj(kb);
-    lv_obj_add_event_cb(kb, text_keyboard_cb, LV_EVENT_READY, state);
-    lv_obj_add_event_cb(kb, text_keyboard_cb, LV_EVENT_CANCEL, state);
+    lv_obj_add_flag(kb, UI_FLAG_SWIPE_BACK_OK);
+    lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_VALUE_CHANGED, state);
+    kb_show(state, state->numeric ? KB_NUMPAD : KB_GROUPS, 0);
 }
 
 static void text_value_update(lv_obj_t *value, lv_obj_t *ta)
@@ -484,6 +787,33 @@ void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta)
     lv_obj_set_style_radius(row, 12, 0);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(row, text_row_click_cb, LV_EVENT_CLICKED, title_label);
+}
+
+static void kb_language_cb(lv_event_t *e)
+{
+    hw_set_watch_keyboard_accents((uint8_t)lv_dropdown_get_selected(lv_event_get_target_obj(e)));
+}
+
+void ui_keyboard_settings_build(lv_obj_t *content)
+{
+    char options[KB_LANGUAGE_COUNT * 18] = {0};
+    for (size_t i = 0; i < KB_LANGUAGE_COUNT; ++i) {
+        if (i) lv_strcat(options, "\n");
+        lv_strcat(options, kb_languages[i].name);
+    }
+    uint8_t lang = hw_get_watch_keyboard_accents();
+    lv_obj_t *card = ui_create_card(content, NULL);
+    ui_create_card_picker(card, NULL, "Accents", options, lang < KB_LANGUAGE_COUNT ? lang : 0,
+                          kb_language_cb);
+
+    lv_obj_t *caption = lv_label_create(content);
+    lv_label_set_text(caption, "Accented letters join their letter's page on the keyboard: "
+                      "with Polish, abc shows a ą b c ć.");
+    lv_label_set_long_mode(caption, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(caption, LV_PCT(100));
+    lv_obj_set_style_pad_hor(caption, 12, 0);
+    lv_obj_set_style_text_font(caption, UI_FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(caption, UI_COLOR_TEXT_SECONDARY, 0);
 }
 
 /* ── Scroll wheels ── */

@@ -135,7 +135,7 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 
 **Settings → Date & time** (`ui_clock_settings_build()` in `ui_clock_tools.cpp`): Zone, Date, Time and "Sync network time", as the phase 6 Clock Tools page had them. Results show as toasts.
 
-**Clock Tools on the watch** (new `ui_watch_clock.cpp`): three rows, each showing what it is doing (stopwatch time, time left, next alarm or "Snoozed").
+**Stopwatch, Timer and Alarm** (new `ui_watch_clock.cpp`): three apps of their own on the watch, in place of Clock Tools (first they were three rows inside it). Stopwatch and Timer have new icons (A8 images from `tools/gen_watch_icons.py`), Alarm keeps the clock icon. Face slots saved as "Clock Tools" open Alarm; the default bottom-left slot and the Date slot open Alarm too.
 - **Stopwatch:** big digits, Lap / Reset and Start / Pause round buttons, lap splits below (newest first, up to 30). Each digit sits in a cell as wide as the widest digit, so the line doesn't jitter as it counts (the timer countdown too).
 - **Timer:** round presets (1, 3, 5, 10, 15, 30 min), a "Recent" row of round buttons, like the presets, for the 3 most recent custom lengths ("5 min / 2 s", "1 h / 30 min", "1:05:10"; saved, `hw_get_watch_timer_recent()`), and a "Custom" pill that opens h:m:s wheels starting at the last custom length. A custom length equal to a preset isn't added. Running: a ring that empties, the time left, Cancel and Pause / Resume.
 - **Alarm:** up to 4 alarms (`hw_get/set_watch_alarm()`, 16 of the spare settings bytes). Rows show time, repeat and On / Off; tapping one opens On, Time, Repeat and "Delete alarm" (hold). Repeat opens a page with the presets (Once, Every day, Weekdays, Weekends) as a radio list and a switch per day, Monday first; other sets of days show as "Mon Wed Fri" or "Mo Tu We Th Sa". "Add alarm" opens the time wheels; picking a time turns the alarm on and toasts "Rings in …". A "Once" alarm turns itself off after ringing.
@@ -150,6 +150,8 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 **Chevrons only where they're needed:** pill rows (Settings sections, Clock Tools, alarms) and Power's button rows have no ">"; they plainly are buttons. Value rows inside cards (pickers, level rows, Date and Time) keep it, because it is what tells them apart from read-only info rows.
 
 **Icons instead of words where the icon says it:** `ui_create_card_icon_action()` makes an icon-only pill. Confirming wheels (Set date, Set time, alarm time) shows ✓, Start on the custom timer ▶, Add alarm +, and Delete alarm a bin (still hold to confirm). The stopwatch's left button is a lap flag while running and a reset arrow when paused; both are A8 images in `src/img_watch_icons.c`, drawn by `tools/gen_watch_icons.py` (LVGL's symbol font has neither). Words stay where an icon would be a guess: Stop and Snooze on the ring page, Custom, Sync network time.
+
+**Direct corner edits:** a long press on a face corner opens its choices; picking one, or swiping back, returns straight to the face instead of the "Watch face" list. Settings > Watch face still shows the list.
 
 ### Phase 6b follow-ups
 
@@ -167,8 +169,18 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 ### What phase 7 changed
 
 **Shared** (`ui_watch_pages.cpp`):
-- **`ui_open_text_page(from, title, ta)`:** a full-screen keyboard page. A big pill field at the top holds a copy of the text; LVGL's keyboard fills the rest (keys about 40 × 62 px, letters on grey, mode and punctuation keys lighter with accent text). ✓ writes the text back to `ta` and sends `LV_EVENT_VALUE_CHANGED` and `LV_EVENT_READY`, so apps' existing handlers run; the keyboard key or swiping right leaves `ta` as it was. Fields that accept only digits get the number pad. Password mode, maximum length, accepted characters and placeholder are copied from `ta`.
+- **`ui_open_text_page(from, title, ta)`:** a full-screen keyboard page. A big pill field at the top holds a copy of the text, and a two-tap keyboard (one `lv_buttonmatrix`) fills the rest. LVGL's QWERTY keyboard was tried first: with ten keys a row, letters were about 40 px (3 mm) wide.
+  - **Groups,** where a phone keypad has them (ITU E.161): .,?! abc def / ghi jkl mno / pqrs tuv wxyz / 123 space ⌫; keys about 155 × 62 px. ✓ is a round button beside the field, so every key grid is three columns wide.
+  - **A group:** its letters in lower case, then upper case, on keys about 155 × 85 px, a wide back key and the group's keypad digit (abc → 2). So there's no shift key. The .,?! group, the keypad's "1", holds . , ? ! ' - @ :. Picking a character goes back to the groups.
+  - **123 / #+=:** digits and 20 symbols, switched with "#+=" and "123" as on a phone; they stay open for runs until "abc".
+  - **Cursor:** a thin steady accent bar (no blinking, no block that changes width).
+  - **Number-only fields:** a 3 × 4 number pad, the last row . 0 ⌫.
+  - Keys act on release (`LV_BUTTONMATRIX_CTRL_CLICK_TRIG`) and the matrix has `UI_FLAG_SWIPE_BACK_OK`, so swiping right across the keys cancels instead of typing. Only ⌫ repeats when held. The ✓ button writes the text back to `ta` and sends `LV_EVENT_VALUE_CHANGED` and `LV_EVENT_READY`, so apps' existing handlers run; the keyboard key or swiping right leaves `ta` as it was. Fields that accept only digits get the number pad. Password mode, maximum length, accepted characters and placeholder are copied from `ta`.
 - **Text field rows:** `ui_create_card_item()` with an `lv_textarea` now calls `ui_text_adopt()` on the watch, as dropdowns call `ui_picker_adopt()`. The field is hidden and stays the row's last child; the row shows its text ("Enter >" when empty, dots for a password) and opens the keyboard page. This covers LoRa Hub's profile Name, Seconds and Custom Sync and Walkie's Name without changes in those apps.
+
+**Accents:**
+- **Fonts:** on the watch, every Montserrat size the app uses (10–48 px) points at `font_latin_<size>` (`src/font/font_latin.c`, `#define`s in `ui_define.h`). Each holds Latin-1, Latin Extended-A, curly quotes, dashes, … and € (234 glyphs) and falls back to LVGL's built-in font, so ASCII and icons are unchanged. About 0.45 MB of flash, Ultra builds only. `tools/gen_latin_fonts.py` draws them from LVGL's own `Montserrat-Medium.ttf` with Pillow (no `lv_font_conv` needed) and checks its metrics against the built-ins.
+- **Keyboard:** Settings > Keyboard > Accents picks None, Polish, Czech & Slovak, German, French, Spanish, Portuguese, Italian, Nordic, Hungarian or Turkish (`hw_get/set_watch_keyboard_accents()`, one spare settings byte). The language's letters join their base letter's group page, after it: abc → a ą b c ć, capitals below. Up to 10 letters a group (French abc and def have 7, about 62 px keys).
 
 **WiFi Tools:** Host is a picker: Gateway (the current gateway IP), 1.1.1.1, 8.8.8.8, example.com, lilygo.cc, the last typed host, and "Other..." which opens the keyboard. The typed host is kept until restart.
 
@@ -185,7 +197,9 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 - **Check on hardware:** LoRa Hub (quick replies send; profile editor fields open the number pad or keyboard and save) and Walkie's Name. Neither runs in the simulator.
 - **Phone provisioning for Wi-Fi:** worth adding later. Espressif's BLE provisioning (ESP BLE Prov app) or a SoftAP page would remove the password typing; it needs a provisioning library and a pairing flow, so it is a separate piece of work.
 - WiFi's network rows are still the small bordered rows from other boards; they could become pill rows.
-- LVGL's keyboard has 10 keys per row, so letters stay about 40 px wide on this screen. A T9-style or two-step keyboard would give bigger keys if typing proves hard.
+- **Accents in titles:** page titles and the face use the Alibaba fonts (ASCII only), so an accented Wi-Fi name in a title shows boxes. Those fonts would need the same treatment.
+- **Typing is two taps a letter.** A word-completion bar above the keys would cut that for messages; it needs a small word list in flash.
+- **Typing on the phone:** `screen_web_server.cpp` only serves screenshots (and only with `LILYGO_SCREEN_CAPTURE_ENABLED`), and it needs Wi-Fi first, so it can't help with the Wi-Fi password. A text-entry page on it could serve LoRa messages and names; BLE provisioning (above) covers Wi-Fi.
 
 ### What phases 1–2 changed
 

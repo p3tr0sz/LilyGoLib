@@ -1356,6 +1356,10 @@ void hw_set_watch_alarm(uint8_t index, const watch_alarm_t &alarm);
 #define WATCH_TIMER_RECENT_COUNT    3
 #define WATCH_TIMER_MAX_SECONDS     (24UL * 3600UL - 1UL)
 uint32_t hw_get_watch_timer_recent(uint8_t index);
+/* Which language's accented letters the watch keyboard offers; 0 = none.
+ * The languages are listed in ui_watch_pages.cpp. */
+uint8_t hw_get_watch_keyboard_accents(void);
+void hw_set_watch_keyboard_accents(uint8_t language);
 /* Puts `seconds` first; an equal entry further down moves up instead of repeating. */
 void hw_add_watch_timer_recent(uint32_t seconds);
 

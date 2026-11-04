@@ -103,6 +103,36 @@ extern uint32_t ui_active_track;
 #define UI_COLOR_TRACK        lv_color_hex(ui_active_track)
 #define UI_COLOR_KNOB         lv_color_white()
 
+/* ── Accents ──
+ * On the watch, every Montserrat size the app uses points at a font with the
+ * accented Latin letters (src/font/font_latin.c, from tools/gen_latin_fonts.py).
+ * Each holds only those glyphs and falls back to LVGL's built-in font, so plain
+ * text is unchanged. Other boards keep the built-ins. */
+#if FACTORY_WATCH_UI
+LV_FONT_DECLARE(font_latin_10)
+#define lv_font_montserrat_10 font_latin_10
+LV_FONT_DECLARE(font_latin_12)
+#define lv_font_montserrat_12 font_latin_12
+LV_FONT_DECLARE(font_latin_14)
+#define lv_font_montserrat_14 font_latin_14
+LV_FONT_DECLARE(font_latin_16)
+#define lv_font_montserrat_16 font_latin_16
+LV_FONT_DECLARE(font_latin_18)
+#define lv_font_montserrat_18 font_latin_18
+LV_FONT_DECLARE(font_latin_20)
+#define lv_font_montserrat_20 font_latin_20
+LV_FONT_DECLARE(font_latin_22)
+#define lv_font_montserrat_22 font_latin_22
+LV_FONT_DECLARE(font_latin_24)
+#define lv_font_montserrat_24 font_latin_24
+LV_FONT_DECLARE(font_latin_28)
+#define lv_font_montserrat_28 font_latin_28
+LV_FONT_DECLARE(font_latin_32)
+#define lv_font_montserrat_32 font_latin_32
+LV_FONT_DECLARE(font_latin_48)
+#define lv_font_montserrat_48 font_latin_48
+#endif
+
 /* ── Size tokens ──
  * The watch shell's screen is ~315 ppi, so it uses larger type and touch
  * targets. On other boards each font token is the size it replaces. */
@@ -220,6 +250,10 @@ void ui_enable_edge_swipe_back(lv_obj_t *root, lv_obj_t *back_target,
                                lv_event_code_t back_event = LV_EVENT_CLICKED);
 /* Innermost object containing obj that has swipe-back (an app page or pushed page), or NULL. */
 lv_obj_t *ui_swipe_back_root(lv_obj_t *obj);
+/* Swipe-back normally ignores swipes that start on sliders, text fields and button
+ * matrices. An object with this flag (and its children) lets them through; it must
+ * then act on release, not press (e.g. LV_BUTTONMATRIX_CTRL_CLICK_TRIG). */
+#define UI_FLAG_SWIPE_BACK_OK   LV_OBJ_FLAG_USER_2
 void ui_destroy_app_page(lv_obj_t *content);
 void ui_app_page_enable_nav_auto_hide(lv_obj_t *content, uint32_t timeout_ms);
 void ui_app_page_disable_nav_auto_hide(lv_obj_t *content);
@@ -273,6 +307,8 @@ void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta);
  * back and sends LV_EVENT_VALUE_CHANGED and LV_EVENT_READY to `ta`; the keyboard
  * key or swiping right leaves `ta` as it was. Number-only fields get the number pad. */
 void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta);
+/* Settings > Keyboard: which language's accented letters the keyboard offers. */
+void ui_keyboard_settings_build(lv_obj_t *content);
 /* A tappable pill row: icon in an accent disc and the title. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);

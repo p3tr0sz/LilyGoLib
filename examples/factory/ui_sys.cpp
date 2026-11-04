@@ -1041,6 +1041,7 @@ static const sys_section_t sys_sections[] = {
 #if !defined(EXCLUDE_CLOCK_TOOLS)
     {"Date & time", LV_SYMBOL_EDIT,     {}, ui_clock_settings_build},
 #endif
+    {"Keyboard", LV_SYMBOL_KEYBOARD,    {}, ui_keyboard_settings_build},
     {"Display", LV_SYMBOL_IMAGE,        {{UI_SYS_BUILD_DISPLAY_CARD, UI_SYS_BUILD_ROTARY}}},
     {"Input",   LV_SYMBOL_KEYBOARD,     {{UI_SYS_BUILD_ROTARY, UI_SYS_BUILD_AUDIO}}},
     {"Sound",   LV_SYMBOL_VOLUME_MAX,   {{UI_SYS_BUILD_AUDIO, UI_SYS_BUILD_POWER_CARD}}},

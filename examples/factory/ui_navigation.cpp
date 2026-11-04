@@ -60,6 +60,7 @@ static bool edge_swipe_is_root(lv_obj_t *obj)
 static bool edge_swipe_starts_on_horizontal_control(lv_obj_t *root, lv_obj_t *obj)
 {
     for (; obj && obj != root; obj = lv_obj_get_parent(obj)) {
+        if (lv_obj_has_flag(obj, UI_FLAG_SWIPE_BACK_OK)) return false;
         if (lv_obj_check_type(obj, &lv_slider_class) ||
                 lv_obj_check_type(obj, &lv_textarea_class) ||
                 lv_obj_has_class(obj, &lv_buttonmatrix_class)) {

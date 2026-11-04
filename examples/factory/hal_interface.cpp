@@ -52,10 +52,11 @@ typedef struct {
     uint8_t watch_face_slots[WATCH_FACE_SLOT_COUNT][5]; // type, then app hash (little endian)
     uint8_t watch_alarms[WATCH_ALARM_COUNT][4];         // flags, hour, minute, days
     uint8_t watch_timer_recent[WATCH_TIMER_RECENT_COUNT][3]; // seconds (little endian), newest first
+    uint8_t watch_keyboard_accents;                     // Language index; 0 = none
     // Keep the blob size stable when adding small persisted settings later.
-    uint8_t reserved[13];
+    uint8_t reserved[12];
 } app_settings_storage_t;
-static_assert(offsetof(app_settings_storage_t, reserved) + 13 ==
+static_assert(offsetof(app_settings_storage_t, reserved) + 12 ==
               offsetof(app_settings_storage_t, watch_lock_mode) + 59,
               "Watch settings must fit in the old spare bytes");
 
@@ -2412,6 +2413,20 @@ void hw_set_watch_alarm(uint8_t index, const watch_alarm_t &alarm)
     }
     if (memcmp(app_settings.watch_alarms[index], stored, sizeof(stored)) == 0) return;
     memcpy(app_settings.watch_alarms[index], stored, sizeof(stored));
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
+uint8_t hw_get_watch_keyboard_accents(void)
+{
+    return app_settings.watch_keyboard_accents;
+}
+
+void hw_set_watch_keyboard_accents(uint8_t language)
+{
+    if (language == app_settings.watch_keyboard_accents) return;
+    app_settings.watch_keyboard_accents = language;
 #ifdef ARDUINO
     save_app_settings();
 #endif
