@@ -214,7 +214,8 @@ static void screen_off(void)
     hw_disable_feedback();
 #ifdef ARDUINO
     hw_dec_brightness(0);
-    hw_low_power_loop();
+    /* A due alarm or timer wakes the watch so it can ring. */
+    hw_low_power_loop(watch_clock_next_wake_ms());
 #ifdef NO_ENTER_LIGHT_SLEEP
     pinMode(0, INPUT_PULLUP);
     while (digitalRead(0) == HIGH) {
@@ -239,6 +240,20 @@ static void screen_off(void)
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
 #endif
+}
+
+void watch_shell_wake(void)
+{
+#ifndef ARDUINO
+    if (screen_off_overlay) {
+        lv_obj_delete(screen_off_overlay);
+        screen_off_overlay = NULL;
+        screen_wake(screen_off_brightness);
+        return;
+    }
+#endif
+    /* On hardware the screen is already on: screen_off() returns only after waking. */
+    lv_display_trigger_activity(NULL);
 }
 
 void watch_shell_poll(void)
@@ -297,6 +312,7 @@ void watch_shell_setup(lv_obj_t *tile)
     update_timer = lv_timer_create(update_timer_cb, WATCH_UPDATE_PERIOD_MS, NULL);
     view = WATCH_VIEW_FACE;
     watch_face_update();
+    watch_clock_init();
 }
 
 #endif /* FACTORY_WATCH_UI */

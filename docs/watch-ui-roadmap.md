@@ -38,6 +38,7 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 5 | One-gesture shared controls: level pages, hold to confirm, whole-row switches, full-screen messages | Done (`525da4f`) |
 | 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Done; NFC Card and Arduino-only apps need checking on hardware |
 | 7 | No typing: presets instead of keyboards | Planned |
+| 6b | Clock app (stopwatch, timer, alarms); date and time move to Settings; one screen margin | Done; alarm wake from light sleep needs checking on hardware |
 
 ## Next phases
 
@@ -127,6 +128,34 @@ App by app, checked in the simulator:
 - **Sub-G, NRF24, Radio and IR Universal** build their own controls. They are external modules or other boards, so they were left as they are.
 - **Mi Light Bar** is registered on the Pager only, so its sliders stay.
 - **Pickers with many options** (time zones: 26 rows) scroll to the current choice when they open. Check on the watch whether that is quick enough.
+
+### What phase 6b changed
+
+Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools should be a stopwatch, timer and alarm.
+
+**Settings → Date & time** (`ui_clock_settings_build()` in `ui_clock_tools.cpp`): Zone, Date, Time and "Sync network time", as the phase 6 Clock Tools page had them. Results show as toasts.
+
+**Clock Tools on the watch** (new `ui_watch_clock.cpp`): three rows, each showing what it is doing (stopwatch time, time left, next alarm or "Snoozed").
+- **Stopwatch:** big digits, Lap / Reset and Start / Pause round buttons, lap splits below (newest first, up to 30). Each digit sits in a cell as wide as the widest digit, so the line doesn't jitter as it counts (the timer countdown too).
+- **Timer:** round presets (1, 3, 5, 10, 15, 30 min), a "Recent" row of round buttons, like the presets, for the 3 most recent custom lengths ("5 min / 2 s", "1 h / 30 min", "1:05:10"; saved, `hw_get_watch_timer_recent()`), and a "Custom" pill that opens h:m:s wheels starting at the last custom length. A custom length equal to a preset isn't added. Running: a ring that empties, the time left, Cancel and Pause / Resume.
+- **Alarm:** up to 4 alarms (`hw_get/set_watch_alarm()`, 16 of the spare settings bytes). Rows show time, repeat and On / Off; tapping one opens On, Time, Repeat and "Delete alarm" (hold). Repeat opens a page with the presets (Once, Every day, Weekdays, Weekends) as a radio list and a switch per day, Monday first; other sets of days show as "Mon Wed Fri" or "Mo Tu We Th Sa". "Add alarm" opens the time wheels; picking a time turns the alarm on and toasts "Rings in …". A "Once" alarm turns itself off after ringing.
+- **Engine:** keeps running when the app is closed. A finished timer or due alarm opens a full-screen page over anything, vibrates every 1.2 s for up to a minute and keeps the screen on. Stop, or Snooze 9 min for alarms. An alarm rings when the minute changes, so setting the clock forward onto an alarm rings it.
+- **Screen off:** `screen_off()` passes `watch_clock_next_wake_ms()` to `hw_low_power_loop()`, and the Ultra's `lightSleep()` takes a new optional timer wake-up (`src/LilyGoWatchUltra.cpp`). Alarms don't wake the watch from deep sleep or power off.
+- Other boards keep the old Clock Tools page.
+
+**Wheels** moved to `ui_watch_pages.cpp` as `ui_create_wheel()`, `ui_push_wheel_page()` and `ui_wheel_number_options()`.
+
+**One screen margin:** `UI_SCREEN_MARGIN` (24 px) is the side margin of app pages, the app list and the ring page; it was 12 px on pages and 0 on the IMU page. Inside cards, `UI_CARD_PAD_HOR` (16 px) lines up caption, icons, values and full-width dividers (they were 95 % wide, so they stopped short of the values); rows have no side padding of their own, and a pressed row's highlight is drawn wider.
+
+**Chevrons only where they're needed:** pill rows (Settings sections, Clock Tools, alarms) and Power's button rows have no ">"; they plainly are buttons. Value rows inside cards (pickers, level rows, Date and Time) keep it, because it is what tells them apart from read-only info rows.
+
+**Icons instead of words where the icon says it:** `ui_create_card_icon_action()` makes an icon-only pill. Confirming wheels (Set date, Set time, alarm time) shows ✓, Start on the custom timer ▶, Add alarm +, and Delete alarm a bin (still hold to confirm). The stopwatch's left button is a lap flag while running and a reset arrow when paused; both are A8 images in `src/img_watch_icons.c`, drawn by `tools/gen_watch_icons.py` (LVGL's symbol font has neither). Words stay where an icon would be a guess: Stop and Snooze on the ring page, Custom, Sync network time.
+
+### Phase 6b follow-ups
+
+- **Check on hardware:** an alarm and a timer ring with the screen off (light-sleep timer wake), the vibration repeats, and alarms survive a restart.
+- No sound yet: `hw_audio_beep()` could add one.
+- Apps that set their own row padding (Music, Net Radio, BLE Scan, Wireless) may sit a few pixels off the card's 16 px line.
 
 ### Phase 7: no typing
 

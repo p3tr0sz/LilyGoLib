@@ -1338,6 +1338,27 @@ void hw_set_watch_lock_mode(uint8_t mode);
 watch_slot_setting_t hw_get_watch_face_slot(uint8_t index);
 void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot);
 
+/* Alarms of the watch Clock app, kept in spare settings bytes. */
+#define WATCH_ALARM_COUNT       4
+
+typedef struct {
+    bool used;              /* The slot holds an alarm */
+    bool enabled;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t days;           /* Bit n = struct tm wday n (0 = Sunday); 0 rings once */
+} watch_alarm_t;
+
+watch_alarm_t hw_get_watch_alarm(uint8_t index);
+void hw_set_watch_alarm(uint8_t index, const watch_alarm_t &alarm);
+
+/* Custom timer lengths used last, newest first; 0 marks an empty slot. */
+#define WATCH_TIMER_RECENT_COUNT    3
+#define WATCH_TIMER_MAX_SECONDS     (24UL * 3600UL - 1UL)
+uint32_t hw_get_watch_timer_recent(uint8_t index);
+/* Puts `seconds` first; an equal entry further down moves up instead of repeating. */
+void hw_add_watch_timer_recent(uint32_t seconds);
+
 /* Pedometer: the BHI260AP step counter on boards with USING_BHI260_SENSOR,
  * a fixed count on desktop. It runs only while enabled, to save power. */
 void hw_set_step_counter_enabled(bool enabled);
@@ -1358,7 +1379,9 @@ const uint32_t hw_get_disp_timeout_ms();
  *
  * This function puts the hardware into a low - power loop state to conserve energy.
  */
-void hw_low_power_loop();
+/* Light sleep until a wake source fires. On the T-Watch Ultra, a non-zero
+ * wake_after_ms also wakes it after that long (alarms and timers). */
+void hw_low_power_loop(uint32_t wake_after_ms = 0);
 
 /**
  * @brief Increase the display brightness level.

@@ -310,6 +310,66 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
     return row;
 }
 
+/* ── Scroll wheels ── */
+
+lv_obj_t *ui_create_wheel(lv_obj_t *parent, const char *options, uint32_t sel,
+                          int32_t width, bool infinite)
+{
+    lv_obj_t *roller = lv_roller_create(parent);
+    lv_roller_set_options(roller, options, infinite ? LV_ROLLER_MODE_INFINITE : LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+    lv_roller_set_selected(roller, sel, LV_ANIM_OFF);
+    lv_obj_set_width(roller, width);
+    lv_obj_set_style_text_font(roller, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_line_space(roller, 18, 0);
+    lv_obj_set_style_text_color(roller, UI_COLOR_TEXT_SECONDARY, 0);
+    /* Only the chosen row has a band; its neighbours fade into the page. */
+    lv_obj_set_style_bg_opa(roller, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(roller, 0, 0);
+    lv_obj_set_style_text_color(roller, UI_COLOR_TEXT_PRIMARY, LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(roller, UI_COLOR_CARD_FOCUS, LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_radius(roller, 16, LV_PART_SELECTED);
+    lv_group_remove_obj(roller);
+    return roller;
+}
+
+/* A page of wheels in one row; the caller adds them and a "Set" pill under them. */
+lv_obj_t *ui_push_wheel_page(lv_obj_t *from, const char *title, lv_obj_t **wheels_row)
+{
+    lv_obj_t *content = ui_push_page(from, title);
+    lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *row = lv_obj_create(content);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 14, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    *wheels_row = row;
+    return content;
+}
+
+void ui_wheel_number_options(char *out, size_t out_size, int count, int first)
+{
+    size_t len = 0;
+    if (out_size) out[0] = 0;
+    for (int i = first; i < first + count && len + 4 <= out_size; ++i) {
+        len += (size_t)lv_snprintf(out + len, out_size - len, "%s%02d", i == first ? "" : "\n", i);
+    }
+}
+
+lv_obj_t *ui_create_card_icon_action(lv_obj_t *card, const char *symbol, lv_event_cb_t cb)
+{
+    lv_obj_t *row = ui_create_card_action(card, symbol, symbol, cb);
+    lv_obj_t *label = lv_obj_get_child(lv_obj_get_child(row, -1), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_32, 0);
+    return row;
+}
+
 /* ── Level rows ──
  * The row holds a hidden lv_slider as its last child: it keeps the value and
  * sends LV_EVENT_VALUE_CHANGED to the app, as an inline slider did. */

@@ -62,6 +62,18 @@ void watch_lock_screen_build(lv_obj_t *content);
 /* Open the face editor as an app; slot >= 0 also opens that slot's choices. */
 void watch_face_editor_open(int slot);
 
+/* Clock Tools on the watch (ui_watch_clock.cpp): stopwatch, timer and alarms.
+ * The engine runs while the app is closed and rings over any screen. */
+void watch_clock_init(void);
+void watch_clock_build(lv_obj_t *content);
+/* Milliseconds until the next timer or alarm is due, for the light-sleep wake-up;
+ * 0 when nothing is due. */
+uint32_t watch_clock_next_wake_ms(void);
+/* Turns the screen back on if it is off (simulator overlay) and resets the idle timer. */
+void watch_shell_wake(void);
+/* Settings > Date & time (ui_clock_tools.cpp) */
+void ui_clock_settings_build(lv_obj_t *content);
+
 /* App list (ui_app_list.cpp) */
 lv_obj_t *app_list_create(lv_obj_t *parent);
 void app_list_update(void);

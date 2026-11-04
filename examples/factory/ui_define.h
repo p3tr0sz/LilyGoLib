@@ -277,8 +277,19 @@ lv_obj_t *ui_create_card_level(lv_obj_t *card, const char *icon, const char *tit
  * child is the button, and the button's first child is the label. */
 lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *label,
                                 lv_event_cb_t cb);
+/* An action pill that shows only an icon (LV_SYMBOL_OK, …), for verbs the icon
+ * already says, such as confirming the wheels on a "Set" page. */
+lv_obj_t *ui_create_card_icon_action(lv_obj_t *card, const char *symbol, lv_event_cb_t cb);
 /* A short message at the bottom of the screen that goes away by itself. */
 void ui_toast(const char *text);
+/* Scroll wheels for picking numbers: ui_push_wheel_page() pushes a page with an
+ * empty row for the wheels (returned in *wheels_row); add a "Set" pill to the
+ * returned content after the wheels. */
+lv_obj_t *ui_push_wheel_page(lv_obj_t *from, const char *title, lv_obj_t **wheels_row);
+lv_obj_t *ui_create_wheel(lv_obj_t *parent, const char *options, uint32_t sel,
+                          int32_t width, bool infinite);
+/* "00\n01\n…" up to count - 1, for ui_create_wheel(). out needs 3 * count bytes. */
+void ui_wheel_number_options(char *out, size_t out_size, int count, int first);
 #endif
 /* For actions that can't be undone: on the watch, the control's LV_EVENT_CLICKED
  * handlers run only after it is held for about a second; a tap shows "Hold to

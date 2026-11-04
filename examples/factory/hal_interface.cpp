@@ -50,10 +50,12 @@ typedef struct {
     // Watch UI. Byte fields only, so the layout and blob size stay the same.
     uint8_t watch_lock_mode;
     uint8_t watch_face_slots[WATCH_FACE_SLOT_COUNT][5]; // type, then app hash (little endian)
+    uint8_t watch_alarms[WATCH_ALARM_COUNT][4];         // flags, hour, minute, days
+    uint8_t watch_timer_recent[WATCH_TIMER_RECENT_COUNT][3]; // seconds (little endian), newest first
     // Keep the blob size stable when adding small persisted settings later.
-    uint8_t reserved[38];
+    uint8_t reserved[13];
 } app_settings_storage_t;
-static_assert(offsetof(app_settings_storage_t, reserved) + 38 ==
+static_assert(offsetof(app_settings_storage_t, reserved) + 13 ==
               offsetof(app_settings_storage_t, watch_lock_mode) + 59,
               "Watch settings must fit in the old spare bytes");
 
@@ -2380,6 +2382,72 @@ void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot)
 #endif
 }
 
+#define WATCH_ALARM_USED     0x01
+#define WATCH_ALARM_ENABLED  0x02
+
+watch_alarm_t hw_get_watch_alarm(uint8_t index)
+{
+    watch_alarm_t alarm = {false, false, 7, 0, 0};
+    if (index >= WATCH_ALARM_COUNT) return alarm;
+    const uint8_t *stored = app_settings.watch_alarms[index];
+    /* Zeroed spare bytes read as an empty slot. */
+    if (!(stored[0] & WATCH_ALARM_USED) || stored[1] > 23 || stored[2] > 59) return alarm;
+    alarm.used = true;
+    alarm.enabled = (stored[0] & WATCH_ALARM_ENABLED) != 0;
+    alarm.hour = stored[1];
+    alarm.minute = stored[2];
+    alarm.days = stored[3] & 0x7F;
+    return alarm;
+}
+
+void hw_set_watch_alarm(uint8_t index, const watch_alarm_t &alarm)
+{
+    if (index >= WATCH_ALARM_COUNT || alarm.hour > 23 || alarm.minute > 59) return;
+    uint8_t stored[4] = {0, 0, 0, 0};
+    if (alarm.used) {
+        stored[0] = WATCH_ALARM_USED | (alarm.enabled ? WATCH_ALARM_ENABLED : 0);
+        stored[1] = alarm.hour;
+        stored[2] = alarm.minute;
+        stored[3] = alarm.days & 0x7F;
+    }
+    if (memcmp(app_settings.watch_alarms[index], stored, sizeof(stored)) == 0) return;
+    memcpy(app_settings.watch_alarms[index], stored, sizeof(stored));
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
+uint32_t hw_get_watch_timer_recent(uint8_t index)
+{
+    if (index >= WATCH_TIMER_RECENT_COUNT) return 0;
+    const uint8_t *b = app_settings.watch_timer_recent[index];
+    uint32_t seconds = (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16);
+    return seconds <= WATCH_TIMER_MAX_SECONDS ? seconds : 0;
+}
+
+void hw_add_watch_timer_recent(uint32_t seconds)
+{
+    if (seconds == 0 || seconds > WATCH_TIMER_MAX_SECONDS) return;
+    uint32_t list[WATCH_TIMER_RECENT_COUNT];
+    uint8_t count = 0;
+    list[count++] = seconds;
+    for (uint8_t i = 0; i < WATCH_TIMER_RECENT_COUNT && count < WATCH_TIMER_RECENT_COUNT; i++) {
+        uint32_t old = hw_get_watch_timer_recent(i);
+        if (old && old != seconds) list[count++] = old;
+    }
+    uint8_t stored[WATCH_TIMER_RECENT_COUNT][3] = {};
+    for (uint8_t i = 0; i < count; i++) {
+        stored[i][0] = (uint8_t)list[i];
+        stored[i][1] = (uint8_t)(list[i] >> 8);
+        stored[i][2] = (uint8_t)(list[i] >> 16);
+    }
+    if (memcmp(app_settings.watch_timer_recent, stored, sizeof(stored)) == 0) return;
+    memcpy(app_settings.watch_timer_recent, stored, sizeof(stored));
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
 const uint32_t hw_get_disp_timeout_ms()
 {
     return user_setting.disp_timeout_second * 1000UL;
@@ -4442,12 +4510,17 @@ bool hw_set_haptic_effect(uint8_t effect)
 #endif
 }
 
-void hw_low_power_loop()
+void hw_low_power_loop(uint32_t wake_after_ms)
 {
 #ifdef ARDUINO
     // 测试深度睡眠
     // instance.sleep();
+#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+    instance.lightSleep(WAKEUP_SRC_TOUCH_PANEL, wake_after_ms);
+#else
+    (void)wake_after_ms;
     instance.lightSleep();
+#endif
 #if defined(USING_BHI260_SENSOR)
     /* The sensor interrupt doesn't wake the watch. Read what the step counter
      * queued during sleep, or its interrupt line stays high and no new edge comes. */

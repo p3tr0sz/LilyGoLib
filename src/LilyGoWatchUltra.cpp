@@ -733,7 +733,7 @@ uint64_t LilyGoUltra::checkWakeupPins(WakeupSource_t wakeup_src)
     return wakeup_pin;
 }
 
-void LilyGoUltra::lightSleep(WakeupSource_t wakeup_src)
+void LilyGoUltra::lightSleep(WakeupSource_t wakeup_src, uint32_t timer_ms)
 {
     uint64_t wakeup_pin = checkWakeupPins(wakeup_src);
     if (wakeup_pin == 0) {
@@ -751,6 +751,9 @@ void LilyGoUltra::lightSleep(WakeupSource_t wakeup_src)
         LILYGO_LOG_E("Failed to enable T-Watch Ultra light-sleep wakeup: %s",
                      esp_err_to_name(wakeup_result));
         return;
+    }
+    if (timer_ms) {
+        esp_sleep_enable_timer_wakeup((uint64_t)timer_ms * 1000ULL);
     }
 
 #ifndef ARDUINO_LILYGO_LORA_SX1280
@@ -804,6 +807,9 @@ void LilyGoUltra::lightSleep(WakeupSource_t wakeup_src)
 
     const esp_err_t sleep_result = esp_light_sleep_start();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1);
+    if (timer_ms) {
+        esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    }
     if (sleep_result != ESP_OK) {
         LILYGO_LOG_E("Failed to enter T-Watch Ultra light sleep: %s",
                      esp_err_to_name(sleep_result));

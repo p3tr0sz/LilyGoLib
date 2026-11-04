@@ -445,8 +445,9 @@ public:
      *
      * @param wakeup_src The wake-up source (default: touch panel). Supported physical
      * wake-up sources are power key, boot button, and touch panel.
+     * @param timer_ms Also wake after this many milliseconds; 0 (default) means no timer.
      */
-    void lightSleep(WakeupSource_t wakeup_src = WAKEUP_SRC_TOUCH_PANEL);
+    void lightSleep(WakeupSource_t wakeup_src = WAKEUP_SRC_TOUCH_PANEL, uint32_t timer_ms = 0);
 
     /**
      * @brief Put the device into sleep mode.
