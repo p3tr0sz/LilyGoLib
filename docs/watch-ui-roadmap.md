@@ -37,7 +37,7 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 4 | Configurable face and lock screen | Done; steps need checking on hardware |
 | 5 | One-gesture shared controls: level pages, hold to confirm, whole-row switches, full-screen messages | Done (`525da4f`) |
 | 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Done; NFC Card and Arduino-only apps need checking on hardware |
-| 7 | No typing: presets instead of keyboards | Planned |
+| 7 | No typing: presets instead of keyboards, a full-screen keyboard where text is unavoidable | Done; LoRa Hub and Walkie need checking on hardware |
 | 6b | Clock app (stopwatch, timer, alarms); date and time move to Settings; one screen margin | Done; alarm wake from light sleep needs checking on hardware |
 
 ## Next phases
@@ -163,6 +163,29 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 - **QRCode:** content from templates only (device info, Wi-Fi, URL); the free-text field goes on other boards.
 - **WiFi password:** keep the keyboard, but full screen with large keys. Check whether provisioning from a phone (BLE or SoftAP) is worth it.
 - **LoRa Hub, Walkie, IR:** review each text field; replace with presets or numeric pickers where possible.
+
+### What phase 7 changed
+
+**Shared** (`ui_watch_pages.cpp`):
+- **`ui_open_text_page(from, title, ta)`:** a full-screen keyboard page. A big pill field at the top holds a copy of the text; LVGL's keyboard fills the rest (keys about 40 × 62 px, letters on grey, mode and punctuation keys lighter with accent text). ✓ writes the text back to `ta` and sends `LV_EVENT_VALUE_CHANGED` and `LV_EVENT_READY`, so apps' existing handlers run; the keyboard key or swiping right leaves `ta` as it was. Fields that accept only digits get the number pad. Password mode, maximum length, accepted characters and placeholder are copied from `ta`.
+- **Text field rows:** `ui_create_card_item()` with an `lv_textarea` now calls `ui_text_adopt()` on the watch, as dropdowns call `ui_picker_adopt()`. The field is hidden and stays the row's last child; the row shows its text ("Enter >" when empty, dots for a password) and opens the keyboard page. This covers LoRa Hub's profile Name, Seconds and Custom Sync and Walkie's Name without changes in those apps.
+
+**WiFi Tools:** Host is a picker: Gateway (the current gateway IP), 1.1.1.1, 8.8.8.8, example.com, lilygo.cc, the last typed host, and "Other..." which opens the keyboard. The typed host is kept until restart.
+
+**QRCode:** no typing on the watch. "Show" picks Device, WiFi, Location (with GNSS) or Website and the code updates at once; the text it holds is shown under a 240 px code. Other boards keep the text field.
+
+**WiFi:** tapping a network pushes a page instead of the small pop-up: Signal, Security, Password (keyboard page; a saved password is filled in), Show password, and a Connect pill. Swipe right cancels. "Forget" and "Scan" are full-width pills ("Forget network" still needs a hold, "Scan networks").
+
+**LoRa Hub chat:** the text bar becomes a "Message" pill. It opens quick replies (OK, Yes, No, On my way, Call me, Where are you?), each sent with one tap, and "Type a message" on the keyboard page.
+
+**Not changed:** the IR apps aren't built for the Ultra (no IR transmitter). Sub-G, NRF24 and Radio are external modules; any text field they put in a card row gets the keyboard page anyway.
+
+### Phase 7 follow-ups
+
+- **Check on hardware:** LoRa Hub (quick replies send; profile editor fields open the number pad or keyboard and save) and Walkie's Name. Neither runs in the simulator.
+- **Phone provisioning for Wi-Fi:** worth adding later. Espressif's BLE provisioning (ESP BLE Prov app) or a SoftAP page would remove the password typing; it needs a provisioning library and a pairing flow, so it is a separate piece of work.
+- WiFi's network rows are still the small bordered rows from other boards; they could become pill rows.
+- LVGL's keyboard has 10 keys per row, so letters stay about 40 px wide on this screen. A T9-style or two-step keyboard would give bigger keys if typing proves hard.
 
 ### What phases 1–2 changed
 

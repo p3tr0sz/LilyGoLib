@@ -38,6 +38,9 @@ static lv_timer_t *wifi_connecting_timer = NULL;
 static uint32_t wifi_connecting_deadline = 0;
 static lv_group_t *connect_prev_group = NULL;
 static lv_group_t *connect_modal_group = NULL;
+#if FACTORY_WATCH_UI
+static lv_obj_t *connect_page = NULL;   /* Watch: the pushed Connect page's content */
+#endif
 
 #ifdef USING_TOUCHPAD
 static lv_obj_t *keyboard = NULL;
@@ -242,6 +245,12 @@ static void close_connect_modal(void)
         lv_obj_delete(connect_overlay);
         connect_overlay = NULL;
     }
+#if FACTORY_WATCH_UI
+    if (connect_page) {
+        ui_pop_page(connect_page);
+        connect_page = NULL;
+    }
+#endif
     restore_connect_modal_group();
     connect_panel = NULL;
     connect_password_ta = NULL;
@@ -473,6 +482,8 @@ static void show_password_cb(lv_event_t *e)
     lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
     bool show = lv_obj_has_state(sw, LV_STATE_CHECKED);
     lv_textarea_set_password_mode(connect_password_ta, !show);
+    /* The watch row shows dots or the text; it redraws on VALUE_CHANGED. */
+    lv_obj_send_event(connect_password_ta, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 static void connect_selected_cb(lv_event_t *e)
@@ -533,6 +544,53 @@ static lv_obj_t *create_modal_button(lv_obj_t *parent, const char *text, lv_colo
     return btn;
 }
 
+#if FACTORY_WATCH_UI
+static void connect_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    connect_page = NULL;
+    connect_password_ta = NULL;
+    connect_show_switch = NULL;
+}
+
+static void watch_password_cb(lv_event_t *e)
+{
+    const char *pwd = lv_textarea_get_text(lv_event_get_target_obj(e));
+    snprintf(wifi_password, sizeof(wifi_password), "%s", pwd ? pwd : "");
+}
+
+/* Watch: a pushed page instead of the pop-up. The password row opens the
+ * full-screen keyboard; a saved password is filled in. Swipe right cancels. */
+static void open_connect_page(const wifi_scan_params_t &ap, bool open_ap)
+{
+    lv_obj_t *content = ui_push_page(page_container, ssid_display(ap));
+    connect_page = content;
+    lv_obj_add_event_cb(content, connect_page_delete_cb, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *card = ui_create_card(content, NULL);
+    char buf[32];
+    lv_snprintf(buf, sizeof(buf), "%d dBm", ap.rssi);
+    lv_obj_t *row = ui_create_card_info(card, LV_SYMBOL_WIFI, "Signal", buf);
+    lv_obj_set_style_text_color(lv_obj_get_child(row, -1), rssi_color(ap.rssi), 0);
+    ui_create_card_info(card, LV_SYMBOL_SETTINGS, "Security", auth_mode_str(ap.authmode));
+
+    if (!open_ap) {
+        connect_password_ta = lv_textarea_create(lv_obj_create(card));
+        lv_textarea_set_one_line(connect_password_ta, true);
+        lv_textarea_set_password_mode(connect_password_ta, true);
+        lv_textarea_set_max_length(connect_password_ta, sizeof(wifi_password) - 1);
+        lv_textarea_set_placeholder_text(connect_password_ta, "Enter");
+        lv_textarea_set_text(connect_password_ta, wifi_password);
+        lv_obj_add_event_cb(connect_password_ta, watch_password_cb, LV_EVENT_VALUE_CHANGED, NULL);
+        ui_create_card_item(card, LV_SYMBOL_EYE_CLOSE, "Password", connect_password_ta);
+        lv_obj_t *show_row = ui_create_card_switch(card, LV_SYMBOL_EYE_OPEN, "Show password", false,
+                                                   show_password_cb);
+        connect_show_switch = lv_obj_get_child(show_row, -1);
+    }
+    ui_create_card_action(content, LV_SYMBOL_OK, "Connect", connect_selected_cb);
+}
+#endif
+
 static void open_connect_modal(void)
 {
     if (selected_index < 0 || selected_index >= (int)scan_results.size()) return;
@@ -544,6 +602,11 @@ static void open_connect_modal(void)
     snprintf(wifi_ssid, sizeof(wifi_ssid), "%s", ap.ssid);
     wifi_password[0] = '\0';
     if (!open_ap) known_password_for_ssid(wifi_ssid, wifi_password, sizeof(wifi_password));
+
+#if FACTORY_WATCH_UI
+    open_connect_page(ap, open_ap);
+    return;
+#endif
 
     connect_overlay = lv_obj_create(lv_layer_top());
     lv_obj_set_size(connect_overlay, LV_PCT(100), LV_PCT(100));
@@ -919,6 +982,10 @@ static const lv_font_t *wifi_action_font(void)
 
 static lv_obj_t *add_right_action_button(lv_obj_t *card, const char *icon, const char *text, lv_event_cb_t cb)
 {
+#if FACTORY_WATCH_UI
+    /* One verb on a full-width pill, as other watch apps have it. */
+    return ui_create_card_action(card, icon, text, cb);
+#endif
     lv_obj_t *btn = lv_btn_create(lv_obj_create(card));
     lv_obj_set_size(btn, 96, 32);
     lv_obj_set_style_bg_color(btn, UI_COLOR_ACCENT, 0);
@@ -991,13 +1058,16 @@ void ui_wireless_enter(lv_obj_t *parent)
     add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
     add_info_row(card, LV_SYMBOL_WIFI, "RSSI", "--", &rssi_label);
     add_info_row(card, LV_SYMBOL_SETTINGS, "MAC", "--", &mac_label);
-    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE, "Forget", disconnect_event_cb);
+    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE,
+                                                   FACTORY_WATCH_UI ? "Forget network" : "Forget",
+                                                   disconnect_event_cb);
     ui_require_hold(lv_obj_get_child(forget_row, -1));
 
     ap_list_card = ui_create_card(page_container, "Networks");
     lv_obj_t *scan_row = ui_create_card_info(ap_list_card, LV_SYMBOL_LIST, "Scan", "Not scanned");
     scan_summary_label = lv_obj_get_child(scan_row, lv_obj_get_child_count(scan_row) - 1);
-    add_right_action_button(ap_list_card, LV_SYMBOL_REFRESH, "Scan", scan_event_cb);
+    add_right_action_button(ap_list_card, LV_SYMBOL_REFRESH, FACTORY_WATCH_UI ? "Scan networks" : "Scan",
+                            scan_event_cb);
 
     ap_list_cont = lv_obj_create(ap_list_card);
     lv_obj_set_size(ap_list_cont, LV_PCT(100), is_screen_small() ? 162 : 218);

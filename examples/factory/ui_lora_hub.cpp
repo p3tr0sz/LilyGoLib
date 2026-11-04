@@ -1877,8 +1877,82 @@ static void build_chat_area(lv_obj_t *parent)
     lv_obj_set_scroll_dir(msg_cont, LV_DIR_NONE);
 }
 
+#if FACTORY_WATCH_UI
+/* ── Watch: quick replies instead of a text bar ──
+ * "Message" opens a list of short replies, sent with one tap, and "Type a
+ * message" for anything else, on the full-screen keyboard. */
+
+static const char *quick_replies[] = {"OK", "Yes", "No", "On my way", "Call me", "Where are you?"};
+
+static void message_send(lv_obj_t *page_content, const char *text)
+{
+    if (!input_ta || !text || !text[0]) return;
+    lv_textarea_set_text(input_ta, text);
+    hw_feedback();
+    send_current_input();
+    ui_pop_page(page_content);
+}
+
+static void quick_reply_cb(lv_event_t *e)
+{
+    lv_obj_t *row = lv_event_get_current_target_obj(e);
+    const char *text = (const char *)lv_event_get_user_data(e);
+    message_send(lv_obj_get_parent(row), text);
+}
+
+static void typed_message_cb(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target_obj(e);
+    message_send(lv_obj_get_parent(ta), lv_textarea_get_text(ta));
+}
+
+static void type_message_cb(lv_event_t *e)
+{
+    lv_obj_t *row = lv_event_get_current_target_obj(e);
+    lv_obj_t *ta = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_textarea_set_text(ta, "");
+    ui_open_text_page(row, "Message", ta);
+}
+
+static void open_message_page_cb(lv_event_t *e)
+{
+    lv_obj_t *content = ui_push_page(lv_event_get_current_target_obj(e), "Message");
+    /* What the keyboard page types; READY sends it. */
+    lv_obj_t *ta = lv_textarea_create(content);
+    lv_obj_add_flag(ta, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, 140);
+    lv_textarea_set_placeholder_text(ta, "Message");
+    lv_group_remove_obj(ta);
+    lv_obj_add_event_cb(ta, typed_message_cb, LV_EVENT_READY, NULL);
+
+    ui_create_menu_row(content, LV_SYMBOL_KEYBOARD, "Type a message", type_message_cb, ta);
+    for (const char *reply : quick_replies) {
+        ui_create_menu_row(content, LV_SYMBOL_RIGHT, reply, quick_reply_cb, (void *)reply);
+    }
+}
+#endif
+
 static void build_input_area(lv_obj_t *parent)
 {
+#if FACTORY_WATCH_UI
+    lv_obj_t *watch_bar = lv_obj_create(parent);
+    input_bar = watch_bar;
+    input_bar_parent = parent;
+    lv_obj_remove_style_all(watch_bar);
+    lv_obj_set_size(watch_bar, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(watch_bar, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(watch_bar, LV_OBJ_FLAG_SCROLLABLE);
+    /* send_current_input() reads the message from here. */
+    input_ta = lv_textarea_create(watch_bar);
+    lv_obj_add_flag(input_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_one_line(input_ta, true);
+    lv_textarea_set_max_length(input_ta, 140);
+    lv_group_remove_obj(input_ta);
+    ui_create_card_action(watch_bar, LV_SYMBOL_ENVELOPE, "Message", open_message_page_cb);
+    update_session_control_visibility();
+    return;
+#endif
     lv_obj_t *bar = lv_obj_create(parent);
     input_bar = bar;
     input_bar_parent = parent;

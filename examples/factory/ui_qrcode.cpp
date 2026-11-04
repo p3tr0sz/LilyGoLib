@@ -110,8 +110,39 @@ static void build_gnss_qr(void)
 #endif
 }
 
+#if FACTORY_WATCH_UI
+/* Watch: no typing. The code comes from the picked template, and the label under
+ * it says what it holds. */
+static const uint8_t watch_templates[] = {
+    QR_TEMPLATE_DEVICE, QR_TEMPLATE_WIFI,
+#if !defined(EXCLUDE_GPS)
+    QR_TEMPLATE_GNSS,
+#endif
+    QR_TEMPLATE_CUSTOM,
+};
+static const char *watch_template_options =
+    "Device\nWiFi\n"
+#if !defined(EXCLUDE_GPS)
+    "Location\n"
+#endif
+    "Website";
+
+static void update_qr_watch(void)
+{
+    if (!qr_obj) return;
+    lv_result_t result = lv_qrcode_update(qr_obj, qr_content, strlen(qr_content));
+    if (status_label) {
+        lv_label_set_text(status_label, result == LV_RESULT_OK ? qr_content : "Too long for a QR code");
+    }
+}
+#endif
+
 static void update_qr_from_text(void)
 {
+#if FACTORY_WATCH_UI
+    update_qr_watch();
+    return;
+#endif
     if (!qr_obj || !content_ta) return;
     const char *text = lv_textarea_get_text(content_ta);
     if (!text || !text[0]) {
@@ -154,6 +185,10 @@ static void load_template(uint8_t type)
 static void type_change_cb(lv_event_t *e)
 {
     uint8_t type = lv_dropdown_get_selected(type_dd);
+#if FACTORY_WATCH_UI
+    type = type < sizeof(watch_templates) ? watch_templates[type] : QR_TEMPLATE_DEVICE;
+    qr_content[0] = 0;  /* "Website" falls back to the default URL */
+#endif
     load_template(type);
 }
 
@@ -237,7 +272,7 @@ void ui_qrcode_enter(lv_obj_t *parent)
     page_container = ui_create_app_page(parent, "QRCode", back_event_handler);
 
     lv_obj_t *card = ui_create_card(page_container, "Code");
-    lv_coord_t qr_size = is_screen_small() ? 128 : 156;
+    lv_coord_t qr_size = FACTORY_WATCH_UI ? 240 : (is_screen_small() ? 128 : 156);
 
     qr_box = lv_obj_create(card);
     lv_obj_set_size(qr_box, LV_PCT(100), qr_size + 16);
@@ -267,6 +302,23 @@ void ui_qrcode_enter(lv_obj_t *parent)
     lv_label_set_text(status_label, "Ready.");
     lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
+    lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(status_label, LV_PCT(100));
+    lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+    lv_obj_remove_flag(qr_obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_group_remove_obj(qr_obj);
+
+    card = ui_create_card(page_container, NULL);
+    lv_obj_t *type_row = ui_create_card_picker(card, LV_SYMBOL_LIST, "Show", watch_template_options,
+                                               0, type_change_cb);
+    type_dd = lv_obj_get_child(type_row, -1);
+    qr_content[0] = 0;
+    load_template(QR_TEMPLATE_DEVICE);
+    return;
+#endif
 
     card = ui_create_card(page_container, "Content");
     type_dd = card_dropdown(card, LV_SYMBOL_LIST, "Template",

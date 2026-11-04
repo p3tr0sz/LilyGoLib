@@ -1514,9 +1514,12 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
 #endif
     }
 
-    /* On the watch a dropdown becomes a picker value that fills the rest of the row. */
+    /* On the watch a dropdown becomes a picker value that fills the rest of the row,
+     * and a text field a value that opens the keyboard page. */
     const bool widget_is_picker = FACTORY_WATCH_UI && widget_is_dropdown;
-    if (widget && !widget_is_picker && lv_obj_get_style_flex_grow(widget, LV_PART_MAIN) == 0) {
+    const bool widget_is_text = FACTORY_WATCH_UI && widget && lv_obj_check_type(widget, &lv_textarea_class);
+    if (widget && !widget_is_picker && !widget_is_text &&
+            lv_obj_get_style_flex_grow(widget, LV_PART_MAIN) == 0) {
         lv_obj_t *spacer = lv_obj_create(row);
         lv_obj_set_size(spacer, 1, 1);
         lv_obj_set_flex_grow(spacer, 1);
@@ -1578,9 +1581,10 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     }
 
 #if FACTORY_WATCH_UI
-    if (widget_is_picker) {
+    if (widget_is_picker || widget_is_text) {
         lv_obj_t *title_label = title ? lv_obj_get_child(row, icon ? 1 : 0) : NULL;
-        ui_picker_adopt(row, title_label, widget);
+        if (widget_is_picker) ui_picker_adopt(row, title_label, widget);
+        else ui_text_adopt(row, title_label, widget);
     }
 #endif
 

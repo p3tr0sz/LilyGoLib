@@ -78,11 +78,85 @@ static void refresh_cb(lv_event_t *e)
     set_result("Info refreshed.", UI_COLOR_TEXT_SECONDARY);
 }
 
+#if FACTORY_WATCH_UI
+/* ── Watch: the host is picked, not typed ──
+ * A picker of the gateway, two public resolvers and two names, plus the last host
+ * typed through "Other..." (kept until restart). Only "Other..." opens the keyboard. */
+
+static const char *host_presets[] = {"Gateway", "1.1.1.1", "8.8.8.8", "example.com", "lilygo.cc"};
+#define HOST_PRESET_COUNT   (sizeof(host_presets) / sizeof(host_presets[0]))
+#define HOST_OTHER          "Other..."   /* The fonts have no ellipsis */
+
+static lv_obj_t *host_dd = NULL;
+static char custom_host[65];    /* Survives closing the app */
+static uint8_t host_sel = 0;
+static char gateway_text[20];
+
+static uint8_t host_other_index(void)
+{
+    return (uint8_t)(HOST_PRESET_COUNT + (custom_host[0] ? 1 : 0));
+}
+
+static void host_options_update(void)
+{
+    if (!host_dd) return;
+    char options[160] = {0};
+    for (size_t i = 0; i < HOST_PRESET_COUNT; ++i) {
+        lv_strcat(options, host_presets[i]);
+        lv_strcat(options, "\n");
+    }
+    if (custom_host[0]) {
+        lv_strcat(options, custom_host);
+        lv_strcat(options, "\n");
+    }
+    lv_strcat(options, HOST_OTHER);
+    lv_dropdown_set_options(host_dd, options);
+    if (host_sel >= host_other_index()) host_sel = 0;
+    lv_dropdown_set_selected(host_dd, host_sel);
+}
+
+static void host_picked_cb(lv_event_t *e)
+{
+    uint8_t sel = (uint8_t)lv_dropdown_get_selected(host_dd);
+    if (sel != host_other_index()) {
+        host_sel = sel;
+        return;
+    }
+    /* Keep the last real choice until a host is typed. */
+    lv_dropdown_set_selected(host_dd, host_sel);
+    lv_textarea_set_text(target_ta, custom_host);
+    ui_open_text_page(host_dd, "Host", target_ta);
+}
+
+static void host_typed_cb(lv_event_t *e)
+{
+    const char *text = lv_textarea_get_text(target_ta);
+    if (!text || !text[0]) return;
+    snprintf(custom_host, sizeof(custom_host), "%s", text);
+    host_sel = HOST_PRESET_COUNT;
+    host_options_update();
+}
+
+static const char *target_text(void)
+{
+    if (host_sel == 0) {
+#ifdef ARDUINO
+        snprintf(gateway_text, sizeof(gateway_text), "%s", WiFi.gatewayIP().toString().c_str());
+#else
+        snprintf(gateway_text, sizeof(gateway_text), "192.168.1.1");
+#endif
+        return gateway_text;
+    }
+    if (host_sel < HOST_PRESET_COUNT) return host_presets[host_sel];
+    return custom_host[0] ? custom_host : "example.com";
+}
+#else
 static const char *target_text(void)
 {
     const char *target = lv_textarea_get_text(target_ta);
     return target && target[0] ? target : "example.com";
 }
+#endif
 
 static void dns_cb(lv_event_t *e)
 {
@@ -236,6 +310,9 @@ static void back_event_handler(lv_event_t *e)
     rssi_label = NULL;
     target_ta = NULL;
     port_dd = NULL;
+#if FACTORY_WATCH_UI
+    host_dd = NULL;
+#endif
     result_label = NULL;
     menu_show();
 }
@@ -255,6 +332,19 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     ui_create_card_button(card, LV_SYMBOL_REFRESH, "Update", "Refresh", refresh_cb);
 
     card = ui_create_card(page_container, "Diagnostics");
+#if FACTORY_WATCH_UI
+    lv_obj_t *host_row = ui_create_card_picker(card, LV_SYMBOL_EDIT, "Host", "", 0, host_picked_cb);
+    host_dd = lv_obj_get_child(host_row, -1);
+    host_options_update();
+    /* Holds what "Other..." types; the keyboard page edits it. */
+    target_ta = lv_textarea_create(page_container);
+    lv_obj_add_flag(target_ta, LV_OBJ_FLAG_HIDDEN);
+    lv_textarea_set_one_line(target_ta, true);
+    lv_textarea_set_max_length(target_ta, sizeof(custom_host) - 1);
+    lv_textarea_set_placeholder_text(target_ta, "host.name");
+    lv_obj_add_event_cb(target_ta, host_typed_cb, LV_EVENT_READY, NULL);
+    lv_group_remove_obj(target_ta);
+#else
     target_ta = lv_textarea_create(card);
     lv_obj_set_width(target_ta, 150);
     lv_obj_set_height(target_ta, 34);
@@ -287,6 +377,7 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     lv_obj_add_event_cb(target_ta, target_ta_cb, LV_EVENT_DEFOCUSED, NULL);
     lv_obj_add_event_cb(target_ta, target_ta_cb, LV_EVENT_DELETE, NULL);
     ui_create_card_item(card, LV_SYMBOL_EDIT, "Host", target_ta);
+#endif
 
     port_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Port", "80\n443\n1883\n8080", 0);
     ui_create_card_button(card, LV_SYMBOL_WIFI, "DNS", FACTORY_WATCH_UI ? "DNS lookup" : "Lookup", dns_cb);
@@ -300,7 +391,7 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     lv_label_set_long_mode(result_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(result_label, LV_PCT(100));
 
-#if WIFI_TOOLS_HAS_SOFT_KEYBOARD
+#if WIFI_TOOLS_HAS_SOFT_KEYBOARD && !FACTORY_WATCH_UI
     keyboard = lv_keyboard_create(lv_screen_active());
     lv_obj_set_style_bg_color(keyboard, UI_COLOR_CARD_BG, 0);
     lv_obj_set_style_bg_opa(keyboard, LV_OPA_COVER, 0);

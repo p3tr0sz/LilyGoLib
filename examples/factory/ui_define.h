@@ -265,6 +265,14 @@ void ui_pop_page(lv_obj_t *content);
 /* ui_create_card_item() calls this for a dropdown row: the dropdown only shows the
  * choice, and tapping the row opens a radio list. Apps don't need to call it. */
 void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd);
+/* ui_create_card_item() calls this for a text field row: the field is hidden, the row
+ * shows its text (dots for a password, the placeholder when empty) and a tap opens
+ * ui_open_text_page(). The field keeps the text, so apps read it as before. */
+void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta);
+/* A full-screen keyboard page that edits a copy of `ta`'s text. The OK key writes it
+ * back and sends LV_EVENT_VALUE_CHANGED and LV_EVENT_READY to `ta`; the keyboard
+ * key or swiping right leaves `ta` as it was. Number-only fields get the number pad. */
+void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta);
 /* A tappable pill row: icon in an accent disc and the title. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);

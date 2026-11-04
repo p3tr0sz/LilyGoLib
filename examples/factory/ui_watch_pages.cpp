@@ -310,6 +310,182 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
     return row;
 }
 
+/* ── Text fields ──
+ * Typing stays only where nothing else can do: passwords, names, messages. The
+ * keyboard then fills the screen, so its keys are as big as the watch allows. */
+
+#define TEXT_FIELD_H        60
+#define TEXT_KEY_GAP        6
+#define TEXT_VALUE_MAX      24      /* Characters shown in a row before the dots */
+
+typedef struct {
+    lv_obj_t *target;       /* The app's field */
+    lv_obj_t *edit;         /* The copy on the page */
+} text_page_t;
+
+static bool text_is_numeric(lv_obj_t *ta)
+{
+    const char *accepted = lv_textarea_get_accepted_chars(ta);
+    if (!accepted || !accepted[0]) return false;
+    for (const char *c = accepted; *c; ++c) {
+        if (!strchr("0123456789.+-", *c)) return false;
+    }
+    return true;
+}
+
+static void text_page_delete_cb(lv_event_t *e)
+{
+    lv_free(lv_event_get_user_data(e));
+}
+
+static void text_keyboard_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    text_page_t *state = (text_page_t *)lv_event_get_user_data(e);
+    lv_obj_t *kb = lv_event_get_current_target_obj(e);
+    lv_obj_t *content = lv_obj_get_parent(kb);
+    if (code == LV_EVENT_READY) {
+        lv_textarea_set_text(state->target, lv_textarea_get_text(state->edit));
+        lv_obj_send_event(state->target, LV_EVENT_READY, NULL);
+        hw_feedback();
+        ui_pop_page(content);
+    } else if (code == LV_EVENT_CANCEL) {
+        ui_pop_page(content);
+    }
+}
+
+void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
+{
+    if (!ta) return;
+    ui_styles_init();
+    lv_obj_t *content = ui_push_page(from, title && title[0] ? title : "Text");
+    lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    /* Wider than other pages: ten keys share the row. */
+    lv_obj_set_style_pad_hor(content, 12, 0);
+    lv_obj_set_style_pad_bottom(content, 14, 0);
+    lv_obj_set_style_pad_row(content, 10, 0);
+
+    text_page_t *state = (text_page_t *)lv_malloc_zeroed(sizeof(text_page_t));
+    if (!state) return;
+    state->target = ta;
+    lv_obj_add_event_cb(content, text_page_delete_cb, LV_EVENT_DELETE, state);
+
+    lv_obj_t *edit = lv_textarea_create(content);
+    state->edit = edit;
+    lv_textarea_set_one_line(edit, true);
+    lv_textarea_set_password_mode(edit, lv_textarea_get_password_mode(ta));
+    uint32_t max_len = lv_textarea_get_max_length(ta);
+    if (max_len) lv_textarea_set_max_length(edit, max_len);
+    const char *accepted = lv_textarea_get_accepted_chars(ta);
+    if (accepted) lv_textarea_set_accepted_chars(edit, accepted);
+    lv_textarea_set_placeholder_text(edit, lv_textarea_get_placeholder_text(ta));
+    lv_textarea_set_text(edit, lv_textarea_get_text(ta));
+    lv_obj_set_size(edit, LV_PCT(100), TEXT_FIELD_H);
+    lv_obj_set_style_text_font(edit, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_color(edit, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_color(edit, UI_COLOR_TEXT_SECONDARY, LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_obj_set_style_bg_color(edit, UI_COLOR_CARD_BG, 0);
+    lv_obj_set_style_bg_opa(edit, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(edit, 0, 0);
+    lv_obj_set_style_radius(edit, TEXT_FIELD_H / 2, 0);
+    lv_obj_set_style_pad_hor(edit, 24, 0);
+    lv_obj_set_style_pad_ver(edit, (TEXT_FIELD_H - 36) / 2, 0);
+    lv_obj_set_style_bg_color(edit, UI_COLOR_ACCENT, LV_PART_CURSOR);
+    lv_obj_set_style_bg_opa(edit, LV_OPA_COVER, LV_PART_CURSOR);
+    lv_obj_set_scrollbar_mode(edit, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_state(edit, LV_STATE_FOCUSED);   /* Shows the cursor */
+    lv_obj_remove_flag(edit, LV_OBJ_FLAG_CLICKABLE);
+    lv_group_remove_obj(edit);
+
+    lv_obj_t *kb = lv_keyboard_create(content);
+    lv_keyboard_set_textarea(kb, edit);
+    lv_keyboard_set_mode(kb, text_is_numeric(ta) ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_set_width(kb, LV_PCT(100));
+    lv_obj_set_flex_grow(kb, 1);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(kb, 0, 0);
+    lv_obj_set_style_pad_all(kb, 0, 0);
+    lv_obj_set_style_pad_gap(kb, TEXT_KEY_GAP, 0);
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_24, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(kb, UI_COLOR_TEXT_PRIMARY, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_BG, LV_PART_ITEMS);
+    lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb, 12, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_FOCUS, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_PRESSED);
+    /* Mode, punctuation and OK keys are "checked" in LVGL's maps: a lighter grey,
+     * with the accent on their text, so the letters stand out. */
+    lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_FOCUS, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_text_color(kb, UI_COLOR_ACCENT, (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(kb, UI_COLOR_CARD_BG,
+                              (lv_style_selector_t)LV_PART_ITEMS | LV_STATE_CHECKED | LV_STATE_PRESSED);
+    lv_group_remove_obj(kb);
+    lv_obj_add_event_cb(kb, text_keyboard_cb, LV_EVENT_READY, state);
+    lv_obj_add_event_cb(kb, text_keyboard_cb, LV_EVENT_CANCEL, state);
+}
+
+static void text_value_update(lv_obj_t *value, lv_obj_t *ta)
+{
+    const char *text = lv_textarea_get_text(ta);
+    char buf[TEXT_VALUE_MAX * 3 + 8];
+    size_t len = text ? strlen(text) : 0;
+    if (len == 0) {
+        const char *placeholder = lv_textarea_get_placeholder_text(ta);
+        lv_label_set_text_fmt(value, "%s  " LV_SYMBOL_RIGHT, placeholder && placeholder[0] ? placeholder : "Add");
+        return;
+    }
+    if (lv_textarea_get_password_mode(ta)) {
+        size_t dots = LV_MIN(len, (size_t)12);
+        buf[0] = 0;
+        for (size_t i = 0; i < dots; ++i) lv_strcat(buf, LV_SYMBOL_BULLET);
+    } else {
+        lv_snprintf(buf, TEXT_VALUE_MAX + 1, "%s", text);
+    }
+    lv_label_set_text_fmt(value, "%s  " LV_SYMBOL_RIGHT, buf);
+}
+
+static void text_value_cb(lv_event_t *e)
+{
+    text_value_update((lv_obj_t *)lv_event_get_user_data(e), lv_event_get_target_obj(e));
+}
+
+static void text_row_click_cb(lv_event_t *e)
+{
+    lv_obj_t *row = lv_event_get_current_target_obj(e);
+    lv_obj_t *title_label = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_obj_t *ta = lv_obj_get_child(row, -1);
+    ui_open_text_page(row, title_label ? lv_label_get_text(title_label) : NULL, ta);
+}
+
+void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta)
+{
+    /* The field stays as the row's last child, hidden; it holds the text. */
+    lv_group_remove_obj(ta);
+    lv_obj_add_flag(ta, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(ta, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(ta, LV_OBJ_FLAG_FLEX_IN_NEW_TRACK);
+
+    const lv_font_t *font = title_label ? lv_obj_get_style_text_font(title_label, LV_PART_MAIN)
+                            : lv_obj_get_style_text_font(row, LV_PART_MAIN);
+    lv_obj_t *value = lv_label_create(row);
+    lv_obj_move_to_index(value, (int32_t)lv_obj_get_index(ta));
+    lv_obj_set_flex_grow(value, 1);
+    lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(value, font, 0);
+    lv_obj_set_style_text_color(value, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+    text_value_update(value, ta);
+    /* lv_textarea_set_text() sends VALUE_CHANGED, so text the app sets shows too. */
+    lv_obj_add_event_cb(ta, text_value_cb, LV_EVENT_VALUE_CHANGED, value);
+
+    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(row, text_row_click_cb, LV_EVENT_CLICKED, title_label);
+}
+
 /* ── Scroll wheels ── */
 
 lv_obj_t *ui_create_wheel(lv_obj_t *parent, const char *options, uint32_t sel,
