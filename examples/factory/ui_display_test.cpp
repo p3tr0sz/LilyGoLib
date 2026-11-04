@@ -40,9 +40,27 @@ static lv_timer_t *input_timer = NULL;
 static int pattern_index = 0;
 static std::atomic<int> pending_steps(0);
 static std::atomic<bool> pending_exit(false);
+#if FACTORY_WATCH_UI
+/* Watch: no buttons. The overlay is a caption that hides itself; a tap shows the
+ * next pattern, a long press the previous one, and a swipe right leaves. */
+#define CAPTION_MS 2000
+static lv_timer_t *caption_timer = NULL;
+static lv_obj_t *exit_target = NULL;   /* Hidden; the back swipe "clicks" it */
+#endif
 
 static void show_controls(bool visible)
 {
+#if FACTORY_WATCH_UI
+    if (visible) {
+        lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_timer_reset(caption_timer);
+        lv_timer_resume(caption_timer);
+    } else {
+        lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_timer_pause(caption_timer);
+    }
+    return;
+#endif
     lv_group_remove_all_objs(test_group);
     if (visible) {
         lv_obj_remove_flag(overlay, LV_OBJ_FLAG_HIDDEN);
@@ -65,6 +83,9 @@ static void step_pattern(int delta)
     lv_label_set_text_fmt(title_label, "%02d/%02d  %s", pattern_index + 1,
                          pattern_count, patterns[pattern_index].title);
     lv_obj_invalidate(test_obj);
+#if FACTORY_WATCH_UI
+    show_controls(true);
+#endif
 }
 
 static void cleanup()
@@ -74,6 +95,13 @@ static void cleanup()
         lv_timer_del(input_timer);
         input_timer = NULL;
     }
+#if FACTORY_WATCH_UI
+    if (caption_timer) {
+        lv_timer_delete(caption_timer);
+        caption_timer = NULL;
+    }
+    exit_target = NULL;
+#endif
     if (test_group) set_default_group(previous_group);
     if (test_obj) {
         lv_obj_del(test_obj);
@@ -174,13 +202,19 @@ static void test_event(lv_event_t *e)
         draw_pattern(e);
         break;
     case LV_EVENT_SHORT_CLICKED:
+#if FACTORY_WATCH_UI
+        step_pattern(1);
+#else
         if (lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN)) show_controls(true);
         else step_pattern(1);
+#endif
         break;
     case LV_EVENT_LONG_PRESSED: {
         lv_indev_t *indev = lv_indev_active();
         if (indev && lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) {
             pending_exit.store(true);
+        } else if (FACTORY_WATCH_UI) {
+            step_pattern(-1);
         } else {
             show_controls(lv_obj_has_flag(overlay, LV_OBJ_FLAG_HIDDEN));
         }
@@ -241,6 +275,20 @@ static void input_timer_callback(lv_timer_t *timer)
     if (steps) step_pattern(steps);
 }
 
+#if FACTORY_WATCH_UI
+static void caption_timer_cb(lv_timer_t *timer)
+{
+    LV_UNUSED(timer);
+    show_controls(false);
+}
+
+static void exit_target_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    pending_exit.store(true);
+}
+#endif
+
 void ui_factory_enter(lv_obj_t *parent)
 {
     if (test_obj) return;
@@ -264,6 +312,44 @@ void ui_factory_enter(lv_obj_t *parent)
     lv_obj_add_flag(test_obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(test_obj, test_event, LV_EVENT_ALL, NULL);
 
+#if FACTORY_WATCH_UI
+    caption_timer = lv_timer_create(caption_timer_cb, CAPTION_MS, NULL);
+    lv_timer_pause(caption_timer);
+
+    overlay = lv_obj_create(test_obj);
+    lv_obj_remove_style_all(overlay);
+    lv_obj_set_size(overlay, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, -24);
+    lv_obj_set_style_radius(overlay, 24, 0);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x181818), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_80, 0);
+    lv_obj_set_style_pad_hor(overlay, 28, 0);
+    lv_obj_set_style_pad_ver(overlay, 14, 0);
+    lv_obj_set_flex_flow(overlay, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(overlay, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(overlay, 4, 0);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    title_label = lv_label_create(overlay);
+    lv_obj_set_style_text_color(title_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_24, 0);
+
+    lv_obj_t *hint = lv_label_create(overlay);
+    lv_label_set_text(hint, "Tap: next  " LV_SYMBOL_BULLET "  Hold: previous\nSwipe right: exit");
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
+
+    exit_target = lv_obj_create(test_obj);
+    lv_obj_remove_style_all(exit_target);
+    lv_obj_add_flag(exit_target, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(exit_target, exit_target_cb, LV_EVENT_CLICKED, NULL);
+    ui_enable_edge_swipe_back(test_obj, exit_target, LV_EVENT_CLICKED);
+    lv_group_add_obj(test_group, test_obj);
+    lv_group_focus_obj(test_obj);
+    lv_group_set_editing(test_group, true);
+#else
     overlay = lv_obj_create(test_obj);
     lv_obj_remove_style_all(overlay);
     int overlay_w = w > 480 ? 440 : w - 24;
@@ -311,6 +397,7 @@ void ui_factory_enter(lv_obj_t *parent)
 
     ui_enable_edge_swipe_back(test_obj, control_buttons[3], LV_EVENT_SHORT_CLICKED);
     show_controls(true);
+#endif
     step_pattern(0);
     input_timer = lv_timer_create(input_timer_callback, 20, NULL);
     hw_set_button_callback(button_callback);

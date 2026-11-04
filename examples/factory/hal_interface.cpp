@@ -2428,6 +2428,16 @@ void hw_get_wifi_ssid(char *param, size_t param_size)
 }
 
 
+#ifndef ARDUINO
+/* The simulator can't set the host clock, so "setting the time" keeps an offset. */
+static time_t desktop_clock_offset = 0;
+
+static time_t desktop_clock_now(void)
+{
+    return time(NULL) + desktop_clock_offset;
+}
+#endif
+
 void hw_get_date_time(char *param, size_t param_size)
 {
     if (!param || param_size == 0) {
@@ -2464,9 +2474,8 @@ void hw_get_date_time(char *param, size_t param_size)
                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     }
 #else
-    time_t now;
+    time_t now = desktop_clock_now();
     struct tm *timeinfo;
-    time(&now);
     timeinfo = localtime(&now);
     snprintf(param, param_size, "%04d/%02d/%02d %02d:%02d:%02d",
              timeinfo->tm_year + 1900,
@@ -2491,8 +2500,7 @@ void hw_get_date_time(struct tm &timeinfo)
     time(&now);
     localtime_r(&now, &timeinfo);
 #else
-    time_t now;
-    time(&now);
+    time_t now = desktop_clock_now();
     timeinfo = *localtime(&now);
 #endif
 }
@@ -2520,7 +2528,8 @@ bool hw_set_date_time(const struct tm &timeinfo)
     tv.tv_usec = 0;
     return settimeofday(&tv, NULL) == 0;
 #else
-    return false;
+    desktop_clock_offset = epoch - time(NULL);
+    return true;
 #endif
 }
 
@@ -3762,7 +3771,18 @@ uint16_t hw_set_charger_current_level(uint8_t level)
 
     return instance.getChargeCurrent();
 #else
+    uint16_t current = hw_get_charge_level_current(level);
+    LILYGO_LOG_PRINTF("set charge current:%u mA\n", current);
+    return current;
+#endif
 
+}
+
+uint16_t hw_get_charge_level_current(uint8_t level)
+{
+#ifdef ARDUINO
+    return instance.getChargeLevelToCurrent(level);
+#else
     const uint16_t table[] = {
         100, 125, 150, 175,
         200, 300, 400, 500,
@@ -3772,10 +3792,8 @@ uint16_t hw_set_charger_current_level(uint8_t level)
     if (level > (sizeof(table) / sizeof(table[0]) - 1)) {
         level = sizeof(table) / sizeof(table[0]) - 1;
     }
-    LILYGO_LOG_PRINTF("set charge current:%u mA\n", table[level]);
-    return  table[level];
+    return table[level];
 #endif
-
 }
 
 static void power_metric_set(power_monitor_metric_t &metric, float value, power_monitor_source_t source)

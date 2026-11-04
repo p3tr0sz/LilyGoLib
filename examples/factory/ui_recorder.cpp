@@ -541,6 +541,14 @@ static void build_recorder_ui(lv_obj_t *parent)
     lv_obj_set_style_radius(level_bar, 4, LV_PART_MAIN);
     lv_obj_set_style_radius(level_bar, 4, LV_PART_INDICATOR);
 
+#if FACTORY_WATCH_UI
+    /* No slider in the page: the row opens the full-screen level page. */
+    lv_obj_t *volume_row = ui_create_card_level(mc, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100,
+                                                hw_get_volume(), volume_slider_event);
+    lv_obj_set_width(volume_row, LV_PCT(90));
+    lv_obj_add_flag(lv_obj_get_child(mc, -1), LV_OBJ_FLAG_HIDDEN);   /* its divider */
+    return;
+#endif
     lv_obj_t *ac = lv_obj_create(mc);
     lv_obj_set_size(ac, LV_PCT(90), 70);
     lv_obj_set_flex_flow(ac, LV_FLEX_FLOW_COLUMN);

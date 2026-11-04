@@ -35,8 +35,8 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 2 | Readable app pages and full-screen power menu | Done (`36a851d`) |
 | 3 | Settings as nested lists | Done (`2b433e3`) |
 | 4 | Configurable face and lock screen | Done; steps need checking on hardware |
-| 5 | One-gesture shared controls: level pages, hold to confirm, whole-row switches, full-screen messages | Done |
-| 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Planned |
+| 5 | One-gesture shared controls: level pages, hold to confirm, whole-row switches, full-screen messages | Done (`525da4f`) |
+| 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Done; NFC Card and Arduino-only apps need checking on hardware |
 | 7 | No typing: presets instead of keyboards | Planned |
 
 ## Next phases
@@ -90,7 +90,43 @@ App by app, checked in the simulator:
 - **Clock Tools:** replace the 6 date and time dropdowns, "Load Now" and "Apply" with a "Set time" page of scroll wheels (`lv_roller`) and one "Set" pill. Network Time stays one pill.
 - **Charge Current:** a picker of currents in mA (Phase 3 follow-up).
 - **Display Test:** tap anywhere for the next pattern, swipe right to leave; drop the 4 small buttons.
-- **App sliders:** volume in Player, Net Radio and Recorder, and the Mi Light Bar sliders, open the level page from phase 5.
+- **App sliders:** volume in Player, Net Radio and Recorder open the level page from phase 5. (Mi Light Bar is Pager-only.)
+
+### What phase 6 changed
+
+**Shared helpers (every app gets these at once):**
+- **No dropdowns on the watch.** `ui_create_card_dropdown()` returns `ui_create_card_picker()`, the way `ui_create_card_slider()` returns a level row.
+  - `ui_create_card_item()` also turns any `lv_dropdown` an app builds itself into a picker row (`ui_picker_adopt()` in `ui_watch_pages.cpp`). It resets the app's sizes and colours, so Walkie, Track Log, Sensor Log, BadUSB, INA219, I2S Test and the LoRa Hub editor get pickers with no change of their own.
+  - The row's last child is still the `lv_dropdown`, so `lv_dropdown_get_selected()`, `lv_dropdown_set_options()` and widths that apps set keep working. The picker reads the options when it opens.
+- **Action pills.** `ui_create_card_button()` returns `ui_create_card_action()`: one full-width 64 px pill with the verb, dark text on the accent (it reads on every theme, Mono's white included). The title only labelled the button and is dropped.
+  - The row's last child is the button and the button's first child its label, so `row_widget()`, `ui_require_hold()` and `set_button_text()` keep working. A disabled pill turns grey.
+  - Pills aren't in the focus group, so a tap leaves no focus ring.
+  - Buttons whose text wasn't a verb on its own got one under the flag, e.g. "Now" → "Scan now", "Update" → "Update code", "CSV" → "Export CSV", "Reset" → "Reset counters" / "Reset session", "Send" → "Send uplink".
+
+**Clock Tools:**
+- One "Set" card: Zone, Date, Time and "Sync network time".
+- Picking a zone applies it; there's no "Save" step.
+- Date and Time open a page of wheels (`lv_roller`: day, month, year; or hour and minute) with one pill, "Set date" or "Set time". Setting the time zeroes the seconds. The page closes when the clock is set and shows a toast if it fails.
+- Other boards keep the six dropdowns, "Load Now" and "Apply".
+
+**Settings → Power → Charge Current:** a picker of currents in mA from the new `hw_get_charge_level_current()` (Arduino: `getChargeLevelToCurrent()`). Levels of 0 mA are left out; the Charger switch turns charging off.
+
+**Display Test:** no buttons. Tap for the next pattern, long press for the previous one, swipe right to leave. Each change shows a caption ("03/13 Red" and the gestures) that hides after 2 s.
+
+**Volume in Player, Net Radio and Recorder:** a level row that opens the phase 5 level page.
+
+**Simulator:** "setting" the time keeps an offset from the host clock, so Clock Tools works on desktop.
+
+### Phase 6 follow-ups
+
+- **Check on hardware** (these apps aren't in the simulator build, or have no radio there):
+  - Pickers in LoRa Hub (antenna, mode, payload and the profile editor), Walkie channel, BadUSB script, Track/Sensor Log interval, INA219 shunt and I2S Test signal.
+  - Volume rows in Player, Net Radio and Recorder.
+  - Charge Current lists the PMU's real levels (the simulator shows only two).
+- **NFC Card** shows a black screen in the simulator, also before phase 6. Its layout is built by hand (a side panel with a dropdown and three small template buttons), so it needs its own watch layout, checked on hardware.
+- **Sub-G, NRF24, Radio and IR Universal** build their own controls. They are external modules or other boards, so they were left as they are.
+- **Mi Light Bar** is registered on the Pager only, so its sliders stay.
+- **Pickers with many options** (time zones: 26 rows) scroll to the current choice when they open. Check on the watch whether that is quick enough.
 
 ### Phase 7: no typing
 
@@ -224,6 +260,7 @@ App by app, checked in the simulator:
 - `ui_create_app_page()` keeps its child order (nav = 0, divider = 1, content = 2, back button = nav child 0). Content's user_data still holds the page root. `ui_nfc_emulation.cpp`, the nav auto-hide code and `ui_push_page()` depend on both.
 - A pushed page is a child of the page it covers, so deleting an app page also deletes its sub-pages. Objects whose pointers outlive a sub-page, such as labels the Settings refresh timer writes to, must be cleared on `LV_EVENT_DELETE`; `ui_sys.cpp` does this with `track_value_label()`.
 - A picker row's last child is the `lv_dropdown` that holds the options and the choice.
+- An action pill row's last child is the button, and the button's first child is its label.
 - Button and PMU callbacks fire outside the LVGL loop. Set a flag there and act on it in an LVGL timer, as `lilygo_power_menu_request()` does.
 
 ## Testing
@@ -236,6 +273,8 @@ App by app, checked in the simulator:
   - Settings: open a section, then a picker (e.g. Display → Theme). Each swipe right goes back one page.
   - Long-press a face corner to change it. Steps show a fixed 6420 on desktop.
   - Lock mode: set Settings → Display → Timeout to 10 s and Settings → Lock screen to Clock. Then leave the face idle; set the timeout back afterwards.
+  - Clock Tools: Date → move the wheels → Set date. The face shows the new date; restarting the simulator resets it.
+  - Display Test: tap, long press, then swipe right.
   - F2 opens the power menu, standing in for holding PWR.
   - When the screen times out it shows a black overlay; click to wake.
 - **Hardware:**

@@ -26,6 +26,7 @@
 #define LEVEL_STEPS             20      /* −/+ presses from one end to the other */
 #define HOLD_CONFIRM_MS         800
 #define TOAST_MS                1400
+#define ACTION_PILL_H           64
 
 static void page_set_x(void *obj, int32_t x)
 {
@@ -224,21 +225,18 @@ static void picker_open_cb(lv_event_t *e)
     }
 }
 
-lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *title,
-                                 const char *options, uint8_t sel, lv_event_cb_t cb)
+void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd)
 {
-    lv_obj_t *row = ui_create_card_item(card, icon, title, NULL);
-    lv_obj_t *title_label = title ? lv_obj_get_child(row, icon ? 1 : 0) : NULL;
-
-    /* The dropdown only shows the choice ("Auto >"); the row takes the tap. */
-    lv_obj_t *dd = lv_dropdown_create(row);
+    /* The dropdown only shows the choice ("Auto >"); the row takes the tap. Apps
+     * that build their own dropdown may have styled it, so every style is reset. */
     lv_group_remove_obj(dd);
-    lv_dropdown_set_options(dd, options);
-    lv_dropdown_set_selected(dd, sel);
     lv_dropdown_set_symbol(dd, LV_SYMBOL_RIGHT);
     lv_obj_set_size(dd, 1, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(dd, 1);
     lv_obj_remove_flag(dd, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(dd, LV_OBJ_FLAG_FLEX_IN_NEW_TRACK);
+    lv_obj_set_style_margin_left(dd, 0, 0);
+    lv_obj_set_style_margin_right(dd, 0, 0);
     lv_obj_set_style_bg_opa(dd, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(dd, 0, 0);
     lv_obj_set_style_shadow_width(dd, 0, 0);
@@ -246,19 +244,72 @@ lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *ti
     lv_obj_set_style_pad_all(dd, 0, 0);
     lv_obj_set_style_pad_column(dd, 12, 0);
     lv_obj_set_style_text_align(dd, LV_TEXT_ALIGN_RIGHT, 0);
-    if (title_label) {
-        lv_obj_set_style_text_font(dd, lv_obj_get_style_text_font(title_label, LV_PART_MAIN), 0);
-    }
+    const lv_font_t *font = title_label ? lv_obj_get_style_text_font(title_label, LV_PART_MAIN)
+                            : lv_obj_get_style_text_font(row, LV_PART_MAIN);
+    lv_obj_set_style_text_font(dd, font, 0);
     lv_obj_set_style_text_color(dd, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_color(dd, UI_COLOR_TEXT_SECONDARY, LV_PART_INDICATOR);
-    if (cb) {
-        lv_obj_add_event_cb(dd, cb, LV_EVENT_VALUE_CHANGED, NULL);
-    }
+    lv_obj_set_style_text_opa(dd, LV_OPA_40, LV_STATE_DISABLED);
 
     lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
     lv_obj_set_style_radius(row, 12, 0);
     lv_obj_add_event_cb(row, picker_open_cb, LV_EVENT_CLICKED, title_label);
+}
+
+lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *title,
+                                 const char *options, uint8_t sel, lv_event_cb_t cb)
+{
+    lv_obj_t *dd = lv_dropdown_create(lv_obj_create(card)); /* temp parent, re-parented */
+    lv_dropdown_set_options(dd, options);
+    lv_dropdown_set_selected(dd, sel);
+    if (cb) {
+        lv_obj_add_event_cb(dd, cb, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    /* ui_create_card_item() turns a dropdown row into a picker row on the watch. */
+    return ui_create_card_item(card, icon, title, dd);
+}
+
+/* ── Action pills ──
+ * One verb on a full-width pill; the row's last child is the button and the
+ * button's first child its label, as with ui_create_card_button(). */
+
+lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *label,
+                                lv_event_cb_t cb)
+{
+    LV_UNUSED(icon);    /* The verb says it; an icon would only crowd the pill. */
+    ui_styles_init();
+    lv_obj_t *btn = lv_button_create(lv_obj_create(card));  /* temp parent, re-parented */
+    lv_obj_add_style(btn, &ui_styles.accent_btn, 0);
+    lv_obj_set_size(btn, LV_PCT(100), ACTION_PILL_H);
+    lv_obj_set_flex_grow(btn, 1);
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_pad_hor(btn, 24, 0);
+    /* Dark text reads on every accent, including Mono's white. */
+    lv_obj_set_style_text_color(btn, lv_color_black(), 0);
+    lv_obj_set_style_text_color(btn, lv_color_black(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(btn, UI_COLOR_ACCENT_DIM, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(btn, UI_COLOR_CARD_FOCUS, LV_STATE_DISABLED);
+    lv_obj_set_style_text_color(btn, UI_COLOR_TEXT_SECONDARY, LV_STATE_DISABLED);
+
+    lv_obj_t *text = lv_label_create(btn);
+    lv_label_set_text(text, label ? label : "");
+    lv_obj_set_style_text_font(text, &lv_font_montserrat_24, 0);
+    lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_max_width(text, LV_PCT(100), 0);
+    lv_obj_center(text);
+
+    if (cb) {
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+    }
+    lv_obj_t *row = ui_create_card_item(card, NULL, NULL, btn);
+    /* Touch only: a focused pill would keep the theme's focus ring after a tap. */
+    lv_group_remove_obj(btn);
+    /* Pills sit between other rows; the divider under them is noise. */
+    lv_obj_t *divider = lv_obj_get_child(card, -1);
+    if (divider) lv_obj_add_flag(divider, LV_OBJ_FLAG_HIDDEN);
     return row;
 }
 

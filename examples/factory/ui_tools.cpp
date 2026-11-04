@@ -1510,7 +1510,9 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
 #endif
     }
 
-    if (widget && lv_obj_get_style_flex_grow(widget, LV_PART_MAIN) == 0) {
+    /* On the watch a dropdown becomes a picker value that fills the rest of the row. */
+    const bool widget_is_picker = FACTORY_WATCH_UI && widget_is_dropdown;
+    if (widget && !widget_is_picker && lv_obj_get_style_flex_grow(widget, LV_PART_MAIN) == 0) {
         lv_obj_t *spacer = lv_obj_create(row);
         lv_obj_set_size(spacer, 1, 1);
         lv_obj_set_flex_grow(spacer, 1);
@@ -1541,6 +1543,8 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
                 lv_obj_set_style_margin_left(widget, 0, 0);
                 lv_obj_set_style_margin_right(widget, 0, 0);
             }
+        } else if (widget_is_picker) {
+            /* Styled by ui_picker_adopt() below */
         } else if (widget_is_dropdown) {
             if (small_full_width_widget) {
                 lv_obj_add_flag(widget, LV_OBJ_FLAG_FLEX_IN_NEW_TRACK);
@@ -1568,6 +1572,13 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
             lv_obj_delete(old_parent);
         }
     }
+
+#if FACTORY_WATCH_UI
+    if (widget_is_picker) {
+        lv_obj_t *title_label = title ? lv_obj_get_child(row, icon ? 1 : 0) : NULL;
+        ui_picker_adopt(row, title_label, widget);
+    }
+#endif
 
 #if FACTORY_WATCH_UI
     /* Pad one-line rows to UI_ROW_MIN_H with the content centred; a value that
@@ -1668,6 +1679,10 @@ lv_obj_t *ui_create_card_switch(lv_obj_t *card, const char *icon, const char *ti
 lv_obj_t *ui_create_card_dropdown(lv_obj_t *card, const char *icon, const char *title,
                                    const char *options, uint8_t sel, lv_event_cb_t cb)
 {
+#if FACTORY_WATCH_UI
+    /* No dropdowns on the watch: the row opens a radio list. */
+    return ui_create_card_picker(card, icon, title, options, sel, cb);
+#endif
     lv_obj_t *dd = lv_dropdown_create(lv_obj_create(card)); /* temp parent */
     lv_dropdown_set_options(dd, options);
     lv_dropdown_set_selected(dd, sel);
@@ -1689,6 +1704,11 @@ lv_obj_t *ui_create_card_dropdown(lv_obj_t *card, const char *icon, const char *
 lv_obj_t *ui_create_card_button(lv_obj_t *card, const char *icon, const char *title,
                                  const char *btn_text, lv_event_cb_t cb)
 {
+#if FACTORY_WATCH_UI
+    /* One verb on a full-width pill; the title only labelled the button. */
+    LV_UNUSED(title);
+    return ui_create_card_action(card, icon, btn_text, cb);
+#endif
     lv_obj_t *btn = lv_btn_create(lv_obj_create(card));
     lv_obj_set_size(btn, LV_SIZE_CONTENT, FACTORY_WATCH_UI ? 48 : 32);
     if (FACTORY_WATCH_UI) lv_obj_set_style_pad_hor(btn, 20, 0);

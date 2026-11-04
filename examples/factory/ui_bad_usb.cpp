@@ -554,7 +554,8 @@ void ui_bad_usb_enter(lv_obj_t *parent)
     lv_obj_set_height(script_dropdown, 32);
     lv_obj_add_event_cb(script_dropdown, script_select_cb, LV_EVENT_VALUE_CHANGED, NULL);
     ui_create_card_item(card, LV_SYMBOL_FILE, "File", script_dropdown);
-    ui_create_card_button(card, LV_SYMBOL_REFRESH, "List", "Refresh", refresh_btn_cb);
+    ui_create_card_button(card, LV_SYMBOL_REFRESH, "List",
+                          FACTORY_WATCH_UI ? "Refresh list" : "Refresh", refresh_btn_cb);
 
     lv_obj_t *note = lv_label_create(card);
     lv_label_set_text(note, "Manual start only. Use on your own devices.");

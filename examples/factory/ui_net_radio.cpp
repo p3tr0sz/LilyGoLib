@@ -179,6 +179,12 @@ static void volume_slider_event(lv_event_t *e)
 
 static void create_volume_row(lv_obj_t *card)
 {
+#if FACTORY_WATCH_UI
+    /* No slider in the page: the row opens the full-screen level page. */
+    ui_create_card_level(card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100, hw_get_volume(),
+                         volume_slider_event);
+    return;
+#endif
     lv_obj_t *row = lv_obj_create(card);
     lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);

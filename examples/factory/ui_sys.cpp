@@ -408,6 +408,39 @@ static void charger_current_cb(lv_event_t *e)
     local_param.charger_current = hw_set_charger_current_level(val);
 }
 
+#if FACTORY_WATCH_UI
+/* Charge Current as a list of currents in mA, not a slider of level numbers. */
+#define CHARGE_PICKER_MAX   32
+static uint8_t charge_picker_levels[CHARGE_PICKER_MAX];
+
+static void charger_current_picker_cb(lv_event_t *e)
+{
+    lv_obj_t *dd = (lv_obj_t *)lv_event_get_target(e);
+    uint32_t index = lv_dropdown_get_selected(dd);
+    if (index >= CHARGE_PICKER_MAX) return;
+    local_param.charger_current = hw_set_charger_current_level(charge_picker_levels[index]);
+}
+
+static void create_charge_current_picker(lv_obj_t *card)
+{
+    uint8_t total = hw_get_charge_level_nums();
+    uint8_t current = hw_get_charger_current_level();
+    char options[CHARGE_PICKER_MAX * 10] = "";
+    uint8_t count = 0;
+    uint8_t selected = 0;
+    for (uint16_t level = 0; level <= total && count < CHARGE_PICKER_MAX; level++) {
+        uint16_t ma = hw_get_charge_level_current(level);
+        if (ma == 0) continue;      /* Some PMUs list "0 mA"; the Charger switch turns charging off. */
+        size_t len = strlen(options);
+        lv_snprintf(options + len, sizeof(options) - len, "%s%u mA", count ? "\n" : "", ma);
+        if (level == current) selected = count;
+        charge_picker_levels[count++] = (uint8_t)level;
+    }
+    ui_create_card_picker(card, NULL, "Charge Current", options, selected,
+                          charger_current_picker_cb);
+}
+#endif
+
 /* Global font size preference: 0=auto(small screen), 1=small, 2=medium, 3=large */
 static uint8_t font_size_pref = 0;
 static lv_obj_t *font_preview_label = NULL;
@@ -703,10 +736,14 @@ static bool run_sys_deferred_step()
         break;
 
     case UI_SYS_BUILD_POWER_CHARGE_CURRENT: {
+#if FACTORY_WATCH_UI
+        create_charge_current_picker(sys_deferred_card);
+#else
         uint8_t total_charge_level = hw_get_charge_level_nums();
         uint8_t curr_charge_level = hw_get_charger_current_level();
         ui_create_card_slider(sys_deferred_card, SYS_ICON(LV_SYMBOL_POWER), "Charge Current",
                               0, total_charge_level, curr_charge_level, charger_current_cb);
+#endif
         sys_deferred_step = UI_SYS_BUILD_BUTTONS_CARD;
         break;
     }

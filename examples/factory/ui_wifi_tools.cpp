@@ -289,8 +289,9 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     ui_create_card_item(card, LV_SYMBOL_EDIT, "Host", target_ta);
 
     port_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Port", "80\n443\n1883\n8080", 0);
-    ui_create_card_button(card, LV_SYMBOL_WIFI, "DNS", "Lookup", dns_cb);
-    ui_create_card_button(card, LV_SYMBOL_UPLOAD, "TCP", "Connect", tcp_cb);
+    ui_create_card_button(card, LV_SYMBOL_WIFI, "DNS", FACTORY_WATCH_UI ? "DNS lookup" : "Lookup", dns_cb);
+    ui_create_card_button(card, LV_SYMBOL_UPLOAD, "TCP",
+                          FACTORY_WATCH_UI ? "Test TCP port" : "Connect", tcp_cb);
 
     result_label = lv_label_create(card);
     lv_label_set_text(result_label, "Ready.");

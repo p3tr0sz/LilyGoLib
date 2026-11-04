@@ -412,7 +412,8 @@ void ui_sensor_enter(lv_obj_t *parent)
     label_bma.activity = card_value_label(info_row);
     info_row = ui_create_card_info(card, LV_SYMBOL_REFRESH, "Step Events", "0");
     label_bma.step_events = card_value_label(info_row);
-    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Counters", "Reset", bma_reset_cb);
+    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Counters",
+                          FACTORY_WATCH_UI ? "Reset counters" : "Reset", bma_reset_cb);
 
     card = ui_create_card(page_container, "Gesture");
     info_row = ui_create_card_info(card, LV_SYMBOL_SETTINGS, "Last", "--");

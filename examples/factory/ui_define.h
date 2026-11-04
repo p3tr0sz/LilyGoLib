@@ -257,6 +257,9 @@ void ui_status_bar_update(void);
  * page that holds `from` and returns its content. Swiping right pops it. */
 lv_obj_t *ui_push_page(lv_obj_t *from, const char *title);
 void ui_pop_page(lv_obj_t *content);
+/* ui_create_card_item() calls this for a dropdown row: the dropdown only shows the
+ * choice, and tapping the row opens a radio list. Apps don't need to call it. */
+void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd);
 /* A tappable list row: icon in an accent disc, title and a chevron. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);
@@ -265,6 +268,10 @@ lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *t
  * and sends LV_EVENT_VALUE_CHANGED. */
 lv_obj_t *ui_create_card_level(lv_obj_t *card, const char *icon, const char *title,
                                 int32_t min, int32_t max, int32_t val, lv_event_cb_t cb);
+/* ui_create_card_button() on the watch: one verb on a full-width pill. The row's last
+ * child is the button, and the button's first child is the label. */
+lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *label,
+                                lv_event_cb_t cb);
 /* A short message at the bottom of the screen that goes away by itself. */
 void ui_toast(const char *text);
 #endif

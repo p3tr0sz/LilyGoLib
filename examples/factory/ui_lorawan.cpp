@@ -1615,13 +1615,16 @@ void ui_lorawan_lr1121_enter(lv_obj_t *parent)
     interval_dropdown = row_widget(row);
     row = ui_create_card_switch(card, LV_SYMBOL_LOOP, "Auto Uplink", false, auto_switch_cb);
     auto_switch = row_widget(row);
-    row = ui_create_card_button(card, LV_SYMBOL_REFRESH, "Config", "Reload", reload_config_cb);
+    row = ui_create_card_button(card, LV_SYMBOL_REFRESH, "Config",
+                                FACTORY_WATCH_UI ? "Reload config" : "Reload", reload_config_cb);
     reload_button = row_widget(row);
     row = ui_create_card_button(card, LV_SYMBOL_OK, "Join", "Join", join_btn_cb);
     join_button = row_widget(row);
-    row = ui_create_card_button(card, LV_SYMBOL_UPLOAD, "Uplink", "Send", send_btn_cb);
+    row = ui_create_card_button(card, LV_SYMBOL_UPLOAD, "Uplink",
+                                FACTORY_WATCH_UI ? "Send uplink" : "Send", send_btn_cb);
     send_button = row_widget(row);
-    row = ui_create_card_button(card, LV_SYMBOL_TRASH, "Session", "Reset", reset_session_cb);
+    row = ui_create_card_button(card, LV_SYMBOL_TRASH, "Session",
+                                FACTORY_WATCH_UI ? "Reset session" : "Reset", reset_session_cb);
     reset_button = row_widget(row);
     ui_require_hold(reset_button);
 

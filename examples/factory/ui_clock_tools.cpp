@@ -172,13 +172,21 @@ static void update_current_time_label(void)
     }
 }
 
+#if FACTORY_WATCH_UI
+static void update_set_rows(void);
+#endif
+
 static void clock_timer_cb(lv_timer_t *timer)
 {
     update_current_time_label();
+#if FACTORY_WATCH_UI
+    update_set_rows();
+#endif
 }
 
 static void load_now_to_dropdowns(void)
 {
+    if (!year_dd) return;   /* The watch sets the time on roller pages instead */
     struct tm timeinfo;
     hw_get_date_time(timeinfo);
     int year = timeinfo.tm_year + 1900;
@@ -267,6 +275,180 @@ static void ntp_sync_cb(lv_event_t *e)
     update_current_time_label();
 }
 
+#if FACTORY_WATCH_UI
+/* ── Watch: zone applies when picked; date and time are set on roller pages ── */
+
+static lv_obj_t *date_value_label = NULL;
+static lv_obj_t *time_value_label = NULL;
+static lv_obj_t *wheel[3] = {NULL};     /* Day, month, year; or hour, minute */
+static const char month_names[] =
+    "Jan\nFeb\nMar\nApr\nMay\nJun\nJul\nAug\nSep\nOct\nNov\nDec";
+static char day_options[96];
+
+static void update_set_rows(void)
+{
+    struct tm now;
+    hw_get_date_time(now);
+    if (date_value_label) {
+        lv_label_set_text_fmt(date_value_label, "%04d/%02d/%02d  " LV_SYMBOL_RIGHT,
+                              now.tm_year + 1900, now.tm_mon + 1, now.tm_mday);
+    }
+    if (time_value_label) {
+        lv_label_set_text_fmt(time_value_label, "%02d:%02d  " LV_SYMBOL_RIGHT,
+                              now.tm_hour, now.tm_min);
+    }
+}
+
+static void zone_picked_cb(lv_event_t *e)
+{
+    apply_timezone_cb(e);
+    update_set_rows();
+}
+
+static lv_obj_t *wheel_create(lv_obj_t *parent, const char *options, uint32_t sel,
+                              int32_t width, bool infinite)
+{
+    lv_obj_t *roller = lv_roller_create(parent);
+    lv_roller_set_options(roller, options, infinite ? LV_ROLLER_MODE_INFINITE : LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(roller, 3);
+    lv_roller_set_selected(roller, sel, LV_ANIM_OFF);
+    lv_obj_set_width(roller, width);
+    lv_obj_set_style_text_font(roller, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_line_space(roller, 18, 0);
+    lv_obj_set_style_text_color(roller, UI_COLOR_TEXT_SECONDARY, 0);
+    /* Only the chosen row has a band; its neighbours fade into the page. */
+    lv_obj_set_style_bg_opa(roller, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(roller, 0, 0);
+    lv_obj_set_style_text_color(roller, UI_COLOR_TEXT_PRIMARY, LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(roller, UI_COLOR_CARD_FOCUS, LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(roller, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_radius(roller, 16, LV_PART_SELECTED);
+    lv_group_remove_obj(roller);
+    return roller;
+}
+
+static void wheel_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    wheel[0] = wheel[1] = wheel[2] = NULL;
+}
+
+/* A page of wheels in one row, with a "Set" pill under them. */
+static lv_obj_t *wheel_page(lv_obj_t *from, const char *title, lv_obj_t **wheels_row)
+{
+    lv_obj_t *content = ui_push_page(from, title);
+    lv_obj_remove_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_cb(content, wheel_page_delete_cb, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *row = lv_obj_create(content);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 14, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    *wheels_row = row;
+    return content;
+}
+
+static bool set_clock(struct tm *next, const char *done)
+{
+    if (hw_set_date_time(*next)) {
+        set_status(done, UI_COLOR_ACCENT);
+        update_current_time_label();
+        update_set_rows();
+        return true;
+    }
+    set_status("Set time failed.", lv_color_hex(0xFF4444));
+    ui_toast("Set time failed");
+    return false;
+}
+
+static void set_date_cb(lv_event_t *e)
+{
+    if (!wheel[0]) return;
+    struct tm next;
+    hw_get_date_time(next);
+    int year = CLOCK_YEAR_START + (int)lv_roller_get_selected(wheel[2]);
+    int month = 1 + (int)lv_roller_get_selected(wheel[1]);
+    int day = 1 + (int)lv_roller_get_selected(wheel[0]);
+    int max_day = days_in_month(year, month);
+    if (day > max_day) day = max_day;
+    next.tm_year = year - 1900;
+    next.tm_mon = month - 1;
+    next.tm_mday = day;
+    next.tm_isdst = 0;
+    lv_obj_t *content = lv_obj_get_parent(lv_obj_get_parent(lv_event_get_current_target_obj(e)));
+    if (set_clock(&next, "Date set.")) ui_pop_page(content);
+}
+
+static void set_time_cb(lv_event_t *e)
+{
+    if (!wheel[0]) return;
+    struct tm next;
+    hw_get_date_time(next);
+    next.tm_hour = (int)lv_roller_get_selected(wheel[0]);
+    next.tm_min = (int)lv_roller_get_selected(wheel[1]);
+    next.tm_sec = 0;
+    next.tm_isdst = 0;
+    lv_obj_t *content = lv_obj_get_parent(lv_obj_get_parent(lv_event_get_current_target_obj(e)));
+    if (set_clock(&next, "Time set.")) ui_pop_page(content);
+}
+
+static void open_date_page_cb(lv_event_t *e)
+{
+    struct tm now;
+    hw_get_date_time(now);
+    int year = now.tm_year + 1900;
+    if (year < CLOCK_YEAR_START || year > CLOCK_YEAR_END) year = CLOCK_YEAR_START;
+
+    day_options[0] = 0;
+    for (int d = 1; d <= 31; ++d) {
+        char tmp[4];
+        snprintf(tmp, sizeof(tmp), "%02d", d);
+        append_option(day_options, sizeof(day_options), tmp, d != 1);
+    }
+
+    lv_obj_t *row;
+    lv_obj_t *content = wheel_page(lv_event_get_current_target_obj(e), "Set date", &row);
+    wheel[0] = wheel_create(row, day_options, now.tm_mday >= 1 ? now.tm_mday - 1 : 0, 104, true);
+    wheel[1] = wheel_create(row, month_names, now.tm_mon >= 0 ? now.tm_mon : 0, 120, true);
+    wheel[2] = wheel_create(row, year_options, year - CLOCK_YEAR_START, 140, false);
+    ui_create_card_action(content, LV_SYMBOL_OK, "Set date", set_date_cb);
+}
+
+static void open_time_page_cb(lv_event_t *e)
+{
+    struct tm now;
+    hw_get_date_time(now);
+
+    lv_obj_t *row;
+    lv_obj_t *content = wheel_page(lv_event_get_current_target_obj(e), "Set time", &row);
+    wheel[0] = wheel_create(row, hour_options, now.tm_hour, 130, true);
+    lv_obj_t *colon = lv_label_create(row);
+    lv_label_set_text(colon, ":");
+    lv_obj_set_style_text_font(colon, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(colon, UI_COLOR_TEXT_PRIMARY, 0);
+    wheel[1] = wheel_create(row, minute_options, now.tm_min, 130, true);
+    ui_create_card_action(content, LV_SYMBOL_OK, "Set time", set_time_cb);
+}
+
+/* "Date   2026/11/04 >": a row that opens its roller page. */
+static lv_obj_t *set_row(lv_obj_t *card, const char *icon, const char *title, lv_event_cb_t cb)
+{
+    lv_obj_t *row = ui_create_card_info(card, icon, title, "--");
+    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_t *value = lv_obj_get_child(row, -1);
+    lv_obj_set_style_text_color(value, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
+    return value;
+}
+#endif /* FACTORY_WATCH_UI */
+
 static lv_obj_t *add_info_row(lv_obj_t *card, const char *icon, const char *title,
                               const char *value, lv_obj_t **out_label)
 {
@@ -295,6 +477,10 @@ static void back_event_handler(lv_event_t *e)
     hour_dd = NULL;
     minute_dd = NULL;
     second_dd = NULL;
+#if FACTORY_WATCH_UI
+    date_value_label = NULL;
+    time_value_label = NULL;
+#endif
     menu_show();
 }
 
@@ -311,6 +497,18 @@ void ui_clock_tools_enter(lv_obj_t *parent)
     lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
 
+#if FACTORY_WATCH_UI
+    /* One gesture each: picking a zone applies it, and each row opens a "Set" page. */
+    card = ui_create_card(page_container, "Set");
+    lv_obj_t *zone_row = ui_create_card_picker(card, LV_SYMBOL_SETTINGS, "Zone", timezone_options,
+                                               tz_index_from_offset(hw_get_timezone_offset()),
+                                               zone_picked_cb);
+    timezone_dd = lv_obj_get_child(zone_row, -1);
+    date_value_label = set_row(card, LV_SYMBOL_EDIT, "Date", open_date_page_cb);
+    time_value_label = set_row(card, LV_SYMBOL_BELL, "Time", open_time_page_cb);
+    ui_create_card_button(card, LV_SYMBOL_WIFI, "Network Time", "Sync network time", ntp_sync_cb);
+    update_set_rows();
+#else
     card = ui_create_card(page_container, "Timezone");
     timezone_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Zone", timezone_options,
                                 tz_index_from_offset(hw_get_timezone_offset()));
@@ -328,6 +526,7 @@ void ui_clock_tools_enter(lv_obj_t *parent)
     second_dd = card_dropdown(card, LV_SYMBOL_EDIT, "Second", minute_options, 0);
     ui_create_card_button(card, LV_SYMBOL_REFRESH, "Read Clock", "Load Now", load_now_cb);
     ui_create_card_button(card, LV_SYMBOL_SAVE, "Set Clock", "Apply", apply_time_cb);
+#endif
 
     load_now_to_dropdowns();
     update_current_time_label();

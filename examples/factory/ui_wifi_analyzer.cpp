@@ -791,7 +791,8 @@ void ui_wifi_analyzer_enter(lv_obj_t *parent)
     ui_create_card_button(card, LV_SYMBOL_REFRESH, "Scan", "Scan Now", refresh_btn_cb);
     auto_switch = card_switch(card, LV_SYMBOL_REFRESH, "Auto Scan", true, auto_switch_cb);
     interval_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Interval", "5s\n10s\n30s", 1, interval_cb);
-    ui_create_card_button(card, LV_SYMBOL_SAVE, "Export", "CSV", export_csv_cb);
+    ui_create_card_button(card, LV_SYMBOL_SAVE, "Export",
+                          FACTORY_WATCH_UI ? "Export CSV" : "CSV", export_csv_cb);
 
     ap_list_card = ui_create_card(page_container, "Access Points");
     lv_obj_t *empty = lv_label_create(ap_list_card);

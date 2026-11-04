@@ -287,7 +287,8 @@ void ui_qrcode_enter(lv_obj_t *parent)
     lv_obj_add_event_cb(content_ta, content_ta_cb, LV_EVENT_ALL, NULL);
     ui_create_card_item(card, LV_SYMBOL_EDIT, "Text", content_ta);
 
-    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Generate", "Update", generate_cb);
+    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Generate",
+                          FACTORY_WATCH_UI ? "Update code" : "Update", generate_cb);
 
     keyboard = lv_keyboard_create(lv_screen_active());
     lv_obj_set_style_bg_color(keyboard, UI_COLOR_CARD_BG, 0);

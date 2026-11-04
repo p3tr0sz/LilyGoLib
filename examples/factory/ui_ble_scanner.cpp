@@ -1069,12 +1069,14 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     lv_obj_set_style_text_font(scan_label, UI_FONT_CAPTION, 0);
 
     card = ui_create_card(page_container, "Controls");
-    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Scan", "Now", refresh_btn_cb);
+    ui_create_card_button(card, LV_SYMBOL_REFRESH, "Scan",
+                          FACTORY_WATCH_UI ? "Scan now" : "Now", refresh_btn_cb);
     active_switch = card_switch(card, LV_SYMBOL_BLUETOOTH, "Active Scan", active_scan_enabled, active_switch_cb);
     named_filter_switch = card_switch(card, LV_SYMBOL_LIST, "Named Only", named_filter_enabled, named_filter_cb);
     auto_switch = card_switch(card, LV_SYMBOL_REFRESH, "Auto Refresh", auto_scan_enabled, auto_switch_cb);
     interval_dd = card_dropdown(card, LV_SYMBOL_SETTINGS, "Interval", "15s\n30s\n60s", 1, interval_cb);
-    ui_create_card_button(card, LV_SYMBOL_CLOSE, "Clear", "Clear", clear_btn_cb);
+    ui_create_card_button(card, LV_SYMBOL_CLOSE, "Clear",
+                          FACTORY_WATCH_UI ? "Clear list" : "Clear", clear_btn_cb);
 
     device_list_card = ui_create_card(page_container, "Nearby Devices");
     device_list_cont = create_device_list_container(device_list_card);

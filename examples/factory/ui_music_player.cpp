@@ -465,7 +465,11 @@ static void create_controls(lv_obj_t *parent)
     create_control_button(control_row, LV_SYMBOL_PLAY, true, play_pause_cb);
     create_control_button(control_row, LV_SYMBOL_NEXT, false, next_cb);
 
-#ifdef HAS_VOLUME_SLIDER
+#if defined(HAS_VOLUME_SLIDER) && FACTORY_WATCH_UI
+    /* No slider in the page: the row opens the full-screen level page. */
+    ui_create_card_level(card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100, hw_get_volume(),
+                         volume_slider_event);
+#elif defined(HAS_VOLUME_SLIDER)
     lv_obj_t *volume_row = lv_obj_create(card);
     lv_obj_set_size(volume_row, LV_PCT(92), 28);
     lv_obj_set_style_bg_opa(volume_row, LV_OPA_TRANSP, 0);

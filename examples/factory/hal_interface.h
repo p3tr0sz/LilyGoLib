@@ -1599,6 +1599,14 @@ uint16_t hw_set_charger_current_level(uint8_t level);
 uint8_t hw_get_charger_current_level();
 
 /**
+ * @brief Get the charging current a level stands for, without setting it.
+ *
+ * @param level A charger current level, 0 to hw_get_charge_level_nums().
+ * @return The current in mA.
+ */
+uint16_t hw_get_charge_level_current(uint8_t level);
+
+/**
  * @brief Print memory information.
  *
  * This function prints the current memory usage information to the console.
