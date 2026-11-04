@@ -1474,6 +1474,10 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     /* Final padding is set below, once the row's content height is known. */
     lv_obj_set_style_pad_top(row, 10, 0);
     lv_obj_set_style_pad_bottom(row, 10, 0);
+    /* Icons, values and dividers line up with the card caption at UI_CARD_PAD_HOR.
+     * A pressed highlight is drawn a bit wider so the text doesn't touch its edge. */
+    lv_obj_set_style_pad_hor(row, 0, 0);
+    lv_obj_set_style_transform_width(row, UI_CARD_PAD_HOR - 4, LV_STATE_PRESSED);
 #else
     lv_obj_set_style_pad_top(row, 6, 0);
     lv_obj_set_style_pad_bottom(row, 6, 0);
@@ -1597,7 +1601,7 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
 
     /* Divider */
     lv_obj_t *div = lv_obj_create(card);
-    lv_obj_set_size(div, LV_PCT(95), 1);
+    lv_obj_set_size(div, FACTORY_WATCH_UI ? LV_PCT(100) : LV_PCT(95), 1);
     lv_obj_set_style_bg_color(div, UI_COLOR_DIVIDER, 0);
     lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(div, 0, 0);

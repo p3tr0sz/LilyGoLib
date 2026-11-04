@@ -145,12 +145,9 @@ lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *t
         lv_obj_center(icon);
     }
 
+    /* No chevron: a pill row is plainly a button. Value rows in cards keep theirs,
+     * which is what tells them apart from read-only info rows. */
     list_row_label(row, title);
-
-    lv_obj_t *chevron = lv_label_create(row);
-    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
-    lv_obj_set_style_text_font(chevron, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(chevron, UI_COLOR_TEXT_SECONDARY, 0);
 
     if (cb) {
         lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, user_data);

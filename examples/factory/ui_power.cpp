@@ -239,9 +239,12 @@ static lv_obj_t *create_action_button(lv_obj_t *parent, const char *icon, const 
     lv_obj_set_style_text_color(detail_label,
                                 primary ? lv_color_hex(0xF4F4F4) : UI_COLOR_TEXT_SECONDARY, 0);
 
+#if !FACTORY_WATCH_UI
+    /* On the watch the row is plainly a button. */
     lv_obj_t *arrow = lv_label_create(button);
     lv_label_set_text(arrow, LV_SYMBOL_RIGHT);
     lv_obj_set_style_text_color(arrow, primary ? lv_color_white() : UI_COLOR_TEXT_SECONDARY, 0);
+#endif
 
     if (primary) primary_detail_label = detail_label;
     return button;

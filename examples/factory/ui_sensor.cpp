@@ -216,7 +216,7 @@ void ui_sensor_enter(lv_obj_t *parent)
     int screen_h = lv_display_get_vertical_resolution(NULL);
 
     /* Remove padding and flex layout for absolute positioning */
-    lv_obj_set_style_pad_all(page_container, 0, 0);
+    lv_obj_set_style_pad_ver(page_container, 0, 0);
     lv_obj_set_style_pad_all(card, 0, 0);
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     /* Disable flex so lv_obj_align works */

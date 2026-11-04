@@ -67,6 +67,8 @@ void ui_styles_refresh(void)
     lv_style_set_bg_opa(&ui_styles.card, LV_OPA_COVER);
     lv_style_set_radius(&ui_styles.card, 16);
     lv_style_set_pad_all(&ui_styles.card, 12);
+    lv_style_set_pad_left(&ui_styles.card, UI_CARD_PAD_HOR);
+    lv_style_set_pad_right(&ui_styles.card, UI_CARD_PAD_HOR);
     lv_style_set_pad_row(&ui_styles.card, 0);
     lv_style_set_border_width(&ui_styles.card, 0);
     lv_style_set_shadow_width(&ui_styles.card, 0);

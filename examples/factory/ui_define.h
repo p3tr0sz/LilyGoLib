@@ -112,7 +112,11 @@ extern uint32_t ui_active_track;
 #define UI_FONT_SMALL         (&lv_font_montserrat_18)   /* was 14 px */
 #define UI_ROW_MIN_H          76
 #define UI_APP_NAV_H          44
-#define UI_APP_PAD_HOR        12
+/* One side margin for every watch screen (app list, app pages, sheets): the
+ * Ultra's display has rounded corners, so content stays this far from the edge. */
+#define UI_SCREEN_MARGIN      24
+#define UI_APP_PAD_HOR        UI_SCREEN_MARGIN
+#define UI_CARD_PAD_HOR       16   /* Card edge to its caption, icons, values and dividers */
 #else
 #define UI_FONT_TINY          (&lv_font_montserrat_10)
 #define UI_FONT_CAPTION       (&lv_font_montserrat_12)
@@ -120,6 +124,7 @@ extern uint32_t ui_active_track;
 #define UI_ROW_MIN_H          0
 #define UI_APP_NAV_H          32
 #define UI_APP_PAD_HOR        8
+#define UI_CARD_PAD_HOR       12
 #endif
 #define UI_FONT_BODY          (MAIN_FONT)
 
@@ -260,7 +265,7 @@ void ui_pop_page(lv_obj_t *content);
 /* ui_create_card_item() calls this for a dropdown row: the dropdown only shows the
  * choice, and tapping the row opens a radio list. Apps don't need to call it. */
 void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd);
-/* A tappable list row: icon in an accent disc, title and a chevron. */
+/* A tappable pill row: icon in an accent disc and the title. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);
 /* ui_create_card_slider() on the watch: the row shows the value ("60% >") and opens

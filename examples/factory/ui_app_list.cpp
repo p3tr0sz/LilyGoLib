@@ -16,7 +16,7 @@
 #define APP_LIST_ROW_GAP       8
 #define APP_LIST_ICON_DISC     52
 #define APP_LIST_ICON_SIZE     34
-#define APP_LIST_PAD_HOR       24   /* Keeps rows clear of the rounded screen corners */
+#define APP_LIST_PAD_HOR       UI_SCREEN_MARGIN
 
 static struct {
     lv_obj_t *root;

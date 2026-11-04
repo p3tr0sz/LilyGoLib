@@ -124,7 +124,7 @@ static lv_obj_t *create_music_row(lv_obj_t *card, AudioParams_t *file_info)
     lv_obj_set_style_text_align(play, LV_TEXT_ALIGN_RIGHT, 0);
 
     lv_obj_t *div = lv_obj_create(card);
-    lv_obj_set_size(div, LV_PCT(95), 1);
+    lv_obj_set_size(div, FACTORY_WATCH_UI ? LV_PCT(100) : LV_PCT(95), 1);
     lv_obj_set_style_bg_color(div, UI_COLOR_DIVIDER, 0);
     lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(div, 0, 0);
