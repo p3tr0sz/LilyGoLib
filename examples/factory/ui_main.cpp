@@ -51,6 +51,8 @@ LV_IMG_DECLARE(img_tools);
 LV_IMG_DECLARE(img_wireless);
 LV_IMG_DECLARE(img_energy);
 LV_IMG_DECLARE(img_clock);
+LV_IMG_DECLARE(img_watch_stopwatch);
+LV_IMG_DECLARE(img_watch_timer);
 LV_IMG_DECLARE(img_network_radio);
 LV_IMG_DECLARE(img_usb);
 
@@ -1946,6 +1948,9 @@ void setupGui()
 
 #if !defined(EXCLUDE_CLOCK_TOOLS)
     extern app_t ui_clock_tools_main;
+#if FACTORY_WATCH_UI
+    extern app_t ui_stopwatch_main, ui_timer_main, ui_alarm_main;
+#endif
 #endif
 #if !defined(EXCLUDE_QRCODE)
     extern app_t ui_qrcode_main;
@@ -2037,7 +2042,14 @@ void setupGui()
     register_app("I2C Scan", &img_scan, &ui_i2c_scanner_main);
 
 #if !defined(EXCLUDE_CLOCK_TOOLS)
+#if FACTORY_WATCH_UI
+    /* The watch has them as three apps; date and time are in Settings. */
+    register_app("Stopwatch", &img_watch_stopwatch, &ui_stopwatch_main);
+    register_app("Timer", &img_watch_timer, &ui_timer_main);
+    register_app("Alarm", &img_clock, &ui_alarm_main);
+#else
     register_app("Clock Tools", &img_clock, &ui_clock_tools_main);
+#endif
 #endif
 #if !defined(EXCLUDE_QRCODE)
     register_app("QRCode", &img_qrcode, &ui_qrcode_main);

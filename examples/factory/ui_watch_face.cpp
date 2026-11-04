@@ -37,7 +37,7 @@ typedef struct {
 static const face_slot_default_t face_slot_defaults[WATCH_FACE_SLOT_COUNT] = {
     { WATCH_SLOT_BATTERY, NULL          },  /* Top left */
     { WATCH_SLOT_WIFI,    NULL          },  /* Top right */
-    { WATCH_SLOT_APP,     "Clock Tools" },  /* Bottom left */
+    { WATCH_SLOT_APP,     "Alarm" },        /* Bottom left */
     { WATCH_SLOT_APP,     "Settings"    },  /* Bottom right */
 };
 
@@ -88,7 +88,7 @@ static const char *face_value_app_name(uint8_t type)
     switch (type) {
     case WATCH_SLOT_BATTERY: return "Power";
     case WATCH_SLOT_WIFI:    return "WiFi";
-    case WATCH_SLOT_DATE:    return "Clock Tools";
+    case WATCH_SLOT_DATE:    return "Alarm";
     default:                 return NULL;
     }
 }

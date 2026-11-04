@@ -8,13 +8,14 @@ import pathlib
 
 from PIL import Image, ImageDraw
 
-SIZE = 44           # Pixels on screen
+SIZE = 44           # Pixels on screen (button icons)
+APP_SIZE = 80       # App list and face icons, scaled down by the UI
 SS = 8              # Supersampling
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src" / "img_watch_icons.c"
 
 
-def canvas():
-    img = Image.new("L", (SIZE * SS, SIZE * SS), 0)
+def canvas(size=SIZE):
+    img = Image.new("L", (size * SS, size * SS), 0)
     return img, ImageDraw.Draw(img)
 
 
@@ -59,8 +60,47 @@ def flag_icon():
     return img
 
 
+def stopwatch_icon():
+    """A round watch with a crown on top and one hand, for the Stopwatch app."""
+    img, d = canvas(APP_SIZE)
+    s = APP_SIZE * SS
+    cx, cy = s / 2, s * 0.56
+    w = 0.09 * s
+    r = 0.36 * s
+    d.ellipse((cx - r, cy - r, cx + r, cy + r), outline=255, width=int(w))
+    d.rounded_rectangle((cx - 0.08 * s, 0.04 * s, cx + 0.08 * s, 0.13 * s), radius=0.02 * s, fill=255)
+    d.rectangle((cx - w / 3, 0.12 * s, cx + w / 3, cy - r + w / 2), fill=255)
+    a = math.radians(-60)                                           # Hand at about 2 o'clock
+    hx, hy = cx + 0.24 * s * math.cos(a), cy + 0.24 * s * math.sin(a)
+    d.line((cx, cy, hx, hy), fill=255, width=int(w * 0.8))
+    disc(d, cx, cy, w * 0.75)
+    disc(d, hx, hy, w * 0.4)
+    return img
+
+
+def timer_icon():
+    """An hourglass, for the Timer app."""
+    img, d = canvas(APP_SIZE)
+    s = APP_SIZE * SS
+    w = 0.08 * s
+    left, right = 0.22 * s, 0.78 * s
+    top, bottom = 0.10 * s, 0.90 * s
+    d.rounded_rectangle((left - 0.04 * s, top - w / 2, right + 0.04 * s, top + w / 2), radius=w / 2, fill=255)
+    d.rounded_rectangle((left - 0.04 * s, bottom - w / 2, right + 0.04 * s, bottom + w / 2), radius=w / 2, fill=255)
+    mid = s / 2
+    neck = 0.05 * s
+    glass = [(left, top), (right, top), (mid + neck, mid), (right, bottom), (left, bottom), (mid - neck, mid)]
+    d.line(glass + [glass[0]], fill=255, width=int(w * 0.7), joint="curve")
+    d.polygon([(left + 0.10 * s, top + 0.08 * s), (right - 0.10 * s, top + 0.08 * s), (mid, mid - 0.06 * s)],
+              fill=255)                                             # Sand on top
+    d.polygon([(mid, bottom - 0.22 * s), (right - 0.06 * s, bottom - 0.05 * s),
+               (left + 0.06 * s, bottom - 0.05 * s)], fill=255)     # And below
+    return img
+
+
 def c_array(name, img):
-    img = img.resize((SIZE, SIZE), Image.LANCZOS)
+    size = img.size[0] // SS
+    img = img.resize((size, size), Image.LANCZOS)
     data = img.tobytes()
     rows = []
     for i in range(0, len(data), 16):
@@ -75,7 +115,7 @@ def c_array(name, img):
         "    .header.stride = %d,\n"
         "    .data_size = sizeof(%s_map),\n"
         "    .data = %s_map,\n"
-        "};\n" % (name, "\n".join(rows), name, SIZE, SIZE, SIZE, name, name)
+        "};\n" % (name, "\n".join(rows), name, size, size, size, name, name)
     )
 
 
@@ -86,6 +126,8 @@ def main():
         "",
         c_array("img_watch_reset", reset_icon()),
         c_array("img_watch_lap", flag_icon()),
+        c_array("img_watch_stopwatch", stopwatch_icon()),
+        c_array("img_watch_timer", timer_icon()),
     ]
     OUT.write_text("\n".join(body))
     print("wrote", OUT)

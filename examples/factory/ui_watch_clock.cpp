@@ -3,8 +3,9 @@
  * @license   MIT
  * @date      2026-11-04
  *
- * Clock Tools on the watch: stopwatch, timer and alarms. Setting the date, time
- * and zone lives in Settings > Date & time (ui_clock_settings_build()).
+ * Stopwatch, Timer and Alarm: three apps on the watch, in place of Clock Tools.
+ * Setting the date, time and zone lives in Settings > Date & time
+ * (ui_clock_settings_build()).
  *
  * The engine keeps running when the app is closed. A finished timer or a due
  * alarm opens a full-screen ring page over whatever is showing and vibrates
@@ -33,7 +34,6 @@ LV_IMAGE_DECLARE(img_watch_lap);
 #define STOPWATCH_LAP_MAX       30
 #define STOPWATCH_REFRESH_MS    50
 #define TIMER_REFRESH_MS        200
-#define MENU_REFRESH_MS         500
 #define ROUND_BTN               96
 #define PRESET_BTN              112
 #define PRESET_GAP              28
@@ -183,12 +183,6 @@ static struct {
 
 static lv_obj_t *custom_wheel[3];   /* Hours, minutes, seconds */
 
-static struct {
-    lv_obj_t *stopwatch;
-    lv_obj_t *timer;
-    lv_obj_t *alarm;
-    lv_timer_t *refresh;
-} menu_ui;
 
 static char hour_options[24 * 3];
 static char minute_options[60 * 3];
@@ -655,9 +649,8 @@ static void sw_page_delete_cb(lv_event_t *e)
     memset(&sw_ui, 0, sizeof(sw_ui));
 }
 
-static void open_stopwatch_cb(lv_event_t *e)
+static void stopwatch_build(lv_obj_t *content)
 {
-    lv_obj_t *content = ui_push_page(lv_event_get_current_target_obj(e), "Stopwatch");
     lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(content, 20, 0);
     lv_obj_add_event_cb(content, sw_page_delete_cb, LV_EVENT_DELETE, NULL);
@@ -883,9 +876,8 @@ static void tmr_page_delete_cb(lv_event_t *e)
     memset(&tmr_ui, 0, sizeof(tmr_ui));
 }
 
-static void open_timer_cb(lv_event_t *e)
+static void timer_build(lv_obj_t *content)
 {
-    lv_obj_t *content = ui_push_page(lv_event_get_current_target_obj(e), "Timer");
     lv_obj_add_event_cb(content, tmr_page_delete_cb, LV_EVENT_DELETE, NULL);
 
     /* Idle: round presets, three to a row, and a Custom pill. */
@@ -1236,9 +1228,8 @@ static void alarm_page_delete_cb(lv_event_t *e)
     alarm_ui.add_row = NULL;
 }
 
-static void open_alarms_cb(lv_event_t *e)
+static void alarms_build(lv_obj_t *content)
 {
-    lv_obj_t *content = ui_push_page(lv_event_get_current_target_obj(e), "Alarm");
     lv_obj_add_event_cb(content, alarm_page_delete_cb, LV_EVENT_DELETE, NULL);
     alarm_ui.list = plain_box(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(alarm_ui.list, 12, 0);
@@ -1247,74 +1238,40 @@ static void open_alarms_cb(lv_event_t *e)
     alarm_list_refresh();
 }
 
-/* ── App page: three rows, each with what it is doing ── */
+/* ── Apps: Stopwatch, Timer and Alarm, each its own entry in the app list ── */
 
-static lv_obj_t *menu_row_value(lv_obj_t *row)
-{
-    lv_obj_t *value = lv_label_create(row);
-    lv_obj_set_style_text_font(value, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(value, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_label_set_text(value, "");
-    lv_obj_set_style_pad_right(value, 12, 0);
-    return value;
-}
+static lv_obj_t *clock_app_page = NULL;
 
-static void menu_update(void)
-{
-    if (!menu_ui.stopwatch) return;
-    char buf[24];
-    uint32_t ms = stopwatch_ms();
-    if (ms) format_hms(buf, sizeof(buf), ms / 1000);
-    else buf[0] = 0;
-    lv_label_set_text(menu_ui.stopwatch, buf);
-
-    if (tmr.state == TIMER_IDLE) buf[0] = 0;
-    else format_hms(buf, sizeof(buf), (timer_left_ms() + 999) / 1000);
-    lv_label_set_text(menu_ui.timer, buf);
-
-    int index = -1;
-    if (snooze.active) {
-        lv_snprintf(buf, sizeof(buf), "Snoozed");
-    } else if (next_alarm_seconds(&index) >= 0) {
-        watch_alarm_t a = hw_get_watch_alarm(index);
-        lv_snprintf(buf, sizeof(buf), "%02d:%02d", a.hour, a.minute);
-    } else {
-        buf[0] = 0;
-    }
-    lv_label_set_text(menu_ui.alarm, buf);
-}
-
-static void menu_refresh_cb(lv_timer_t *t)
-{
-    LV_UNUSED(t);
-    menu_update();
-}
-
-static void menu_delete_cb(lv_event_t *e)
+static void clock_app_back_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if (menu_ui.refresh) lv_timer_delete(menu_ui.refresh);
-    memset(&menu_ui, 0, sizeof(menu_ui));
+    if (clock_app_page) {
+        lv_obj_t *page = clock_app_page;
+        clock_app_page = NULL;
+        ui_destroy_app_page(page);
+    }
+    menu_show();
 }
 
-void watch_clock_build(lv_obj_t *content)
+static void clock_app_open(lv_obj_t *parent, const char *title, void (*build)(lv_obj_t *))
 {
     watch_clock_init();
-    menu_ui.stopwatch = menu_row_value(
-        ui_create_menu_row(content, LV_SYMBOL_PLAY, "Stopwatch", open_stopwatch_cb, NULL));
-    menu_ui.timer = menu_row_value(
-        ui_create_menu_row(content, LV_SYMBOL_REFRESH, "Timer", open_timer_cb, NULL));
-    menu_ui.alarm = menu_row_value(
-        ui_create_menu_row(content, LV_SYMBOL_BELL, "Alarm", open_alarms_cb, NULL));
-    lv_obj_add_event_cb(content, menu_delete_cb, LV_EVENT_DELETE, NULL);
-    menu_update();
-    menu_ui.refresh = lv_timer_create(menu_refresh_cb, MENU_REFRESH_MS, NULL);
+    clock_app_page = ui_create_app_page(parent, title, clock_app_back_cb);
+    build(clock_app_page);
 }
+
+static void stopwatch_enter(lv_obj_t *parent) { clock_app_open(parent, "Stopwatch", stopwatch_build); }
+static void timer_enter(lv_obj_t *parent) { clock_app_open(parent, "Timer", timer_build); }
+static void alarm_enter(lv_obj_t *parent) { clock_app_open(parent, "Alarm", alarms_build); }
+static void clock_app_exit(lv_obj_t *parent) { LV_UNUSED(parent); }
+
+app_t ui_stopwatch_main = {.setup_func_cb = stopwatch_enter, .exit_func_cb = clock_app_exit, .user_data = nullptr};
+app_t ui_timer_main = {.setup_func_cb = timer_enter, .exit_func_cb = clock_app_exit, .user_data = nullptr};
+app_t ui_alarm_main = {.setup_func_cb = alarm_enter, .exit_func_cb = clock_app_exit, .user_data = nullptr};
 
 #else /* EXCLUDE_CLOCK_TOOLS */
 
 void watch_clock_init(void) {}
-void watch_clock_build(lv_obj_t *content) { LV_UNUSED(content); }
 uint32_t watch_clock_next_wake_ms(void) { return 0; }
 
 #endif /* EXCLUDE_CLOCK_TOOLS */

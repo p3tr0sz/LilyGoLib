@@ -8,7 +8,7 @@
  * Timezone, manual clock setting, and NTP sync tools.
  *
  * On the watch, these live in Settings > Date & time (ui_clock_settings_build()),
- * and the Clock Tools app holds the stopwatch, timer and alarms (ui_watch_clock.cpp).
+ * and Stopwatch, Timer and Alarm are apps of their own (ui_watch_clock.cpp).
  */
 #include "ui_define.h"
 #include "ui_watch_shell.h"
@@ -504,10 +504,8 @@ void ui_clock_tools_enter(lv_obj_t *parent)
 {
     build_options();
     page_container = ui_create_app_page(parent, "Clock Tools", back_event_handler);
-#if FACTORY_WATCH_UI
-    /* Date and time are set in Settings; this app is the stopwatch, timer and alarms. */
-    watch_clock_build(page_container);
-#else
+    /* Not registered on the watch: Settings > Date & time and the Stopwatch,
+     * Timer and Alarm apps take its place. */
     lv_obj_t *card = ui_create_card(page_container, "Clock");
     add_info_row(card, LV_SYMBOL_BELL, "Current", "--", &current_time_label);
     add_info_row(card, LV_SYMBOL_SETTINGS, "Timezone", "--", &timezone_label);
@@ -537,7 +535,6 @@ void ui_clock_tools_enter(lv_obj_t *parent)
     load_now_to_dropdowns();
     update_current_time_label();
     clock_timer = lv_timer_create(clock_timer_cb, 1000, NULL);
-#endif
 }
 
 void ui_clock_tools_exit(lv_obj_t *parent)

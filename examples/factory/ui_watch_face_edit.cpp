@@ -28,6 +28,32 @@ static const char *const slot_value_names[] = {
 
 static lv_obj_t *editor_slot_rows[WATCH_FACE_SLOT_COUNT];
 static lv_obj_t *editor_page;
+/* Opened by a long press on one corner: picking goes straight back to the face. */
+static bool editor_direct;
+
+#define DIRECT_CLOSE_DELAY_MS   250     /* Long enough to see the check mark move */
+
+static void editor_close(void)
+{
+    if (!editor_page) return;
+    lv_obj_t *page = editor_page;
+    editor_page = NULL;
+    editor_direct = false;
+    ui_destroy_app_page(page);
+    menu_show();
+}
+
+static void editor_close_async(void *user_data)
+{
+    LV_UNUSED(user_data);
+    editor_close();
+}
+
+static void editor_close_timer_cb(lv_timer_t *t)
+{
+    lv_timer_delete(t);
+    editor_close();
+}
 
 /* FNV-1a, so a saved slot keeps its app however the app list is ordered. */
 uint32_t watch_app_name_hash(const char *name)
@@ -46,6 +72,7 @@ static const struct {
     const char *name;
 } app_renames[] = {
     { "Setting", "Settings" },
+    { "Clock Tools", "Alarm" },     /* Split into Stopwatch, Timer and Alarm */
 };
 
 static bool app_matches_hash(const ui_app_entry_t *entry, uint32_t hash)
@@ -103,6 +130,9 @@ static void slot_picker_cb(lv_event_t *e)
     }
     hw_set_watch_face_slot(index, slot);
     watch_face_rebuild();
+    if (editor_direct) {
+        lv_timer_create(editor_close_timer_cb, DIRECT_CLOSE_DELAY_MS, NULL);
+    }
 }
 
 static lv_obj_t *add_caption(lv_obj_t *content, const char *text)
@@ -164,14 +194,28 @@ void watch_lock_screen_build(lv_obj_t *content)
 static void editor_back_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
-    ui_destroy_app_page(editor_page);
+    editor_close();
+}
+
+/* Direct edit: swiping back from the choices also returns to the face, not the list. */
+static void direct_picker_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (editor_direct) lv_async_call(editor_close_async, NULL);
+}
+
+static void editor_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
     editor_page = NULL;
-    menu_show();
+    editor_direct = false;
 }
 
 static void editor_enter(lv_obj_t *parent)
 {
+    editor_direct = false;
     editor_page = ui_create_app_page(parent, "Watch face", editor_back_cb);
+    lv_obj_add_event_cb(editor_page, editor_page_delete_cb, LV_EVENT_DELETE, NULL);
     watch_face_editor_build(editor_page);
 }
 
@@ -192,7 +236,13 @@ void watch_face_editor_open(int slot)
     if (slot >= 0 && slot < WATCH_FACE_SLOT_COUNT && editor_page &&
             watch_shell_get_view() == WATCH_VIEW_APP) {
         /* Open that corner's choices straight away. */
+        lv_obj_t *root = (lv_obj_t *)lv_obj_get_user_data(editor_page);
+        uint32_t pages = lv_obj_get_child_count(root);
         lv_obj_send_event(editor_slot_rows[slot], LV_EVENT_CLICKED, NULL);
+        if (lv_obj_get_child_count(root) > pages) {
+            editor_direct = true;
+            lv_obj_add_event_cb(lv_obj_get_child(root, -1), direct_picker_delete_cb, LV_EVENT_DELETE, NULL);
+        }
     }
 }
 
