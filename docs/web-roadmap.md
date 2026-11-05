@@ -59,10 +59,11 @@ The SD card is a first-class part of the system, not an optional extra:
 | Sensors: IMU, steps, compass | `sensors.imu` | P4 |
 | GNSS: position on a map, satellites, tracks from the SD | `gnss` | P4 |
 | LoRa: messenger and packet log, radio settings | `lora` | P4 |
-| IR: learn, name, send, remotes saved as files | `ir` | P4 |
+| IR: learn, name, send, remotes saved as files | `ir` | — (the T-Watch Ultra has no IR hardware) |
 | NFC: read tags, save dumps | `nfc` | P4 |
 | Recorder and player: record on the watch, play in the browser or on the watch | `recorder`, `audio.play` | P4 |
 | Wi-Fi and BLE scanners | `wifi.scan`, `ble.scan` | P4 |
+| Saved Wi-Fi networks in Settings | `wifi.manage` | later |
 | Notifications: send one to the watch (with vibration), history | `notify` | P4 |
 | Link: ESP-NOW file transfer between watches | `link.espnow` | P5 |
 | Assistant: voice from the watch mic, LLM called by the browser, answer spoken on the watch | `recorder`, `audio.play` | P5 |
@@ -78,7 +79,7 @@ The SD card is a first-class part of the system, not an optional extra:
 | P1 | Firmware API core: server, mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the built-in rescue page | 2 weeks | Done in the simulator (`4571697`): `web_api_test.mjs` 50/50 (flash 47/47). The watch build compiles the web code but stops at the unrelated `demo_ce.h` NFC issue, so it is not yet run on the watch. Left: `not_fat32` detection (a card that fails to mount is reported as `mount_failed`) |
 | P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | Done in the simulator: `web_ui_test.mjs` 29/29 on the mock and the simulator, starting from an empty card |
 | P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known; SD starter ZIP; desktop follows the watch theme; the watch installs the desktop by itself (card ZIP, then download) | 1–2 weeks | Done in the simulator: `web_api_test.mjs` 68/68 (mock 66/66), `web_ui_test.mjs` 40/40 (mock 39/39), `web_desktop_test.mjs` 24/24; the watch build compiles it. On the watch only, so untested until its build links: the access point, the HTTPS download, the ROM inflate. A release with the ZIP is not published yet |
-| P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
+| P4 | Tool apps wave 1 (table above) | 3–4 weeks | Done in the simulator: Monitor, Notifications, Sensors, GNSS, LoRa, NFC, Recorder, Scanners. `web_api_test.mjs` 133/133 (mock 131/131), `web_ui_test.mjs` 78/78 (mock 77/77); the watch build compiles every tool file. IR dropped (no IR hardware); `wifi.manage` left for later. On the watch only, so untested until its build links: the real radio, GNSS, NFC reader, microphone, player, NimBLE and Wi-Fi scans |
 | P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
 | P7 | `web_api_test.mjs` and `web_ui_test.mjs` on every firmware or desktop change | ongoing | |
@@ -87,7 +88,7 @@ The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, c
 
 ## Testing
 
-Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
+Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, Screen, every P4 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
 
 | Target | What runs | How |
 |---|---|---|
@@ -105,7 +106,7 @@ How the simulator runs the real web code:
 - **Storage on the PC.** `/sd` is a folder (`sim_sd/` in the working directory, or `TWATCH_SIM_SD`) and `/flash` another (`sim_flash/`, or `TWATCH_SIM_FLASH`). F3 in the simulator window inserts or removes the card (F2 is already the power button); the web server mounts and unmounts it and the browser gets `sd.changed`. The watch's own SD pages are not built for the simulator yet, so they don't see this card.
 - **Same threading as the watch.** The server runs in its own task (watch) or thread (simulator). Anything that touches LVGL or the hardware goes through a queue that an `lv_timer` drains in the UI loop.
 - **Test hooks only in the simulator.** `/api/_dev/pin` and `/api/_dev/sd` are compiled only without `ARDUINO`; the watch never has them. The PIN is also printed to the console.
-- **Fake hardware.** GNSS, LoRa, IR and NFC answer with fixed fake data in the simulator, as the desktop build already does for audio and network radio.
+- **Fake hardware.** The tools' hardware (`web_tools_hw.cpp`) is faked in the simulator next to the real code: a GNSS fix walking around one spot, a turning IMU, a LoRa station that answers `ack: <text>`, an NFC tag a second after the reader starts, a tone as the microphone, timed playback, and fixed Wi-Fi and BLE lists. `/api/_dev/app`, `/api/_dev/lora` and `/api/_dev/nfc` drive the rest (`web-api.md`, Test hooks).
 
 ## How the watch side works (P3)
 
@@ -160,8 +161,9 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
 ## Where the code goes
 
 - Firmware: `examples/factory/web_server.h`, `web_internal.h`, `web_core.cpp` (routes, pairing, events, static), `web_fs.cpp`, `web_json.cpp`, `web_screen.cpp`, `web_transport_esp.cpp` (watch), `web_transport_posix.cpp` (simulator), generated `web_rescue.h`, and the watch page `ui_web.cpp`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
+- Tools (P4): `web_tools.h` (the tool contract, shared helpers, the hardware interface), `web_tools.cpp` (registry: routing, caps, timer), one module per tool group (`web_tool_system.cpp` monitor/logs/notify, `web_tool_sensors.cpp` IMU/GNSS, `web_tool_lora.cpp`, `web_tool_nfc.cpp`, `web_tool_audio.cpp` recorder/player, `web_tool_scan.cpp` Wi-Fi/BLE) and `web_tools_hw.cpp` (real hardware and simulator fakes). A tool is a `web_tool_t {caps, handle, tick, second, stop}`; one the board lacks is left out of the registry, so it has no routes and no capability.
 - Watch UI: a "Web" page in Settings (P3).
-- Desktop: `examples/factory/web/` (`js/shell.js`, `js/api.js`, `js/ui.js`, `css/desktop.css`, `apps/<id>/app.js`).
+- Desktop: `examples/factory/web/` (`js/shell.js`, `js/api.js`, `js/ui.js`, `js/chart.js`, `css/desktop.css`, `apps/<id>/app.js`: files, screen, settings, monitor, notify, sensors, gnss, lora, nfc, recorder, scanners).
 - Rescue page: `examples/factory/web-rescue/index.html` → generated `examples/factory/web_rescue.h`.
 - Tools in `examples/factory/tools/`: `web_mock_device.mjs` (mock watch), `web_api_test.mjs` (API test), `web_ui_test.mjs` (desktop UI test in headless Chrome), `web_build.py` (SD bundle, install, rescue header), `web_boot_probe.mjs` (request log and screenshots).
 
