@@ -7,7 +7,8 @@
 // Usage:
 //   node web_boot_probe.mjs --url http://localhost:5620 --dev-pin        (mock watch: reads /api/_dev/pin)
 //   node web_boot_probe.mjs --url http://192.168.1.50 --pin 123456      (watch: PIN from its screen)
-// Options: --wait <ms> per phase (default 15000), --app <id> (repeatable) also open that app,
+// Options: --wait <ms> per phase (default 15000), --app <id> (repeatable) also open that app (/#app=<id>),
+//          --png-dir <dir> a screenshot per phase,
 //          --json <file> raw report, --png <file> last screenshot, --chrome <path>.
 // Needs Node 22+ (global WebSocket) and Google Chrome.
 
@@ -35,9 +36,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---- Chrome + CDP ----
 const profile = mkdtempSync(join(tmpdir(), 'web-probe-'));
 const chrome = spawn(CHROME, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--window-size=1280,800', 'about:blank'], { stdio: 'ignore' });
+  '--no-first-run', '--no-default-browser-check', `--window-size=${opt('--size', '1280,800')}`, 'about:blank'], { stdio: 'ignore' });
 let wsUrl = null;
-for (let i = 0; i < 100 && !wsUrl; i++) {
+for (let i = 0; i < 300 && !wsUrl; i++) {
   await sleep(100);
   try { const [port, path] = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n'); wsUrl = `ws://127.0.0.1:${port}${path}`; } catch {}
 }
@@ -91,12 +92,19 @@ listeners.push((m) => {
   }
 });
 
+const SHOTS = opt('--png-dir');
 async function runPhase(name, url) {
   phases[name] = { requests: [], websockets: [], wsFrames: [], errors: [], external: new Set() };
   phase = name;
   await S('Page.navigate', { url });
+  // A hash-only change does not reload the page: reload so the phase starts clean.
+  if (url.includes('#')) await S('Page.reload', { ignoreCache: true });
   await sleep(WAIT);
   phase = null;
+  if (SHOTS) {
+    const shot = await S('Page.captureScreenshot', { format: 'png' }).catch(() => null);
+    if (shot) writeFileSync(join(SHOTS, `${name.replace(/[^a-z0-9-]+/gi, '_')}.png`), Buffer.from(shot.data, 'base64'));
+  }
 }
 
 await runPhase('unpaired', BASE + '/');
@@ -111,7 +119,7 @@ if (PIN) {
     await runPhase('paired', BASE + '/');
     // --app <id> (repeatable): open each app on its own after pairing, to see which routes it needs.
     for (let i = 0; i < args.length; i++) {
-      if (args[i] === '--app') await runPhase('app:' + args[i + 1], `${BASE}/apps/${args[i + 1]}/`);
+      if (args[i] === '--app') await runPhase('app:' + args[i + 1], `${BASE}/#app=${args[i + 1]}`);
     }
   } else {
     console.error(`pairing failed: HTTP ${r.result.value}`);

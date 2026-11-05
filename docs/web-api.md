@@ -90,7 +90,8 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 
 ## Static files
 
-- `/` and `/<asset>`: `/sd/web/<asset>` if `/sd/web/manifest.json` exists and its `api` is `1`; otherwise the embedded rescue desktop.
+- `/rescue`: the rescue page built into the firmware (pairing, SD status, desktop install). Always available.
+- `/` and `/<asset>`: `/sd/web/<asset>` if `/sd/web/manifest.json` exists and its `api` is `1`; otherwise `/` is the rescue page and other paths are `404`.
 - `/apps/<id>/<rest>`: `/sd/web/apps/<id>/<rest>`.
 - A `<file>.gz` twin is sent with `Content-Encoding: gzip`. `ETag` + `304`. HTML adds `X-Frame-Options: SAMEORIGIN`.
 

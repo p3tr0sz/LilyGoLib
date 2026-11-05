@@ -33,6 +33,12 @@ function check(name, cond, detail) {
 }
 const q = encodeURIComponent;
 
+// Wait for the server (the simulator takes a few seconds to start).
+for (let i = 0; ; i++) {
+  try { if ((await fetch(`${BASE}/api/caps`)).ok) break; } catch {}
+  if (i >= 60) { console.log(`no server at ${BASE}`); process.exit(2); }
+  await new Promise((x) => setTimeout(x, 500));
+}
 console.log(`web API v1 test: ${BASE}  (files on ${ROOT})`);
 
 // ---- public ----

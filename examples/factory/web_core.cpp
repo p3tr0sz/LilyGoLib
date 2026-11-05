@@ -802,13 +802,19 @@ const char *web_mime_type(const char *path)
     return "application/octet-stream";
 }
 
-/* Served when the SD card holds no desktop for API v1. Replaced by the rescue desktop in P2. */
-static const char RESCUE_HTML[] =
-    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>T-Watch Ultra</title></head>"
-    "<body style=\"font:16px system-ui;margin:2rem;max-width:40rem\"><h1>T-Watch Ultra</h1>"
-    "<p>No desktop on the SD card yet. The web API v1 is running: <a href=\"/api/caps\">/api/caps</a>.</p>"
-    "</body></html>";
+/* The rescue page (web-rescue/index.html, gzipped by tools/web_build.py --rescue). Served at /rescue,
+ * and at / when the SD card holds no desktop for API v1. */
+#include "web_rescue.h"
+
+static void send_rescue(web_req_t *r)
+{
+    if (r->begin(r, 200, "text/html; charset=utf-8",
+                 "Content-Encoding: gzip\r\nCache-Control: no-cache\r\nX-Frame-Options: SAMEORIGIN\r\n",
+                 (long long)WEB_RESCUE_HTML_GZ_LEN)) {
+        r->write(r, (const char *)WEB_RESCUE_HTML_GZ, WEB_RESCUE_HTML_GZ_LEN);
+    }
+    r->end(r);
+}
 
 static bool desktop_dir(std::string &out)
 {
@@ -838,17 +844,14 @@ static void handle_static(web_req_t *r)
         web_resp_error(r, 400, "bad_request");
         return;
     }
+    if (!strcmp(r->path, "/rescue") || !strcmp(r->path, "/rescue/")) {
+        send_rescue(r);
+        return;
+    }
     std::string dir;
     if (!desktop_dir(dir)) {
-        if (!strcmp(r->path, "/") || !strcmp(r->path, "/index.html")) {
-            if (r->begin(r, 200, "text/html; charset=utf-8", "Cache-Control: no-cache\r\nX-Frame-Options: SAMEORIGIN\r\n",
-                         (long long)strlen(RESCUE_HTML))) {
-                r->write(r, RESCUE_HTML, strlen(RESCUE_HTML));
-            }
-            r->end(r);
-        } else {
-            web_resp_error(r, 404, "not_found");
-        }
+        if (!strcmp(r->path, "/") || !strcmp(r->path, "/index.html")) send_rescue(r);
+        else web_resp_error(r, 404, "not_found");
         return;
     }
     std::string rel = r->path;

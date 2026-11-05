@@ -6,7 +6,8 @@
 //   node web_mock_device.mjs [--root <dir>] [--web <desktop dir>] [--port 5620] [--pin 123456] [--dev]
 //     --root  folder holding the fake storage: <root>/sd (SD card) and <root>/flash (internal FFat);
 //             default <tmp>/mock-twatch
-//     --web   desktop to serve at / (default: examples/factory/web if present, else a placeholder page)
+//     --web   desktop to serve at / when the card has none (default: examples/factory/web; a missing
+//             folder means the rescue page, like a watch with no desktop on its card)
 //     --dev   adds test hooks the watch never has:
 //               GET  /api/_dev/pin               the pairing PIN
 //               POST /api/_dev/sd {present:bool}  insert or remove the SD card
@@ -207,13 +208,17 @@ async function desktopDir() {
   }
   return existsSync(WEB) ? WEB : null;
 }
-const PLACEHOLDER = `<!doctype html><meta charset="utf-8"><title>T-Watch Ultra</title>
-<body style="font:16px system-ui;margin:2rem"><h1>T-Watch Ultra</h1><p>No desktop installed. API v1 is up: <a href="/api/caps">/api/caps</a></p>`;
+const RESCUE = join(HERE, '..', 'web-rescue', 'index.html');
+function sendRescue(res) {
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache', 'x-frame-options': 'SAMEORIGIN' });
+  createReadStream(RESCUE).pipe(res);
+}
 async function staticRoute(req, res, path) {
   if (path.split('/').includes('..')) return fail(res, 400, 'bad_request');
+  if (path === '/rescue' || path === '/rescue/') return sendRescue(res);
   const dir = await desktopDir();
   if (!dir) {
-    if (path === '/' || path === '/index.html') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PLACEHOLDER); }
+    if (path === '/' || path === '/index.html') return sendRescue(res);
     return fail(res, 404, 'not_found');
   }
   let rel = path === '/' ? '/index.html' : path;
@@ -335,6 +340,6 @@ setInterval(() => {
 
 server.listen(PORT, () => {
   console.log(`mock T-Watch Ultra (web API v1): http://localhost:${PORT}`);
-  console.log(`storage: ${ROOT}   desktop: ${existsSync(WEB) ? WEB : '(placeholder)'}`);
+  console.log(`storage: ${ROOT}   desktop: ${existsSync(WEB) ? WEB : '(rescue page)'}`);
   console.log(`pairing PIN: ${PIN}${DEV ? '  (also at /api/_dev/pin)' : ''}`);
 });

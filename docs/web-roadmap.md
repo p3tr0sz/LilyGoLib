@@ -25,13 +25,13 @@ browser ── HTTP /api/*  ─┐
                                 ├─ web_fs       /sd, /flash
                                 ├─ web_events   one socket, {t, seq, d}
                                 ├─ web_tools    IR, LoRa, GNSS, NFC, sensors, recorder, Wi-Fi, BLE
-                                ├─ web_static   desktop from /sd/web, else the embedded rescue desktop
-                                └─ web_assets   rescue desktop embedded in the firmware (gzip)
+                                ├─ static       desktop from /sd/web, else the embedded rescue page
+                                └─ web_rescue.h rescue page built into the firmware (gzip)
 ```
 
 - **The desktop lives on the SD card** (`/sd/web/`), gzipped. No firmware space limit, updatable without flashing, room for apps and their data.
-- **A small rescue desktop is embedded in the firmware** (budget 60 KB gzipped): pairing, Files, SD status, and "install or update the desktop on the SD card" from files the browser uploads. It is served when there is no card, no desktop on it, or a desktop built for another API version. The released image uses about 3.06 MB of the 4 MB app slot, and the internal FFat is already full of audio, so the full desktop does not go in flash.
-- **Desktop source:** `examples/factory/web/`. Plain HTML, CSS and ES modules, no framework and no build step while developing. `tools/web_build.py` gzips it into an SD bundle (`web/` + `web/manifest.json` with version, API level and file hashes) and generates the rescue desktop's C header.
+- **A small rescue page is built into the firmware** (`web-rescue/index.html`, 3.4 KB gzipped, budget 60 KB): pairing, SD status, and installing or updating the desktop on the card from a folder the browser uploads. It is always at `/rescue`, and at `/` when there is no card, no desktop on it, or a desktop built for another API version. The released image uses about 3.06 MB of the 4 MB app slot, and the internal FFat is already full of audio, so the full desktop does not go in flash.
+- **Desktop source:** `examples/factory/web/`. Plain HTML, CSS and ES modules, no framework and no build step while developing. `tools/web_build.py` gzips it into an SD bundle (`web/` + `web/manifest.json` with version, API level and file hashes) and `--rescue` regenerates `web_rescue.h`, the rescue page as a gzipped C array (commit it with the page).
 
 ## SD card support
 
@@ -42,7 +42,7 @@ The SD card is a first-class part of the system, not an optional extra:
 - **Safe writes.** Every write goes to `<file>.tmp` and is renamed into place, so a removed card or a dead battery never leaves half a file. A write when the card is gone fails cleanly with `503 sd_missing`.
 - **Shared bus.** The SD shares the SPI bus with the LoRa radio. File transfers use the bus lock that the factory code already uses for the radio, in chunks, so LoRa receive keeps working during a download.
 - **Layout.** `/sd/web/` desktop, `/sd/web/apps/<id>/` extra apps, `/sd/data/` user files and tool captures (`ir/`, `gnss/`, `nfc/`, `recordings/`, `lora/`), `/sd/system/` desktop settings.
-- **Desktop install and update.** The rescue desktop uploads a bundle through the file API, checks hashes against `manifest.json`, then switches `/sd/web.new` to `/sd/web` in one rename. A failed update keeps the old desktop.
+- **Desktop install and update.** The rescue page uploads the built folder to `/sd/web.new` through the file API, checks every file's size against `manifest.json`, then moves `/sd/web.new` onto `/sd/web`. A failed or interrupted upload leaves the old desktop in place. Settings › Web desktop shows the installed version and links to the rescue page. From a PC, `web_build.py --install <card>` does the same.
 - **Card tools on the desktop.** SD status in the status bar, free space, "safe to remove" (unmount), and a check that scans the card and reports errors.
 - **Apps are ES modules** loaded by the shell (same origin, no iframes): `web/apps/<id>/app.js` exporting `{ id, title, icon, caps, mount(el, api) }`. An app whose `caps` are not all present is not shown.
 - **Responsive:** windows on a laptop, one full-screen app at a time on a phone.
@@ -74,25 +74,25 @@ The SD card is a first-class part of the system, not an optional extra:
 
 | Phase | What | Estimate | State |
 |---|---|---|---|
-| P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done |
-| P1 | Firmware API core: server, Wi-Fi/AP + mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the embedded rescue desktop | 2 weeks | In progress: core, simulator transport and watch transport written; `web_api_test.mjs` passes on the simulator (50/50, flash 47/47). To do: run on the watch (its build is blocked by a missing `demo_ce.h` in the NFC code, unrelated), access-point fallback, `not_fat32` detection |
-| P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | |
-| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop) | 1 week | |
+| P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done (`c40370f`) |
+| P1 | Firmware API core: server, mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the built-in rescue page | 2 weeks | Done in the simulator (`4571697`): `web_api_test.mjs` 50/50 (flash 47/47). The watch build compiles the web code but stops at the unrelated `demo_ce.h` NFC issue, so it is not yet run on the watch. Left: `not_fat32` detection (a card that fails to mount is reported as `mount_failed`) |
+| P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | Done in the simulator: `web_ui_test.mjs` 29/29 on the mock and the simulator, starting from an empty card |
+| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known (its name and password need the watch screen) | 1 week | |
 | P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
 | P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
-| P7 | `web_api_test.mjs` on every firmware change; desktop load probe | ongoing | |
+| P7 | `web_api_test.mjs` and `web_ui_test.mjs` on every firmware or desktop change | ongoing | |
 
 The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, change settings and drive the watch screen from the browser.
 
 ## Testing
 
-One test, `examples/factory/tools/web_api_test.mjs`, runs against three targets:
+Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
 
 | Target | What runs | How |
 |---|---|---|
-| PC, no simulator | `web_mock_device.mjs` | `node web_api_test.mjs --url http://localhost:5620 --dev-pin` |
-| LVGL simulator (`emulator_watch_ultra`) | the real web code, built for the desktop | `pio run -e emulator_watch_ultra -t execute`, then `node web_api_test.mjs --url http://localhost:8080 --dev-pin` |
+| PC, no simulator | `web_mock_device.mjs --dev` (serves `web/` live, no build step) | `node web_api_test.mjs --dev-pin`, `node web_ui_test.mjs` |
+| LVGL simulator (`emulator_watch_ultra`) | the real web code, built for the desktop | `pio run -e emulator_watch_ultra -t execute`, then `node web_api_test.mjs --url http://localhost:8080 --dev-pin` and `node web_ui_test.mjs --url http://localhost:8080`. Put the desktop on the simulated card with `python3 web_build.py --install <dir>/sim_sd`, or install it through `/rescue` |
 | Watch | the same code on `esp_http_server` | `node web_api_test.mjs --url http://<watch-ip> --pin <pin>` |
 
 How the simulator runs the real web code:
@@ -111,8 +111,9 @@ How the simulator runs the real web code:
 
 - Firmware: `examples/factory/web_server.cpp/.h`, `web_auth.cpp`, `web_fs.cpp`, `web_events.cpp`, `web_static.cpp`, `web_tools.cpp`, generated `web_assets.h`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
 - Watch UI: a "Web" page in Settings (P3).
-- Desktop: `examples/factory/web/`.
-- Tools: `examples/factory/tools/web_mock_device.mjs` (mock watch), `web_api_test.mjs` (API test), `web_boot_probe.mjs` (desktop load probe).
+- Desktop: `examples/factory/web/` (`js/shell.js`, `js/api.js`, `js/ui.js`, `css/desktop.css`, `apps/<id>/app.js`).
+- Rescue page: `examples/factory/web-rescue/index.html` → generated `examples/factory/web_rescue.h`.
+- Tools in `examples/factory/tools/`: `web_mock_device.mjs` (mock watch), `web_api_test.mjs` (API test), `web_ui_test.mjs` (desktop UI test in headless Chrome), `web_build.py` (SD bundle, install, rescue header), `web_boot_probe.mjs` (request log and screenshots).
 
 ## Risks
 

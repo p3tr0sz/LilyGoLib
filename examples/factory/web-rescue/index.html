@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>T-Watch Ultra</title>
+<style>
+:root{--bg:#000;--card:#1a1a1a;--line:#333;--text:#fff;--t2:#a0a0a0;--accent:#00d4aa;--warn:#ff6b35}
+*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:520px;margin:0 auto;padding:32px 16px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 8px}p{margin:0 0 12px;color:var(--t2)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-top:16px}
+button,input{font:inherit;color:inherit}
+.btn{min-height:40px;padding:0 18px;border-radius:999px;border:1px solid var(--line);background:#222;cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#00140f;font-weight:600}
+.btn:disabled{opacity:.45;cursor:default}
+.pin{width:100%;font:600 28px ui-monospace,Menlo,monospace;letter-spacing:.4em;text-align:center;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg)}
+.err{color:var(--warn);min-height:22px;margin:8px 0}
+.meter{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin:10px 0 4px}.meter i{display:block;height:100%;background:var(--accent);width:0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+small{color:var(--t2)}
+</style>
+</head>
+<body>
+<main>
+  <h1>T-Watch Ultra</h1>
+  <p id="sub">Rescue page: pair, check the SD card and install the web desktop.</p>
+
+  <section class="card" id="pair" hidden>
+    <h2>Pair with the watch</h2>
+    <p>Enter the 6-digit PIN shown on the watch.</p>
+    <input class="pin" id="pin" inputmode="numeric" maxlength="6" autocomplete="one-time-code" aria-label="PIN">
+    <div class="err" id="pairErr"></div>
+    <button class="btn primary" id="pairBtn">Pair</button>
+  </section>
+
+  <section class="card" id="sd" hidden>
+    <h2>SD card</h2>
+    <p id="sdText">…</p>
+    <button class="btn" id="mountBtn" hidden>Mount</button>
+  </section>
+
+  <section class="card" id="install" hidden>
+    <h2>Web desktop</h2>
+    <p id="deskText">…</p>
+    <p><small>Choose the built desktop folder (<code>web_build.py --out</code>, or a release unpacked). It is copied to the card, checked, then swapped in. The old desktop stays until the new one is complete.</small></p>
+    <div class="row">
+      <input type="file" id="folder" webkitdirectory multiple hidden>
+      <button class="btn primary" id="pickBtn">Choose folder…</button>
+      <a href="/" id="openDesk" hidden>Open the desktop</a>
+    </div>
+    <div class="meter" id="meter" hidden><i id="bar"></i></div>
+    <div class="err" id="instErr"></div>
+    <small id="instText"></small>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const q = encodeURIComponent;
+async function call(method, path, body) {
+  const r = await fetch(path, { method, credentials: 'same-origin', headers: body !== undefined ? { 'content-type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
+  let d = null; try { d = await r.json(); } catch {}
+  if (!r.ok) { const e = new Error((d && (d.message || d.error)) || 'HTTP ' + r.status); e.code = d && d.error; e.data = d; e.status = r.status; throw e; }
+  return d;
+}
+const kb = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB' : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
+
+async function start() {
+  const a = await call('GET', '/api/auth').catch(() => ({ paired: false }));
+  $('pair').hidden = a.paired;
+  $('sd').hidden = $('install').hidden = !a.paired;
+  if (a.paired) { await showSd(); await showDesk(); }
+  else $('pin').focus();
+}
+
+async function pair() {
+  $('pairErr').textContent = '';
+  try { await call('POST', '/api/auth/pair', { pin: $('pin').value.trim() }); start(); }
+  catch (e) { $('pairErr').textContent = e.code === 'bad_pin' ? 'Wrong PIN.' : e.code === 'locked' ? 'Too many tries, wait 30 s.' : e.message; $('pin').select(); }
+}
+$('pairBtn').onclick = pair;
+$('pin').onkeydown = (e) => { if (e.key === 'Enter') pair(); };
+
+let sdOk = false;
+async function showSd() {
+  const s = await call('GET', '/api/sd').catch(() => null);
+  sdOk = !!(s && s.mounted);
+  $('mountBtn').hidden = !(s && s.present && !s.mounted);
+  $('sdText').textContent = !s ? 'Could not read the card state.'
+    : !s.present ? 'No card. Insert a FAT32 card up to 32 GB.'
+    : !s.mounted ? (s.error ? 'The watch could not read the card. Use a FAT32 card up to 32 GB.' : 'Inserted, not mounted.')
+    : `${s.card || ''} ${s.fs || ''} · ${kb(s.free)} free of ${kb(s.total)}`;
+  $('pickBtn').disabled = !sdOk;
+}
+$('mountBtn').onclick = async () => { try { await call('POST', '/api/sd/mount'); } catch (e) { alert(e.message); } showSd(); showDesk(); };
+
+async function showDesk() {
+  let m = null;
+  if (sdOk) {
+    try { const r = await fetch('/api/files/content?path=' + q('/sd/web/manifest.json'), { credentials: 'same-origin' }); if (r.ok) m = await r.json(); } catch {}
+  }
+  $('deskText').textContent = !sdOk ? 'Needs the SD card.' : m ? `Installed: version ${m.version || '?'} for API ${m.api}${m.api === 1 ? '' : ' (this watch needs API 1)'}.` : 'Not installed on this card.';
+  $('openDesk').hidden = !(m && m.api === 1);
+}
+
+// Install: files = [{ path: 'js/shell.js', file: Blob }], including manifest.json.
+async function installDesktop(files) {
+  $('instErr').textContent = '';
+  const mf = files.find((f) => f.path === 'manifest.json');
+  if (!mf) throw new Error('No manifest.json: choose the folder made by web_build.py.');
+  const manifest = JSON.parse(await mf.file.text());
+  if (manifest.api !== 1) throw new Error(`This desktop is for API ${manifest.api}; the watch has API 1.`);
+  const list = manifest.files || {};
+  for (const [p, info] of Object.entries(list)) {
+    const f = files.find((x) => x.path === p);
+    if (!f) throw new Error(`Missing ${p} in the folder.`);
+    if (f.file.size !== info.size) throw new Error(`${p} has the wrong size.`);
+  }
+  const total = files.reduce((n, f) => n + f.file.size, 0);
+  let done = 0;
+  $('meter').hidden = false;
+  await call('DELETE', '/api/files?path=' + q('/sd/web.new') + '&recursive=1').catch(() => {});
+  for (const f of files) {
+    $('instText').textContent = `Copying ${f.path}`;
+    const r = await fetch('/api/files/content?path=' + q('/sd/web.new/' + f.path), { method: 'PUT', body: f.file, credentials: 'same-origin' });
+    if (!r.ok) throw new Error(`Could not write ${f.path} (HTTP ${r.status}).`);
+    done += f.file.size;
+    $('bar').style.width = Math.round(done / total * 100) + '%';
+  }
+  $('instText').textContent = 'Checking…';
+  const dirs = new Map();
+  for (const p of [...Object.keys(list), 'manifest.json']) {
+    const dir = p.split('/').slice(0, -1).join('/');
+    if (!dirs.has(dir)) dirs.set(dir, []);
+    dirs.get(dir).push(p);
+  }
+  for (const [dir, paths] of dirs) {
+    const r = await call('GET', '/api/files?path=' + q('/sd/web.new' + (dir ? '/' + dir : '')));
+    for (const p of paths) {
+      const e = (r.entries || []).find((x) => x.name === p.split('/').pop());
+      const want = p === 'manifest.json' ? mf.file.size : list[p].size;
+      if (!e || e.size !== want) throw new Error(`${p} did not arrive complete. Nothing was changed.`);
+    }
+  }
+  await call('POST', '/api/files/move', { from: '/sd/web.new', to: '/sd/web', overwrite: true });
+  $('instText').textContent = `Installed version ${manifest.version}.`;
+  await showDesk();
+  return manifest.version;
+}
+window.installDesktop = installDesktop;
+
+$('pickBtn').onclick = () => $('folder').click();
+$('folder').onchange = async () => {
+  const picked = [...$('folder').files];
+  $('folder').value = '';
+  if (!picked.length) return;
+  // Paths relative to the chosen folder: drop its own name.
+  const files = picked.map((f) => ({ path: f.webkitRelativePath.split('/').slice(1).join('/') || f.name, file: f }))
+    .filter((f) => !f.path.split('/').some((s) => s.startsWith('.')));
+  $('pickBtn').disabled = true;
+  try { await installDesktop(files); }
+  catch (e) { $('instErr').textContent = e.message; }
+  finally { $('pickBtn').disabled = !sdOk; }
+};
+
+start();
+</script>
+</body>
+</html>
