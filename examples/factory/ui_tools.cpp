@@ -772,7 +772,7 @@ static void ui_msgbox_watch_layout(lv_obj_t *msgbox, lv_obj_t *title_obj, lv_obj
     if (title_obj) {
         lv_obj_set_flex_grow(title_obj, 1);
         lv_obj_set_style_text_align(title_obj, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(title_obj, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(title_obj, UI_FONT_BODY, 0);
     }
     if (text_obj) {
         lv_obj_set_style_text_align(text_obj, LV_TEXT_ALIGN_CENTER, 0);
@@ -795,14 +795,18 @@ static void ui_msgbox_watch_layout(lv_obj_t *msgbox, lv_obj_t *title_obj, lv_obj
         for (uint32_t i = 0; i < count; i++) {
             lv_obj_t *b = lv_obj_get_child(footer, i);
             bool plain = count > 1 && b == last_btn;
-            lv_obj_set_size(b, LV_PCT(100), plain ? 52 : 64);
+            /* The same pill as ui_create_card_action(): 82 px, dark text on the
+             * accent (reads on every theme). The plain last button is text. */
+            lv_obj_set_size(b, LV_PCT(100), plain ? 64 : 82);
             lv_obj_set_flex_grow(b, 0);
             lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
             lv_obj_set_style_shadow_width(b, 0, 0);
             lv_obj_set_style_bg_color(b, UI_COLOR_ACCENT, 0);
+            lv_obj_set_style_bg_color(b, UI_COLOR_ACCENT_DIM, LV_STATE_PRESSED);
             lv_obj_set_style_bg_opa(b, plain ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-            lv_obj_set_style_text_font(b, &lv_font_montserrat_24, 0);
-            lv_obj_set_style_text_color(b, UI_COLOR_TEXT_PRIMARY, 0);
+            lv_obj_set_style_text_font(b, UI_FONT_BODY, 0);
+            lv_obj_set_style_text_color(b, plain ? UI_COLOR_TEXT_PRIMARY : lv_color_black(), 0);
+            lv_obj_set_style_text_color(b, plain ? UI_COLOR_TEXT_PRIMARY : lv_color_black(), LV_STATE_PRESSED);
         }
     }
 

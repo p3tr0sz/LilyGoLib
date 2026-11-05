@@ -975,7 +975,7 @@ void ui_sd_manager_enter(lv_obj_t *parent)
 {
     alloc_file_items();
     snprintf(current_dir, sizeof(current_dir), "/");
-    page_container = ui_create_app_page(parent, "SD Manager", back_event_handler);
+    page_container = ui_create_app_page(parent, FACTORY_WATCH_UI ? "Files" : "SD Manager", back_event_handler);
 
 #if FACTORY_WATCH_UI
     /* The files are what people come for, so they come first (watch-ux-guidelines.md 1.1). */

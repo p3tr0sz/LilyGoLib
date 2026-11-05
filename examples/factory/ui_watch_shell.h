@@ -57,6 +57,9 @@ watch_slot_setting_t watch_face_slot_resolved(uint8_t index);
 /* Face editor and lock screen pages (ui_watch_face_edit.cpp) */
 uint32_t watch_app_name_hash(const char *name);
 const ui_app_entry_t *watch_app_find_by_hash(uint32_t hash);
+/* Apps in the app list's order (the person's saved order, then the rest);
+ * returns how many it wrote to out. */
+uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max);
 void watch_face_editor_build(lv_obj_t *content);
 void watch_lock_screen_build(lv_obj_t *content);
 /* Open the face editor as an app; slot >= 0 also opens that slot's choices. */

@@ -32,6 +32,14 @@ static struct {
     lv_obj_t *scroll;
 } list_ui;
 
+#define APP_LIST_HANDLE_W      110   /* Arrange mode: the row's right end that drags */
+
+static struct {
+    lv_obj_t *arrange_row;    /* Last row: "Arrange apps" / "Done" */
+    lv_obj_t *arrange_label;
+    bool arranging;           /* Handles shown; dragging a handle moves its row */
+} arrange;
+
 static struct {
     lv_obj_t *row;            /* Lifted row, floating above the list */
     lv_obj_t *gap;            /* Placeholder where it will land */
@@ -64,7 +72,7 @@ static void drag_place_row(lv_obj_t *row, int32_t finger_y)
     uint32_t children = lv_obj_get_child_count(list_ui.scroll);
     for (uint32_t i = 0; i < children; i++) {
         lv_obj_t *child = lv_obj_get_child(list_ui.scroll, i);
-        if (child == row || child == drag.gap) continue;
+        if (child == row || child == drag.gap || !lv_obj_get_user_data(child)) continue;
         if ((child->coords.y1 + child->coords.y2) / 2 < centre) target++;
     }
     if (lv_obj_get_index(drag.gap) != (int32_t)target) lv_obj_move_to_index(drag.gap, target);
@@ -161,11 +169,21 @@ static void app_list_row_event_cb(lv_event_t *e)
             drag.swallow_click = false;
             break;
         }
+        if (arrange.arranging) {
+            ui_toast("Drag the handle to move");
+            break;
+        }
         watch_shell_launch((app_t *)((const ui_app_entry_t *)lv_obj_get_user_data(row))->app_func,
                            WATCH_VIEW_LIST);
         break;
     case LV_EVENT_PRESSED:
         drag.swallow_click = false;
+        /* Arrange mode: the handle lifts the row at once; the rest scrolls. */
+        if (arrange.arranging && !drag.row && indev) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            if (point.x >= row->coords.x2 - APP_LIST_HANDLE_W) drag_lift(row, indev);
+        }
         break;
     default:
         break;
@@ -219,6 +237,84 @@ static void app_list_add_row(lv_obj_t *parent, const ui_app_entry_t *entry)
     lv_obj_set_style_text_color(name, UI_COLOR_TEXT_PRIMARY, 0);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_flex_grow(name, 1);
+
+    /* Drag handle, shown in arrange mode (the row's last child) */
+    lv_obj_t *handle = lv_label_create(row);
+    lv_label_set_text(handle, LV_SYMBOL_BARS);
+    lv_obj_set_style_text_font(handle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(handle, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_pad_hor(handle, 12, 0);
+    lv_obj_add_flag(handle, LV_OBJ_FLAG_HIDDEN);
+    if (arrange.arranging) lv_obj_remove_flag(handle, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void app_list_set_arranging(bool on)
+{
+    if (!list_ui.scroll || !arrange.arrange_row) return;
+    arrange.arranging = on;
+    uint32_t children = lv_obj_get_child_count(list_ui.scroll);
+    for (uint32_t i = 0; i < children; i++) {
+        lv_obj_t *row = lv_obj_get_child(list_ui.scroll, i);
+        if (!lv_obj_get_user_data(row)) continue;
+        lv_obj_t *handle = lv_obj_get_child(row, -1);
+        if (on) lv_obj_remove_flag(handle, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(handle, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_label_set_text(arrange.arrange_label, on ? "Done" : "Arrange apps");
+    lv_obj_set_style_bg_color(arrange.arrange_row, on ? UI_COLOR_ACCENT : UI_COLOR_CARD_BG, 0);
+    lv_obj_set_style_text_color(arrange.arrange_label, on ? lv_color_black() : UI_COLOR_TEXT_PRIMARY, 0);
+}
+
+static void arrange_row_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    app_list_set_arranging(!arrange.arranging);
+    hw_feedback();
+}
+
+/* The visible way into reordering (a long press is a shortcut, never the only
+ * way: watch-ux-guidelines.md 2.4). */
+static void app_list_add_arrange_row(lv_obj_t *parent)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), APP_LIST_ROW_H);
+    lv_obj_add_style(row, &ui_styles.card, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, APP_LIST_ROW_H / 2, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(row, arrange_row_cb, LV_EVENT_CLICKED, NULL);
+    arrange.arrange_label = lv_label_create(row);
+    lv_obj_set_style_text_font(arrange.arrange_label, &lv_font_montserrat_28, 0);
+    lv_obj_center(arrange.arrange_label);
+    arrange.arrange_row = row;
+    app_list_set_arranging(false);
+}
+
+uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max)
+{
+    /* Saved order first (apps that no longer exist are skipped), then any app
+     * not in it, in registry order: new apps join at the end. */
+    uint32_t count = ui_app_registry_count();
+    uint32_t n = 0;
+    bool placed[WATCH_APP_ORDER_MAX * 2] = {false};
+    uint32_t order[WATCH_APP_ORDER_MAX];
+    uint8_t saved = hw_get_watch_app_order(order, WATCH_APP_ORDER_MAX);
+    for (uint8_t k = 0; k < saved && n < max; k++) {
+        const ui_app_entry_t *entry = watch_app_find_by_hash(order[k]);
+        for (uint32_t i = 0; entry && i < count && i < sizeof(placed); i++) {
+            if (ui_app_registry_get(i) == entry && !placed[i]) {
+                placed[i] = true;
+                out[n++] = entry;
+            }
+        }
+    }
+    for (uint32_t i = 0; i < count && n < max; i++) {
+        if (i < sizeof(placed) && placed[i]) continue;
+        out[n++] = ui_app_registry_get(i);
+    }
+    return n;
 }
 
 lv_obj_t *app_list_create(lv_obj_t *parent)
@@ -258,26 +354,10 @@ lv_obj_t *app_list_create(lv_obj_t *parent)
     lv_obj_set_style_radius(scroll, 2, LV_PART_SCROLLBAR);
     list_ui.scroll = scroll;
 
-    /* Saved order first (apps that no longer exist are skipped), then any app
-     * not in it, in registry order: new apps join at the end. */
-    uint32_t count = ui_app_registry_count();
-    bool placed[WATCH_APP_ORDER_MAX * 2] = {false};
-    uint32_t order[WATCH_APP_ORDER_MAX];
-    uint8_t saved = hw_get_watch_app_order(order, WATCH_APP_ORDER_MAX);
-    for (uint8_t k = 0; k < saved; k++) {
-        const ui_app_entry_t *entry = watch_app_find_by_hash(order[k]);
-        if (!entry) continue;
-        for (uint32_t i = 0; i < count && i < sizeof(placed); i++) {
-            if (ui_app_registry_get(i) == entry && !placed[i]) {
-                placed[i] = true;
-                app_list_add_row(scroll, entry);
-            }
-        }
-    }
-    for (uint32_t i = 0; i < count; i++) {
-        if (i < sizeof(placed) && placed[i]) continue;
-        app_list_add_row(scroll, ui_app_registry_get(i));
-    }
+    const ui_app_entry_t *ordered[WATCH_APP_ORDER_MAX * 2];
+    uint32_t count = watch_app_list_order(ordered, sizeof(ordered) / sizeof(ordered[0]));
+    for (uint32_t i = 0; i < count; i++) app_list_add_row(scroll, ordered[i]);
+    app_list_add_arrange_row(scroll);
 
     return root;
 }
@@ -293,6 +373,7 @@ void app_list_update(void)
 void app_list_scroll_to_top(void)
 {
     if (drag.row) drag_drop();   /* The screen went off mid-drag */
+    app_list_set_arranging(false);
     if (list_ui.scroll) {
         lv_obj_scroll_to_y(list_ui.scroll, 0, LV_ANIM_OFF);
     }

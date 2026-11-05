@@ -147,9 +147,12 @@ void watch_shell_launch(app_t *app, watch_view_t return_view)
     ui_launch_app(app);
 }
 
+static void app_screen_on(void);
+
 void watch_shell_on_app_exit(void)
 {
     if (view != WATCH_VIEW_APP) return;
+    app_screen_on();
     if (app_return_view == WATCH_VIEW_FACE) {
         list_reset_hidden();
         view = WATCH_VIEW_FACE;
@@ -257,12 +260,80 @@ void watch_shell_wake(void)
     lv_display_trigger_activity(NULL);
 }
 
+/* ── Screen off inside apps ──
+ * After the display timeout an open app keeps running with the backlight off
+ * (no light sleep, so music, recording, scans and timers carry on); the next
+ * touch or button turns it back on in the same app, and that touch presses
+ * nothing. Apps that must stay lit call set_low_power_mode_flag(false).
+ * watch-ux-guidelines.md 9.1: screen time is the biggest cost. */
+static bool app_dark = false;
+static uint8_t app_dark_brightness = 0;
+#ifndef ARDUINO
+static lv_obj_t *app_dark_overlay = NULL;   /* The simulator has no backlight */
+#endif
+
+static void app_screen_on(void)
+{
+    if (!app_dark) return;
+    app_dark = false;
+#ifndef ARDUINO
+    if (app_dark_overlay) {
+        lv_obj_delete_async(app_dark_overlay);
+        app_dark_overlay = NULL;
+    }
+#endif
+    hw_inc_brightness(app_dark_brightness);
+    lv_indev_reset(NULL, NULL);     /* The waking touch doesn't press a control */
+    lv_display_trigger_activity(NULL);
+}
+
+#ifndef ARDUINO
+static void app_dark_overlay_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    app_screen_on();
+}
+#endif
+
+static void app_idle_poll(void)
+{
+    if (app_dark) {
+        /* Any input since the screen went dark resets the inactive time. */
+        if (lv_display_get_inactive_time(NULL) < 400) app_screen_on();
+        return;
+    }
+    uint32_t timeout = hw_get_disp_timeout_ms();
+    if (timeout == 0 || !get_enter_low_power_flag()) return;
+    if (lv_display_get_inactive_time(NULL) < timeout) return;
+    app_dark = true;
+    app_dark_brightness = hw_get_disp_backlight();
+    hw_dec_brightness(0);
+#ifndef ARDUINO
+    app_dark_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(app_dark_overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(app_dark_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(app_dark_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(app_dark_overlay, 0, 0);
+    lv_obj_set_style_radius(app_dark_overlay, 0, 0);
+    lv_obj_remove_flag(app_dark_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(app_dark_overlay, app_dark_overlay_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *hint = lv_label_create(app_dark_overlay);
+    lv_label_set_text(hint, "Backlight off, app running (simulator) - click to wake");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+#endif
+}
+
 void watch_shell_poll(void)
 {
 #ifndef ARDUINO
     if (screen_off_overlay) return;
 #endif
-    if (view == WATCH_VIEW_APP) return;
+    if (view == WATCH_VIEW_APP) {
+        app_idle_poll();
+        return;
+    }
 
     /* Display timeout setting: 0 keeps the screen on. */
     uint32_t timeout = hw_get_disp_timeout_ms();

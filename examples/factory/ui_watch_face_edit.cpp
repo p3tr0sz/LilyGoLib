@@ -73,6 +73,19 @@ static const struct {
 } app_renames[] = {
     { "Setting", "Settings" },
     { "Clock Tools", "Alarm" },     /* Split into Stopwatch, Timer and Alarm */
+    /* Watch list names now match the page titles (watch_app_names[] in ui_main.cpp) */
+    { "BLE Scan", "BLE Scanner" },
+    { "I2C Scan", "I2C Scanner" },
+    { "SD Info", "SD Card" },
+    { "File Manager", "Files" },
+    { "QRCode", "QR Code" },
+    { "DisplayTest", "Display Test" },
+    { "LoRa", "LoRa Hub" },
+    { "IMU", "Sensor" },
+    { "Accel", "Sensor" },
+    { "IR Record", "IR Recorder" },
+    { "IR Play", "IR Player" },
+    { "Walkie", "Walkie Talkie" },
 };
 
 static bool app_matches_hash(const ui_app_entry_t *entry, uint32_t hash)
@@ -98,12 +111,21 @@ const ui_app_entry_t *watch_app_find_by_hash(uint32_t hash)
     return NULL;
 }
 
+/* The picker lists apps in the app list's order, so they are where the person
+ * put them. Rebuilt each time it is needed; the order can change in between. */
+static const ui_app_entry_t *picker_apps[WATCH_APP_ORDER_MAX * 2];
+static uint32_t picker_app_count = 0;
+
+static void picker_apps_refresh(void)
+{
+    picker_app_count = watch_app_list_order(picker_apps, sizeof(picker_apps) / sizeof(picker_apps[0]));
+}
+
 static uint16_t slot_option_index(const watch_slot_setting_t &slot)
 {
     if (slot.type == WATCH_SLOT_APP) {
-        uint32_t count = ui_app_registry_count();
-        for (uint32_t i = 0; i < count; i++) {
-            if (app_matches_hash(ui_app_registry_get(i), slot.app_hash)) {
+        for (uint32_t i = 0; i < picker_app_count; i++) {
+            if (app_matches_hash(picker_apps[i], slot.app_hash)) {
                 return SLOT_VALUE_COUNT + i;
             }
         }
@@ -124,9 +146,9 @@ static void slot_picker_cb(lv_event_t *e)
     watch_slot_setting_t slot = {WATCH_SLOT_NONE, 0};
     if (option < SLOT_VALUE_COUNT) {
         slot.type = slot_value_types[option];
-    } else if (option - SLOT_VALUE_COUNT < ui_app_registry_count()) {
+    } else if (option - SLOT_VALUE_COUNT < picker_app_count) {
         slot.type = WATCH_SLOT_APP;
-        slot.app_hash = watch_app_name_hash(ui_app_registry_get(option - SLOT_VALUE_COUNT)->name);
+        slot.app_hash = watch_app_name_hash(picker_apps[option - SLOT_VALUE_COUNT]->name);
     }
     hw_set_watch_face_slot(index, slot);
     watch_face_rebuild();
@@ -151,16 +173,17 @@ void watch_face_editor_build(lv_obj_t *content)
 {
     /* Values, then app names, one per line */
     size_t size = 1;
-    uint32_t app_count = ui_app_registry_count();
+    picker_apps_refresh();
+    uint32_t app_count = picker_app_count;
     for (uint32_t i = 0; i < SLOT_VALUE_COUNT; i++) size += strlen(slot_value_names[i]) + 1;
-    for (uint32_t i = 0; i < app_count; i++) size += strlen(ui_app_registry_get(i)->name) + 1;
+    for (uint32_t i = 0; i < app_count; i++) size += strlen(picker_apps[i]->name) + 1;
     char *options = (char *)lv_malloc(size);
     if (!options) return;
     options[0] = '\0';
     for (uint32_t i = 0; i < SLOT_VALUE_COUNT + app_count; i++) {
         if (i > 0) lv_strcat(options, "\n");
         lv_strcat(options, i < SLOT_VALUE_COUNT ? slot_value_names[i] :
-                  ui_app_registry_get(i - SLOT_VALUE_COUNT)->name);
+                  picker_apps[i - SLOT_VALUE_COUNT]->name);
     }
 
     lv_obj_t *card = ui_create_card(content, NULL);

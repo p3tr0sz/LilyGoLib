@@ -269,7 +269,7 @@ static void back_event_handler(lv_event_t *e)
 
 void ui_qrcode_enter(lv_obj_t *parent)
 {
-    page_container = ui_create_app_page(parent, "QRCode", back_event_handler);
+    page_container = ui_create_app_page(parent, FACTORY_WATCH_UI ? "QR Code" : "QRCode", back_event_handler);
 
     lv_obj_t *card = ui_create_card(page_container, "Code");
     lv_coord_t qr_size = FACTORY_WATCH_UI ? 240 : (is_screen_small() ? 128 : 156);

@@ -1029,9 +1029,40 @@ static void build_grid_menu(lv_obj_t *parent)
 }
 
 /* ── Register an app into the grid ── */
+#if FACTORY_WATCH_UI
+/* On the watch an app's list name is the title its page shows. Saved face
+ * corners and the saved app order still find these apps under their old names
+ * (app_renames[] in ui_watch_face_edit.cpp). */
+static const struct {
+    const char *name;
+    const char *watch_name;
+} watch_app_names[] = {
+    { "BLE Scan",     "BLE Scanner" },
+    { "I2C Scan",     "I2C Scanner" },
+    { "SD Info",      "SD Card" },
+    { "File Manager", "Files" },
+    { "QRCode",       "QR Code" },
+    { "DisplayTest",  "Display Test" },
+    { "LoRa",         "LoRa Hub" },
+    { "IMU",          "Sensor" },
+    { "Accel",        "Sensor" },
+    { "IR Record",    "IR Recorder" },
+    { "IR Play",      "IR Player" },
+    { "Walkie",       "Walkie Talkie" },
+};
+#endif
+
 static void register_app(const char *name, const lv_img_dsc_t *img, app_t *app_fun)
 {
     if (app_count >= GRID_MAX_APPS) return;
+#if FACTORY_WATCH_UI
+    for (size_t i = 0; i < sizeof(watch_app_names) / sizeof(watch_app_names[0]); i++) {
+        if (strcmp(name, watch_app_names[i].name) == 0) {
+            name = watch_app_names[i].watch_name;
+            break;
+        }
+    }
+#endif
     app_registry[app_count].name = name;
     app_registry[app_count].icon = img;
     app_registry[app_count].app_func = app_fun;
@@ -1262,6 +1293,9 @@ lv_obj_t *setupClock()
     lv_obj_set_style_radius(clock_label.overlay, 0, 0);
     lv_obj_center(clock_label.overlay);
 
+#if !FACTORY_WATCH_UI
+    /* The watch has no glows: two endless animations redrawing large areas
+     * cost power on a screen that stays up (watch-ux-guidelines.md 9.2). */
     /* Decorative accent glow — top-left circle with breathing animation */
     lv_obj_t *glow1 = lv_obj_create(page);
     int glow_size = small ? 140 : 220;
@@ -1306,6 +1340,7 @@ lv_obj_t *setupClock()
         lv_obj_set_style_opa((lv_obj_t *)var, val, 0);
     });
     lv_anim_start(&glow2_anim);
+#endif
 
     /* ── Charging glow — soft shadow edge effect when USB connected ── */
     charge_edge_ref = lv_obj_create(page);
