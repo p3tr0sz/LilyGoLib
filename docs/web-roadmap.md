@@ -1,0 +1,101 @@
+# T-Watch Ultra: web desktop roadmap
+
+Goal: open the watch's address in a browser and get a **desktop for the watch**: files, every hardware tool, the watch screen, settings and notifications, on a laptop or a phone. The watch keeps its own LVGL UI (see `watch-ui-roadmap.md`); the browser is the big-screen console for it.
+
+Everything is ours: the API (`web-api.md`), the firmware side and the desktop. The desktop is built for what this watch can do, not a copy of another device's.
+
+## Patterns we follow
+
+- **The watch decides, the browser shows.** State lives on the watch; the desktop renders it and sends commands. Heavy work (maps, charts, parsing, AI calls, big file previews) runs in the browser, never on the watch.
+- **Pair with a PIN shown on the watch.** Proof of being next to the watch. The browser gets an HttpOnly session cookie, so every later request and the event socket are authenticated without extra code.
+- **Capabilities, not guesses.** `GET /api/caps` lists what this firmware can do. The desktop hides what is missing instead of probing routes and handling 404s.
+- **One event stream.** One WebSocket carries everything the watch has to say: battery, files changed, LoRa packets, GNSS fixes, IR codes, notifications. Every message is `{t, seq, d}`.
+- **One desktop at a time.** A new desktop takes the event stream; the old one is told and stops writing.
+- **Files are the shared ground.** SD card and internal flash through one file API; tools save captures (IR codes, GNSS tracks, recordings, NFC dumps) as files the desktop can open.
+- **Cheap to serve.** Static files gzipped, cached by ETag and a service worker. After the first visit the watch serves almost nothing but the API.
+- **Host first, flash last.** A mock watch (`web_mock_device.mjs`) implements the same API on the PC. The desktop is built against it; the firmware is checked against the same test (`web_api_test.mjs`).
+- **Fail safe on the watch.** The server and Wi-Fi run only when switched on, stop after an idle timeout, and never block the LVGL loop.
+
+## Architecture
+
+```
+browser ── HTTP /api/*  ─┐
+        ── WS /api/events ┤  esp_http_server (FACTORY_WEB)
+        ── GET /, /apps/* ┘     ├─ web_auth     PIN, sessions (NVS)
+                                ├─ web_fs       /sd, /flash
+                                ├─ web_events   one socket, {t, seq, d}
+                                ├─ web_tools    IR, LoRa, GNSS, NFC, sensors, recorder, Wi-Fi, BLE
+                                ├─ web_static   desktop from /sd/web, else the embedded rescue desktop
+                                └─ web_assets   rescue desktop embedded in the firmware (gzip)
+```
+
+- **The desktop lives on the SD card** (`/sd/web/`), gzipped. No firmware space limit, updatable without flashing, room for apps and their data.
+- **A small rescue desktop is embedded in the firmware** (budget 60 KB gzipped): pairing, Files, SD status, and "install or update the desktop on the SD card" from files the browser uploads. It is served when there is no card, no desktop on it, or a desktop built for another API version. The released image uses about 3.06 MB of the 4 MB app slot, and the internal FFat is already full of audio, so the full desktop does not go in flash.
+- **Desktop source:** `examples/factory/web/`. Plain HTML, CSS and ES modules, no framework and no build step while developing. `tools/web_build.py` gzips it into an SD bundle (`web/` + `web/manifest.json` with version, API level and file hashes) and generates the rescue desktop's C header.
+
+## SD card support
+
+The SD card is a first-class part of the system, not an optional extra:
+
+- **Card detection.** The XL9555 card-detect line (`EXPANDS_SD_DET`) is watched. Insert mounts the card, removal unmounts it; both publish `sd.changed` so the desktop updates at once. Without the detect line, mount state is checked on each file request.
+- **Clear status.** `GET /api/device` and `GET /api/sd` report present, mounted, FAT type, total, free, card type and the last error (for example "not FAT32"). The watch only supports FAT32 cards up to 32 GB; the desktop and the watch both say so when a card is refused.
+- **Safe writes.** Every write goes to `<file>.tmp` and is renamed into place, so a removed card or a dead battery never leaves half a file. A write when the card is gone fails cleanly with `503 sd_missing`.
+- **Shared bus.** The SD shares the SPI bus with the LoRa radio. File transfers use the bus lock that the factory code already uses for the radio, in chunks, so LoRa receive keeps working during a download.
+- **Layout.** `/sd/web/` desktop, `/sd/web/apps/<id>/` extra apps, `/sd/data/` user files and tool captures (`ir/`, `gnss/`, `nfc/`, `recordings/`, `lora/`), `/sd/system/` desktop settings.
+- **Desktop install and update.** The rescue desktop uploads a bundle through the file API, checks hashes against `manifest.json`, then switches `/sd/web.new` to `/sd/web` in one rename. A failed update keeps the old desktop.
+- **Card tools on the desktop.** SD status in the status bar, free space, "safe to remove" (unmount), and a check that scans the card and reports errors.
+- **Apps are ES modules** loaded by the shell (same origin, no iframes): `web/apps/<id>/app.js` exporting `{ id, title, icon, caps, mount(el, api) }`. An app whose `caps` are not all present is not shown.
+- **Responsive:** windows on a laptop, one full-screen app at a time on a phone.
+
+## What the desktop has
+
+| App | Uses | Phase |
+|---|---|---|
+| Pairing and status bar (battery, Wi-Fi, SD, time) | `auth`, `device`, events | P2 |
+| Files: browse, upload, download, rename, delete, preview (text, images, audio, JSON) | `files` | P2 |
+| Settings: brightness, screen timeout, time zone, time from the browser's clock, Wi-Fi networks | `settings`, `time`, `wifi.manage` | P2 |
+| Screen: live watch screen, tap and swipe on it, screenshots | `screen`, `input` | P3 |
+| Monitor: battery and memory graphs, uptime, logs | `device`, events | P4 |
+| Sensors: IMU, steps, compass | `sensors.imu` | P4 |
+| GNSS: position on a map, satellites, tracks from the SD | `gnss` | P4 |
+| LoRa: messenger and packet log, radio settings | `lora` | P4 |
+| IR: learn, name, send, remotes saved as files | `ir` | P4 |
+| NFC: read tags, save dumps | `nfc` | P4 |
+| Recorder and player: record on the watch, play in the browser or on the watch | `recorder`, `audio.play` | P4 |
+| Wi-Fi and BLE scanners | `wifi.scan`, `ble.scan` | P4 |
+| Notifications: send one to the watch (with vibration), history | `notify` | P4 |
+| Link: ESP-NOW file transfer between watches | `link.espnow` | P5 |
+| Assistant: voice from the watch mic, LLM called by the browser, answer spoken on the watch | `recorder`, `audio.play` | P5 |
+| USB keyboard scripts (BadUSB editor) | `usb.hid` | P5 |
+| Updates: firmware upload with rollback | `ota` | P5 |
+| Wi-Fi security tools (authorized testing only) | `wifi.attack` | P5 |
+
+## Phases
+
+| Phase | What | Estimate | State |
+|---|---|---|---|
+| P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done |
+| P1 | Firmware API core: server, Wi-Fi/AP + mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the embedded rescue desktop | 2 weeks | |
+| P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | |
+| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop) | 1 week | |
+| P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
+| P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
+| P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
+| P7 | `web_api_test.mjs` on every firmware change; desktop load probe | ongoing | |
+
+The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, change settings and drive the watch screen from the browser.
+
+## Where the code goes
+
+- Firmware: `examples/factory/web_server.cpp/.h`, `web_auth.cpp`, `web_fs.cpp`, `web_events.cpp`, `web_static.cpp`, `web_tools.cpp`, generated `web_assets.h`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
+- Watch UI: a "Web" page in Settings (P3).
+- Desktop: `examples/factory/web/`.
+- Tools: `examples/factory/tools/web_mock_device.mjs` (mock watch), `web_api_test.mjs` (API test), `web_boot_probe.mjs` (desktop load probe).
+
+## Risks
+
+- **Flash space.** The rescue desktop must stay under its 60 KB budget.
+- **Card quality.** Cheap or worn cards fail under load; the card check and safe writes limit the damage, and errors are shown rather than hidden.
+- **Battery.** Wi-Fi and the server cost power; they run only on demand (P6).
+- **Radio sharing.** LoRa, SD and other SPI devices share buses; tool routes answer `503 busy` instead of blocking when a radio is in use by the watch UI.
+- **Watch UI and web at once.** A tool used from the browser while its watch screen is open needs one owner; the watch UI wins and the API answers `503 busy`.
