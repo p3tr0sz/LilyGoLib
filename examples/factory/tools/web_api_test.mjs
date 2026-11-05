@@ -193,6 +193,198 @@ check('display: bad brightness 400', r.status === 400, r.status);
 r = await call('POST', '/api/display', { on: true });
 check('POST /api/display on', r.status === 200, r.json);
 
+// ---- tools (P4): each block runs only when the watch lists the capability
+const sleep = (ms) => new Promise((x) => setTimeout(x, ms));
+const waitMsg = async (pred, ms = 4000) => { const end = Date.now() + ms; while (Date.now() < end) { const m = msgs.find(pred); if (m) return m; await sleep(100); } return null; };
+const busyCheck = async (name, app, method, path, body) => {
+  if (!DEV) return;
+  await call('POST', '/api/_dev/app', { name: app });
+  const b = await call(method, path, body);
+  await call('POST', '/api/_dev/app', { name: '' });
+  check(`${name}: 503 busy while ${app} is open on the watch`, b.status === 503 && b.json?.error === 'busy' && b.json.app === app, b.json);
+};
+const b64 = (s) => Buffer.from(s).toString('base64');
+
+if (caps.includes('monitor')) {
+  console.log('monitor');
+  r = await call('GET', '/api/monitor');
+  check('GET /api/monitor', r.status === 200 && typeof r.json?.uptime_s === 'number' && typeof r.json.mem?.heap_free === 'number' &&
+    typeof r.json.battery?.percent === 'number' && typeof r.json.app === 'string', r.json);
+  r = await call('GET', '/api/logs');
+  check('GET /api/logs', r.status === 200 && Array.isArray(r.json?.lines) && typeof r.json.next === 'number', r.json);
+  const next = r.json?.next ?? 0;
+  r = await call('GET', `/api/logs?after=${next}`);
+  check('logs after next: only newer lines', r.status === 200 && r.json.lines.every((l) => l.n > next), r.json);
+}
+
+if (caps.includes('notify')) {
+  console.log('notify');
+  r = await call('POST', '/api/notify', { title: '' });
+  check('notify: empty title 400', r.status === 400, r.status);
+  r = await call('POST', '/api/notify', { title: 'x', level: 'loud' });
+  check('notify: unknown level 400', r.status === 400, r.status);
+  r = await call('POST', '/api/notify', { id: 'api-test', title: 'API test', body: 'hello from the test', level: 'info', vibrate: false });
+  check('POST /api/notify', r.status === 200 && r.json?.ok && r.json.id === 'api-test', r.json);
+  const ev = await waitMsg((m) => m.t === 'notify' && m.d.id === 'api-test');
+  check('notify event', ev && ev.d.title === 'API test' && typeof ev.d.ts === 'number', ev);
+  r = await call('POST', '/api/notify', { title: 'no id' });
+  check('notify without id gets one', r.status === 200 && typeof r.json?.id === 'string' && r.json.id.length > 0, r.json);
+  r = await call('GET', '/api/notify');
+  check('GET /api/notify: newest first', r.status === 200 && r.json?.items?.[0]?.title === 'no id' && r.json.items.some((n) => n.id === 'api-test'), r.json);
+}
+
+if (caps.includes('sensors.imu')) {
+  console.log('sensors');
+  r = await call('GET', '/api/sensors');
+  check('GET /api/sensors', r.status === 200 && typeof r.json?.imu?.roll === 'number' && typeof r.json.imu.heading === 'number' &&
+    'accel' in r.json.imu && 'steps' in r.json && typeof r.json.seq === 'number', r.json);
+  await sleep(600);
+  const r2 = await call('GET', '/api/sensors');
+  check('sensors: new samples arrive', r2.json?.seq > r.json?.seq, [r.json?.seq, r2.json?.seq]);
+}
+
+if (caps.includes('gnss')) {
+  console.log('gnss');
+  r = await call('GET', '/api/gnss');
+  const g = r.json;
+  check('GET /api/gnss', r.status === 200 && typeof g?.fix === 'boolean' && Array.isArray(g.satellites) && typeof g.sats === 'number' &&
+    ['ok', 'open', 'short', 'unknown'].includes(g.antenna), g);
+  check('gnss: position only with a fix', g?.fix ? typeof g.lat === 'number' && typeof g.lon === 'number' : g?.lat === null, g);
+  if (DEV) {
+    const ev = await waitMsg((m) => m.t === 'gnss.fix', 3000);
+    check('gnss.fix event while polled', ev && typeof ev.d.fix === 'boolean' && 'lat' in ev.d && 'sats' in ev.d, ev);
+  }
+}
+
+if (caps.includes('lora')) {
+  console.log('lora');
+  r = await call('GET', '/api/lora/config');
+  const cfg = r.json;
+  check('GET /api/lora/config', r.status === 200 && typeof cfg?.freq === 'number' && typeof cfg.sf === 'number' && typeof cfg.listen === 'boolean', cfg);
+  for (const [k, v] of [['sf', 13], ['bw', 99], ['freq', 1200], ['cr', 9], ['power', 30], ['sync_word', 300]]) {
+    r = await call('PATCH', '/api/lora/config', { [k]: v });
+    check(`lora config: bad ${k} 400`, r.status === 400, r.status);
+  }
+  r = await call('PATCH', '/api/lora/config', { sf: 9, bw: 250, listen: true });
+  check('PATCH /api/lora/config', r.status === 200 && r.json?.sf === 9 && r.json.bw === 250 && r.json.listen === true && r.json.freq === cfg?.freq, r.json);
+  r = await call('POST', '/api/lora/send', { text: '' });
+  check('lora send: empty 400', r.status === 400, r.status);
+  r = await call('POST', '/api/lora/send', { text: 'x'.repeat(256) });
+  check('lora send: over 255 bytes 400', r.status === 400, r.status);
+  r = await call('POST', '/api/lora/send', { text: 'hello lora' });
+  check('POST /api/lora/send text', r.status === 200 && r.json?.len === 10, r.json);
+  r = await call('POST', '/api/lora/send', { data_b64: b64('\x01\x02\x03') });
+  check('POST /api/lora/send data_b64', r.status === 200 && r.json?.len === 3, r.json);
+  if (DEV) {
+    await call('POST', '/api/_dev/lora', { text: 'from afar', rssi: -88, snr: 7 });
+    const ev = await waitMsg((m) => m.t === 'lora.rx' && Buffer.from(m.d.data_b64 || '', 'base64').toString() === 'from afar');
+    check('lora.rx event', ev && ev.d.dir === 'rx' && ev.d.rssi === -88 && ev.d.len === 9, ev);
+  }
+  r = await call('GET', '/api/lora/log');
+  const pk = r.json?.packets || [];
+  check('GET /api/lora/log', r.status === 200 && pk.some((p) => p.dir === 'tx' && Buffer.from(p.data_b64, 'base64').toString() === 'hello lora' && p.rssi === null), pk.slice(-4));
+  check('lora log: oldest first', pk.every((p, i) => !i || p.n > pk[i - 1].n), pk.map((p) => p.n));
+  await busyCheck('lora', 'LoRa', 'POST', '/api/lora/send', { text: 'x' });
+  if (cfg) await call('PATCH', '/api/lora/config', { sf: cfg.sf, bw: cfg.bw, listen: cfg.listen });
+}
+
+if (caps.includes('nfc')) {
+  console.log('nfc');
+  r = await call('POST', '/api/nfc/scan', { seconds: 0 });
+  check('nfc scan: bad seconds 400', r.status === 400, r.status);
+  await busyCheck('nfc', 'NFC', 'POST', '/api/nfc/scan', { seconds: 5 });
+  r = await call('POST', '/api/nfc/scan', { seconds: 10 });
+  check('POST /api/nfc/scan', r.status === 200 && r.json?.ok, r.json);
+  const st = await waitMsg((m) => m.t === 'nfc.state' && m.d.scanning === true);
+  check('nfc.state scanning', !!st, st);
+  r = await call('GET', '/api/nfc');
+  check('GET /api/nfc scanning', r.status === 200 && r.json?.scanning === true && 'last' in r.json, r.json);
+  if (DEV) {
+    await call('POST', '/api/_dev/nfc', { uid: '04:a1:b2:c3:d4:e5:f6', type: 'NTAG215', text: 'hi tag' });
+    const ev = await waitMsg((m) => m.t === 'nfc.tag' && m.d.uid === '04:a1:b2:c3:d4:e5:f6');
+    check('nfc.tag event', ev && ev.d.type === 'NTAG215' && ev.d.ndef?.some((x) => x.kind === 'text' && x.value === 'hi tag'), ev);
+  }
+  r = await call('POST', '/api/nfc/stop', {});
+  check('POST /api/nfc/stop', r.status === 200, r.json);
+  r = await call('GET', '/api/nfc');
+  check('nfc stopped', r.json?.scanning === false, r.json);
+}
+
+if (caps.includes('recorder')) {
+  console.log('recorder');
+  const RP = `${T}-rec/a.wav`;
+  r = await call('POST', '/api/recorder/start', { path: `${T}-rec/a.mp3` });
+  check('recorder: path must be .wav', r.status === 400, r.status);
+  r = await call('POST', '/api/recorder/stop', {});
+  check('recorder: stop when idle 409', r.status === 409, r.status);
+  await busyCheck('recorder', 'Recorder', 'POST', '/api/recorder/start', { path: RP });
+  r = await call('POST', '/api/recorder/start', { path: RP, max_s: 5 });
+  check('POST /api/recorder/start', r.status === 200 && r.json?.path === RP, r.json);
+  r = await call('POST', '/api/recorder/start', { path: RP });
+  check('recorder: start twice 409', r.status === 409, r.status);
+  await sleep(1200);
+  r = await call('GET', '/api/recorder');
+  check('GET /api/recorder recording', r.json?.state === 'recording' && r.json.elapsed_ms > 500 && typeof r.json.level === 'number', r.json);
+  check('recorder events', !!(await waitMsg((m) => m.t === 'recorder' && m.d.state === 'recording')), msgs.filter((m) => m.t === 'recorder').length);
+  r = await call('POST', '/api/recorder/stop', {});
+  check('POST /api/recorder/stop', r.status === 200 && r.json?.duration_ms >= 1000 && r.json.size > 44, r.json);
+  const wav = Buffer.from(await (await fetch(`${BASE}/api/files/content?path=${q(RP)}`, { headers: { cookie } })).arrayBuffer());
+  const pcm = wav.length - 44;
+  check('recording is a 16 kHz mono WAV of that length', wav.toString('ascii', 0, 4) === 'RIFF' && wav.toString('ascii', 8, 12) === 'WAVE' &&
+    wav.readUInt32LE(24) === 16000 && wav.readUInt16LE(22) === 1 && wav.readUInt32LE(40) === pcm && Math.abs(pcm / 32 - (r.json?.duration_ms || 0)) < 300,
+    { len: wav.length, rate: wav.length > 28 && wav.readUInt32LE(24), dur: r.json?.duration_ms });
+  if (caps.includes('audio.play')) {
+    r = await call('POST', '/api/audio/play', { path: `${T}-rec/none.wav` });
+    check('audio play: missing 404', r.status === 404, r.status);
+    r = await call('POST', '/api/audio/play', { path: RP });
+    check('POST /api/audio/play', r.status === 200, r.json);
+    r = await call('GET', '/api/audio');
+    check('GET /api/audio playing', r.json?.playing === true && r.json.path === RP && typeof r.json.volume === 'number', r.json);
+    const vol = r.json?.volume;
+    r = await call('PATCH', '/api/audio', { volume: 101 });
+    check('audio volume out of range 400', r.status === 400, r.status);
+    r = await call('PATCH', '/api/audio', { volume: 40 });
+    check('PATCH /api/audio volume', r.status === 200 && Math.abs(r.json?.volume - 40) <= 1, r.json);
+    if (typeof vol === 'number') await call('PATCH', '/api/audio', { volume: vol });
+    r = await call('POST', '/api/audio/stop', {});
+    check('POST /api/audio/stop', r.status === 200, r.json);
+    r = await call('GET', '/api/audio');
+    check('audio stopped', r.json?.playing === false, r.json);
+  }
+  await call('DELETE', `/api/files?path=${q(T + '-rec')}&recursive=1`);
+}
+
+if (caps.includes('wifi.scan')) {
+  console.log('wifi scan');
+  r = await call('GET', '/api/wifi/scan');
+  check('GET /api/wifi/scan', r.status === 200 && typeof r.json?.scanning === 'boolean' && Array.isArray(r.json.networks) && 'ts' in r.json, r.json);
+  r = await call('POST', '/api/wifi/scan', {});
+  check('POST /api/wifi/scan: 202', r.status === 202 && r.json?.ok, r.json);
+  const ev = await waitMsg((m) => m.t === 'wifi.scan' && m.d.scanning === false, 15000);
+  const n = ev?.d?.networks || [];
+  check('wifi.scan event with networks', ev && typeof ev.d.ts === 'number' && n.length > 0 &&
+    n.every((x) => typeof x.ssid === 'string' && typeof x.rssi === 'number' && typeof x.auth === 'string' && typeof x.channel === 'number'), ev?.d);
+  check('wifi: strongest first', n.every((x, i) => !i || x.rssi <= n[i - 1].rssi), n.map((x) => x.rssi));
+  r = await call('GET', '/api/wifi/scan');
+  check('GET /api/wifi/scan keeps the result', r.json?.scanning === false && r.json.networks.length === n.length, r.json);
+}
+
+if (caps.includes('ble.scan')) {
+  console.log('ble scan');
+  r = await call('POST', '/api/ble/scan', { seconds: 99 });
+  check('ble scan: bad seconds 400', r.status === 400, r.status);
+  await busyCheck('ble', 'BLE Scan', 'POST', '/api/ble/scan', { seconds: 1 });
+  r = await call('POST', '/api/ble/scan', { seconds: 2 });
+  check('POST /api/ble/scan: 202', r.status === 202 && r.json?.ok, r.json);
+  r = await call('GET', '/api/ble/scan');
+  check('GET /api/ble/scan while scanning', r.status === 200 && r.json?.scanning === true, r.json);
+  const ev = await waitMsg((m) => m.t === 'ble.scan' && m.d.scanning === false, 15000);
+  const d = ev?.d?.devices || [];
+  check('ble.scan event with devices', ev && typeof ev.d.ts === 'number' &&
+    d.every((x) => typeof x.addr === 'string' && typeof x.rssi === 'number' && Array.isArray(x.services) && typeof x.connectable === 'boolean'), ev?.d);
+  check('ble: strongest first', d.every((x, i) => !i || x.rssi <= d[i - 1].rssi), d.map((x) => x.rssi));
+}
+
 // ---- one desktop at a time ----
 const ws2 = new WebSocket(wsUrl, { headers: { cookie } });
 await new Promise((done) => { ws2.onopen = done; ws2.onerror = done; setTimeout(done, 3000); });

@@ -612,12 +612,14 @@ void web_plat_reboot(void)
 
 void web_plat_log(const char *fmt, ...)
 {
+    char line[256];
     va_list ap;
     va_start(ap, fmt);
-    vprintf(fmt, ap);
+    vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
-    printf("\n");
+    printf("%s\n", line);
     fflush(stdout);
+    web_log_add(line);
 }
 
 void web_plat_net_tick(bool server_running) { (void)server_running; }

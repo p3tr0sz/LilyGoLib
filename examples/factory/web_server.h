@@ -69,6 +69,11 @@ void web_server_forget_browsers(void);
 
 #ifdef __cplusplus
 }
+
+#if defined(ARDUINO) && FACTORY_HAS_NFC
+/* The NFC reader's callback (hal_interface.cpp) passes each read here, for the desktop's NFC tool. */
+void web_server_nfc_reader_event(LilyGoNfcEvent event, const LilyGoNfcReaderResult &result);
+#endif
 #endif
 
 #endif /* FACTORY_WEB */

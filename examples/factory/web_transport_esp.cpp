@@ -456,6 +456,7 @@ void web_plat_log(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
     Serial.println(line);
+    web_log_add(line);
 }
 
 /* ---------------------------------------------------------------- the watch's own access point */

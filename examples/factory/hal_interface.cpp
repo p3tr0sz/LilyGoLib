@@ -8,6 +8,7 @@
  */
 #include <LilyGoLog.h>
 #include "hal_interface.h"
+#include "web_server.h"
 #include <math.h>
 #include <time.h>
 #include <stdlib.h>
@@ -2103,6 +2104,9 @@ static void nfc_reader_event_callback(LilyGoNfcEvent event, const LilyGoNfcReade
     }
 
     ui_nfc_on_reader_event(event, result);
+#if FACTORY_WEB
+    web_server_nfc_reader_event(event, result);
+#endif
 }
 #endif  /*USING_ST25R3916*/
 
@@ -4670,6 +4674,11 @@ void hw_crash_note_app(const char *name)
     crash_record.magic = CRASH_MAGIC;
     crash_record.forced = 0;
     snprintf(crash_record.app, sizeof(crash_record.app), "%s", name ? name : "");
+}
+
+const char *hw_current_app(void)
+{
+    return crash_record.magic == CRASH_MAGIC ? crash_record.app : "";
 }
 
 void hw_crash_restart(const char *reason)

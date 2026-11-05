@@ -1290,6 +1290,8 @@ void ui_msg_pop_up(const char *title_txt, const char *msg_txt);
  * hw_ui_watchdog_feed() for HW_UI_WATCHDOG_MS (an app stuck in a loop). */
 #define HW_UI_WATCHDOG_MS 20000
 void hw_crash_note_app(const char *name);
+/* The app open now ("" on the face or the app list): the name hw_crash_note_app() last noted. */
+const char *hw_current_app(void);
 bool hw_crash_take_report(char *app_name, size_t len);
 void hw_crash_restart(const char *reason);
 void hw_ui_watchdog_start(void);

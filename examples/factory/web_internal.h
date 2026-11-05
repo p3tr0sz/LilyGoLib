@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <string>
 #include <functional>
+#include <vector>
 
 /* ---------------------------------------------------------------- request / response */
 
@@ -144,6 +145,15 @@ void web_desktop_card_mounted(void);             /* a card was just mounted: che
 bool web_desktop_handle(web_req_t *r);
 std::string web_desktop_json(void);
 void web_desktop_status_line(char *out, size_t n);
+
+/* Tool routes (web_tools.cpp and web_tool_*.cpp, P4; see web_tools.h). true when the path was one of them. */
+bool web_tools_handle(web_req_t *r);
+/* The tool capabilities this build has ("gnss", "lora", ...), appended to /api/caps. */
+void web_tools_caps(std::vector<const char *> &out);
+void web_tools_start(void);                     /* UI thread, when the server starts */
+void web_tools_stop(void);                      /* UI thread, when it stops: release the hardware */
+/* The last log lines (GET /api/logs). web_plat_log() feeds it. Thread-safe. */
+void web_log_add(const char *line);
 
 /* Files routes (web_fs.cpp). */
 void web_fs_handle(web_req_t *r);

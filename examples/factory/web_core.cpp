@@ -470,10 +470,12 @@ static void handle_logout(web_req_t *r)
 
 static std::string caps_array(void)
 {
+    std::vector<const char *> caps(WEB_CAPS, WEB_CAPS + sizeof(WEB_CAPS) / sizeof(WEB_CAPS[0]));
+    web_tools_caps(caps);
     std::string j = "[";
-    for (size_t i = 0; i < sizeof(WEB_CAPS) / sizeof(WEB_CAPS[0]); i++) {
+    for (size_t i = 0; i < caps.size(); i++) {
         if (i) j += ",";
-        web_json_str(j, WEB_CAPS[i]);
+        web_json_str(j, caps[i]);
     }
     return j + "]";
 }
@@ -1107,6 +1109,7 @@ void web_api_handle(web_req_t *r)
     if (!strcmp(r->path, "/api/files") || !strncmp(r->path, "/api/files/", 11)) return web_fs_handle(r);
     if (web_screen_handle(r)) return;
     if (web_desktop_handle(r)) return;
+    if (web_tools_handle(r)) return;
     web_resp_error(r, 404, "not_found");
 }
 
@@ -1132,6 +1135,7 @@ bool web_server_start(void)
         return false;
     }
     s_running = true;
+    web_tools_start();
     s_last_request_ms = now_ms();
     s_card_seen = false;                /* the monitor checks the desktop on the card */
     web_plat_log("[web] server on port %u", (unsigned)port);
@@ -1141,6 +1145,7 @@ bool web_server_start(void)
 void web_server_stop(void)
 {
     if (!s_running) return;
+    web_tools_stop();
     web_transport_stop();
     web_plat_net_stop();
     s_pairing_open = false;
