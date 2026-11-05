@@ -77,7 +77,7 @@ The SD card is a first-class part of the system, not an optional extra:
 | P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done (`c40370f`) |
 | P1 | Firmware API core: server, mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the built-in rescue page | 2 weeks | Done in the simulator (`4571697`): `web_api_test.mjs` 50/50 (flash 47/47). The watch build compiles the web code but stops at the unrelated `demo_ce.h` NFC issue, so it is not yet run on the watch. Left: `not_fat32` detection (a card that fails to mount is reported as `mount_failed`) |
 | P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | Done in the simulator: `web_ui_test.mjs` 29/29 on the mock and the simulator, starting from an empty card |
-| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known; SD starter ZIP; desktop follows the watch theme; the watch installs the desktop by itself (card ZIP, then download) | 1–2 weeks | Done in the simulator except the last item: `web_api_test.mjs` 66/66, `web_ui_test.mjs` 39/39 on the mock and the simulator; the watch build compiles it. The access point runs only on the watch, so it is untested until the watch build links. Self-install: designed below, not built |
+| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known; SD starter ZIP; desktop follows the watch theme; the watch installs the desktop by itself (card ZIP, then download) | 1–2 weeks | Done in the simulator: `web_api_test.mjs` 68/68 (mock 66/66), `web_ui_test.mjs` 40/40 (mock 39/39), `web_desktop_test.mjs` 24/24; the watch build compiles it. On the watch only, so untested until its build links: the access point, the HTTPS download, the ROM inflate. A release with the ZIP is not published yet |
 | P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
 | P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
@@ -124,7 +124,7 @@ One file carries everything: **`twatch-sd-<version>.zip`**, built by `web_build.
 | Unpack the ZIP to the card's root on a computer | anyone with a card reader | Done |
 | `/rescue` › Choose ZIP… : the browser unpacks it (its own `DecompressionStream`, no library) and installs it through the file API, creating the `data/` folders. Also takes a ZIP that Finder wrapped in a folder, and a plain built folder | no card reader | Done, tested |
 | `web_build.py --install <card>` | developers | Done |
-| **The watch installs it by itself** (below) | everyone, nothing to do | Designed |
+| **The watch installs it by itself** (below) | everyone, nothing to do | Done in the simulator |
 
 **The watch installs it by itself.** When a card is mounted and the server is on, the watch checks, in order:
 
@@ -132,13 +132,30 @@ One file carries everything: **`twatch-sd-<version>.zip`**, built by `web_build.
 2. A `twatch-sd-*.zip` is in the card's root: the watch unpacks it into `/sd/web.new` (inflate: the ESP32-S3 ROM's miniz `tinfl` on the watch, zlib in the simulator), checks every file against the manifest, swaps it in and creates `data/`. The ZIP stays on the card, so it can be installed again.
 3. No ZIP and the watch is on a network with internet: it downloads the release ZIP (HTTPS, `HTTPClient` with the certificate bundle) to `/sd/twatch-sd-<version>.zip.part`, renames it when complete, then does step 2. A cut download resumes with a `Range` request.
 
-It runs in its own task, never on the UI thread, and reports through `GET /api/desktop` (`installed`, `wanted`, `zip_on_card`, `state`: `idle` / `downloading` / `unpacking` / `error`, `progress`) and a `desktop` event; `POST /api/desktop/install {source: "card" | "download"}` starts it by hand. The rescue page shows the state and a *Download and install* button; the watch's Web page shows a line of state.
+It runs in its own task (`web_desktop.cpp`), never on the UI thread, and reports through `GET /api/desktop` and a `desktop` event; `POST /api/desktop/install` starts it by hand (`web-api.md`). The rescue page shows the state with *Download and install* and *Install <ZIP on the card>*; the watch's Web page has a *Desktop* row (version, or "Downloading 40%").
+
+Details that matter:
+
+- **Pinned download.** `web_build.py --rescue` writes `web_desktop_pin.h` (version, ZIP name, size, SHA-256). The ZIP is stored, not deflated, so it is byte-identical on every machine. A downloaded ZIP with another size or hash is deleted, never unpacked. On the watch the download uses HTTPS without certificate checks for that reason; the hash is the check.
+- **Card ZIPs are trusted** (whoever holds the card holds the watch), checked with their CRC-32s and manifest, and may be newer than the pin. The newest `twatch-sd-*.zip` wins; an older one than the installed desktop is left alone. Deflated ZIPs work too (Finder), through the ROM's `tinfl` on the watch and zlib in the simulator.
+- **Nothing half-done.** Unpacking goes to `/sd/web.new`, which is removed on any failure before the error is reported; the old desktop stays. A cut download stays as `<zip>.part` and the next try resumes it with `Range`.
+- **Automatic checks** run when the server starts with a card, and on every card insert or mount. After a failed automatic download the watch waits 10 minutes before trying again by itself; a new card or a manual install skips the wait.
+
+**Publishing a release** (needed before real watches can download): after `web_build.py --rescue` and a firmware build, upload the ZIP to a GitHub release named `desktop-v<version>` on this fork, for example `python3 web_build.py --zip dist && gh release create desktop-v0.1.0 dist/twatch-sd-0.1.0.zip`. The firmware fetches `https://github.com/p3tr0sz/LilyGoLib/releases/download/desktop-v<version>/twatch-sd-<version>.zip` (`WEB_DESKTOP_URL_BASE` to change it).
 
 **How it is tested.** The same steps run in the simulator, where the card is a folder:
 
-- *ZIP on the card:* a test copies `twatch-sd-*.zip` to `/sd` through the file API, removes and reinserts the card (`/api/_dev/sd`), and waits for `/` to serve the desktop and for `/sd/data/` to exist. Variants: a damaged ZIP (bad CRC) leaves the old desktop and reports `error`; a ZIP with an older version is ignored.
-- *Download:* the mock serves the ZIP at `/dl/twatch-sd-<version>.zip`, and the simulator is pointed at it (`TWATCH_SIM_DESKTOP_URL`, plain HTTP; the watch uses HTTPS). Variants: the connection drops halfway (the mock closes it), then the next try resumes; the server answers 404; there is no network.
-- *On the watch,* once its build links: the same test with `--url http://<watch>`, plus one real download from the release page.
+`examples/factory/tools/web_desktop_test.mjs` (24 checks), with the mock as the release server:
+
+```
+node web_mock_device.mjs --dev --dl /tmp/dl &
+TWATCH_SIM_WEB_PORT=8090 TWATCH_SIM_DESKTOP_URL=http://localhost:5620/dl <simulator program> &
+node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost:5620 --dl /tmp/dl
+```
+
+- *ZIP on the card:* copied through the file API, card removed and reinserted: installed by itself, `data/` made, the ZIP kept. An older ZIP is seen and left alone; the newest of several wins; a Finder-style ZIP (deflated, in a folder, `__MACOSX`) installs; a damaged one (bad CRC) is refused, the old desktop stays and no `web.new` is left.
+- *Download:* installs and keeps the ZIP; cut off after 40 KB it reports it, keeps the `.part`, and the next try resumes with `Range: bytes=40000-`; a ZIP that is not the pinned one is refused and deleted; a 404 is reported; an empty card inserted while online installs by itself.
+- *On the watch,* once its build links: the same test against the watch with a release published.
 
 ## Where the code goes
 

@@ -58,6 +58,7 @@ typedef struct {
     char ap_ssid[33];
     char ap_pass[24];
     unsigned sessions;          /* paired browsers */
+    char desktop[40];           /* "0.1.0", "Downloading 40%", "Not installed" */
 } web_status_t;
 
 /* A snapshot for the watch's Web page. UI thread. */

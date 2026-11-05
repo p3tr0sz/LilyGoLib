@@ -44,6 +44,16 @@ small{color:var(--t2)}
   <section class="card" id="install" hidden>
     <h2>Web desktop</h2>
     <p id="deskText">…</p>
+    <div id="auto" hidden>
+      <div class="row">
+        <button class="btn primary" id="dlBtn">Download and install</button>
+        <button class="btn" id="cardBtn" hidden>Install the ZIP on the card</button>
+      </div>
+      <div class="meter" id="autoMeter" hidden><i id="autoBar"></i></div>
+      <div class="err" id="autoErr"></div>
+      <small id="autoText"></small>
+      <p style="margin-top:14px"><small>Or install a ZIP or folder from this computer:</small></p>
+    </div>
     <p><small>Choose the SD starter ZIP (<code>twatch-sd-&lt;version&gt;.zip</code>, published with the firmware), or a built desktop folder. It is copied to the card, checked, then swapped in. The old desktop stays until the new one is complete.</small></p>
     <div class="row">
       <input type="file" id="zip" accept=".zip,application/zip" hidden>
@@ -78,6 +88,7 @@ function applyTheme(t) {
   if (/^#[0-9a-f]{6}$/i.test(t.card || '')) document.documentElement.style.setProperty('--card', t.card);
 }
 async function start() {
+  try { canAuto = ((await call('GET', '/api/caps')).caps || []).includes('desktop.install'); } catch {}
   call('GET', '/api/device').then((d) => applyTheme(d.theme)).catch(() => {});
   const a = await call('GET', '/api/auth').catch(() => ({ paired: false }));
   $('pair').hidden = a.paired;
@@ -107,7 +118,40 @@ async function showSd() {
 }
 $('mountBtn').onclick = async () => { try { await call('POST', '/api/sd/mount'); } catch (e) { alert(e.message); } showSd(); showDesk(); };
 
-async function showDesk() {
+// ---- the watch's own installer (desktop.install): it unpacks a ZIP on the card, or downloads one
+let canAuto = false, autoTimer = null;
+async function showAuto() {
+  clearTimeout(autoTimer);
+  if (!canAuto || !sdOk) { $('auto').hidden = true; return; }
+  const d = await call('GET', '/api/desktop').catch(() => null);
+  if (!d) { $('auto').hidden = true; return; }
+  $('auto').hidden = false;
+  const busy = d.state === 'checking' || d.state === 'downloading' || d.state === 'unpacking';
+  $('dlBtn').disabled = $('cardBtn').disabled = busy;
+  $('cardBtn').hidden = !d.zip_on_card;
+  $('cardBtn').textContent = d.zip_on_card ? `Install ${d.zip_on_card}` : '';
+  $('dlBtn').textContent = `Download and install ${d.wanted}`;
+  const pct = d.progress.total ? Math.round(d.progress.done / d.progress.total * 100) : 0;
+  $('autoMeter').hidden = !(d.state === 'downloading' || d.state === 'unpacking');
+  $('autoBar').style.width = pct + '%';
+  $('autoErr').textContent = d.state === 'error' ? d.error : '';
+  $('autoText').textContent = d.state === 'downloading' ? `The watch is downloading ${d.wanted}… ${pct}%`
+    : d.state === 'unpacking' ? `The watch is installing… ${pct}%`
+    : d.state === 'checking' ? 'The watch is checking its card…'
+    : d.installed ? `Installed ${d.installed}; this firmware wants ${d.wanted}.` : `This firmware wants ${d.wanted}.`;
+  if (busy) autoTimer = setTimeout(showAuto, 700);
+  else showDesk(true);
+}
+async function autoInstall(source) {
+  $('autoErr').textContent = '';
+  try { await call('POST', '/api/desktop/install', { source }); } catch (e) { $('autoErr').textContent = e.message; }
+  setTimeout(showAuto, 400);
+}
+$('dlBtn').onclick = () => autoInstall('download');
+$('cardBtn').onclick = () => autoInstall('card');
+
+async function showDesk(fromAuto) {
+  if (!fromAuto && canAuto) showAuto();
   let m = null;
   if (sdOk) {
     try { const r = await fetch('/api/files/content?path=' + q('/sd/web/manifest.json'), { credentials: 'same-origin' }); if (r.ok) m = await r.json(); } catch {}

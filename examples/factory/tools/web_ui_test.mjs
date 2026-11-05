@@ -151,6 +151,10 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await js(`document.getElementById('pin').value = ${JSON.stringify(pin)}; document.getElementById('pairBtn').click();`);
   check('rescue page pairs and shows the installer', await waitFor('!document.getElementById("install").hidden && !document.getElementById("pickBtn").disabled'));
 
+  const watchInstalls = (await (await fetch(`${BASE}/api/caps`)).json()).caps.includes('desktop.install');
+  if (watchInstalls) {
+    check('rescue page offers the watch\'s own installer', await waitFor('!document.getElementById("auto").hidden && /Download and install \\d/.test(document.getElementById("dlBtn").textContent)', 5000));
+  }
   let installed = await js(`return await window.installZip(${blob(zipB64)});`);
   check(`install from the SD starter ZIP (${zipName})`, installed === built.version, installed);
   const onCard = await (await call('GET', '/api/files/content?path=%2Fsd%2Fweb%2Fmanifest.json')).json().catch(() => null);

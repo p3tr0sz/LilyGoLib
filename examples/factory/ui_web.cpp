@@ -23,6 +23,7 @@ static struct {
     lv_obj_t *ap_ssid_row, *ap_ssid;
     lv_obj_t *ap_pass_row, *ap_pass;
     lv_obj_t *browser;
+    lv_obj_t *desktop;
     lv_obj_t *paired;
     lv_timer_t *timer;
     char qr_text[128];
@@ -72,6 +73,7 @@ static void refresh(void)
     set_text_if(w.ap_ssid, st.ap_ssid);
     set_text_if(w.ap_pass, st.ap_pass);
     set_text_if(w.browser, st.desktop_connected ? "Connected" : "None");
+    set_text_if(w.desktop, st.desktop);
     snprintf(buf, sizeof(buf), "%u", st.sessions);
     set_text_if(w.paired, buf);
 }
@@ -175,6 +177,7 @@ void ui_web_settings_build(lv_obj_t *content)
 
     card = ui_create_card(w.running, NULL);
     w.browser = value_label(ui_create_card_info(card, LV_SYMBOL_EYE_OPEN, "Browser", "None"));
+    w.desktop = value_label(ui_create_card_info(card, LV_SYMBOL_SD_CARD, "Desktop", "--"));
     w.paired = value_label(ui_create_card_info(card, LV_SYMBOL_OK, "Paired", "0"));
     lv_obj_t *forget = ui_create_card_action(card, LV_SYMBOL_TRASH, "Forget browsers", forget_cb);
     ui_require_hold_hint(lv_obj_get_child(forget, -1), "Hold to forget all browsers");

@@ -24,9 +24,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <netinet/in.h>
+#include <netdb.h>
+#include <zlib.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <thread>
@@ -623,6 +626,157 @@ bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
     (void)ssid; (void)ssid_len; (void)pass; (void)pass_len;
     return false;
+}
+
+/* ---------------------------------------------------------------- desktop self-install (simulator) */
+
+void web_plat_spawn(void (*fn)(void *), void *arg)
+{
+    std::thread(fn, arg).detach();
+}
+
+bool web_plat_inflate_raw(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len)
+{
+    z_stream z = {};
+    if (inflateInit2(&z, -MAX_WBITS) != Z_OK) return false;
+    z.next_in = (Bytef *)in;
+    z.avail_in = (uInt)in_len;
+    z.next_out = out;
+    z.avail_out = (uInt)out_len;
+    int rc = inflate(&z, Z_FINISH);
+    bool ok = rc == Z_STREAM_END && z.total_out == out_len;
+    inflateEnd(&z);
+    return ok;
+}
+
+/* The simulator downloads only when pointed at a server (plain HTTP), e.g. the mock watch:
+ * TWATCH_SIM_DESKTOP_URL=http://localhost:5620/dl */
+bool web_plat_online(void)
+{
+    const char *u = getenv("TWATCH_SIM_DESKTOP_URL");
+    return u && *u;
+}
+
+std::string web_plat_desktop_url(const char *version, const char *zip_name)
+{
+    (void)version;
+    const char *u = getenv("TWATCH_SIM_DESKTOP_URL");
+    std::string base = u && *u ? u : "http://localhost:5620/dl";
+    while (!base.empty() && base.back() == '/') base.pop_back();
+    return base + "/" + zip_name;
+}
+
+static long long file_size(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? (long long)st.st_size : 0;
+}
+
+int web_plat_download(const char *url, const char *path, std::function<void(long long, long long)> progress)
+{
+    std::string u = url;
+    for (int hop = 0; hop < 4; hop++) {
+        if (u.compare(0, 7, "http://") != 0) {
+            web_plat_log("[web] the simulator downloads over plain HTTP only: %s", u.c_str());
+            return -1;
+        }
+        std::string rest = u.substr(7);
+        size_t slash = rest.find('/');
+        std::string hostport = rest.substr(0, slash), target = slash == std::string::npos ? "/" : rest.substr(slash);
+        std::string host = hostport, port = "80";
+        size_t colon = hostport.find(':');
+        if (colon != std::string::npos) { host = hostport.substr(0, colon); port = hostport.substr(colon + 1); }
+
+        struct addrinfo hints = {}, *ai = NULL;
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(host.c_str(), port.c_str(), &hints, &ai) != 0 || !ai) return -1;
+        int fd = -1;
+        for (struct addrinfo *a = ai; a; a = a->ai_next) {
+            fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (fd < 0) continue;
+            if (connect(fd, a->ai_addr, a->ai_addrlen) == 0) break;
+            close(fd);
+            fd = -1;
+        }
+        freeaddrinfo(ai);
+        if (fd < 0) return -1;
+#ifdef SO_NOSIGPIPE
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+        struct timeval tv = { 15, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        long long have = file_size(path);
+        std::string req = "GET " + target + " HTTP/1.1\r\nHost: " + hostport + "\r\nConnection: close\r\nUser-Agent: twatch-sim\r\n";
+        if (have > 0) req += "Range: bytes=" + std::to_string(have) + "-\r\n";
+        req += "\r\n";
+        if (send(fd, req.data(), req.size(), 0) != (ssize_t)req.size()) { close(fd); return -1; }
+
+        std::string head;
+        char buf[16384];
+        size_t he;
+        while ((he = head.find("\r\n\r\n")) == std::string::npos) {
+            ssize_t k = recv(fd, buf, sizeof(buf), 0);
+            if (k <= 0 || head.size() > 16384) { close(fd); return -1; }
+            head.append(buf, (size_t)k);
+        }
+        std::string body = head.substr(he + 4);
+        head.resize(he);
+        int status = atoi(head.c_str() + head.find(' ') + 1);
+        auto header = [&](const char *name) -> std::string {
+            std::string h = "\r\n" + std::string(name) + ":";
+            for (size_t i = 0; i + h.size() <= head.size(); i++) {
+                if (strncasecmp(head.c_str() + i, h.c_str(), h.size()) == 0) {
+                    size_t v = i + h.size(), e = head.find("\r\n", v);
+                    std::string val = head.substr(v, e == std::string::npos ? std::string::npos : e - v);
+                    while (!val.empty() && val[0] == ' ') val.erase(0, 1);
+                    return val;
+                }
+            }
+            return "";
+        };
+        if (status >= 300 && status < 400 && !header("Location").empty()) {
+            close(fd);
+            std::string loc = header("Location");
+            u = loc[0] == '/' ? "http://" + hostport + loc : loc;
+            continue;
+        }
+        if (status == 416 && have > 0) { close(fd); return 0; }     /* already complete */
+        if (status != 200 && status != 206) { close(fd); return status; }
+
+        long long len = header("Content-Length").empty() ? -1 : atoll(header("Content-Length").c_str());
+        long long done = 0, total = len;
+        FILE *f;
+        if (status == 206) {
+            std::string cr = header("Content-Range");
+            size_t sl = cr.find('/');
+            total = sl != std::string::npos ? atoll(cr.c_str() + sl + 1) : have + len;
+            done = have;
+            f = fopen(path, "ab");
+        } else {
+            f = fopen(path, "wb");          /* the server ignored the Range: start over */
+        }
+        if (!f) { close(fd); return -1; }
+        long long got = 0;
+        auto put = [&](const char *d, size_t n) {
+            fwrite(d, 1, n, f);
+            got += (long long)n;
+            done += (long long)n;
+            progress(done, total);
+        };
+        if (!body.empty()) put(body.data(), body.size());
+        while (len < 0 || got < len) {
+            ssize_t k = recv(fd, buf, sizeof(buf), 0);
+            if (k <= 0) break;
+            put(buf, (size_t)k);
+        }
+        fclose(f);
+        close(fd);
+        return (len >= 0 && got < len) ? -1 : 0;
+    }
+    return -1;
 }
 
 void web_plat_io_lock(void) {}

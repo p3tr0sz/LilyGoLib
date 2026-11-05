@@ -13,10 +13,18 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <SD.h>
 #include <FFat.h>
 #include <esp_http_server.h>
 #include <esp_random.h>
+#if __has_include("esp32s3/rom/miniz.h")
+#include "esp32s3/rom/miniz.h"
+#else
+#include "rom/miniz.h"
+#endif
+#include <functional>
 #include <LilyGoLib_Version.h>
 #include <stdarg.h>
 #include <string.h>
@@ -522,6 +530,109 @@ bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
     snprintf(ssid, ssid_len, "%s", s_ap_ssid);
     snprintf(pass, pass_len, "%s", s_ap_pass);
     return true;
+}
+
+/* ---------------------------------------------------------------- desktop self-install (watch) */
+
+#ifndef WEB_DESKTOP_URL_BASE
+/* Releases of this fork. The ZIP's SHA-256 is pinned in the firmware (web_desktop_pin.h). */
+#define WEB_DESKTOP_URL_BASE "https://github.com/p3tr0sz/LilyGoLib/releases/download/desktop-v"
+#endif
+
+struct spawn_t {
+    void (*fn)(void *);
+    void *arg;
+};
+
+static void spawn_trampoline(void *p)
+{
+    spawn_t *s = (spawn_t *)p;
+    s->fn(s->arg);
+    delete s;
+    vTaskDelete(NULL);
+}
+
+void web_plat_spawn(void (*fn)(void *), void *arg)
+{
+    spawn_t *s = new spawn_t { fn, arg };
+    if (xTaskCreatePinnedToCore(spawn_trampoline, "web_desktop", 12 * 1024, s, 1, NULL, 0) != pdPASS) {
+        delete s;
+        fn(arg);                    /* no memory for a task: run here */
+    }
+}
+
+bool web_plat_inflate_raw(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len)
+{
+    /* The ROM's tinfl; flags 0 = raw DEFLATE, no zlib header. */
+    size_t n = tinfl_decompress_mem_to_mem(out, out_len, in, in_len, 0);
+    return n == out_len;
+}
+
+bool web_plat_online(void)
+{
+    return WiFi.isConnected();
+}
+
+std::string web_plat_desktop_url(const char *version, const char *zip_name)
+{
+    return std::string(WEB_DESKTOP_URL_BASE) + version + "/" + zip_name;
+}
+
+int web_plat_download(const char *url, const char *path, std::function<void(long long, long long)> progress)
+{
+    long long have = 0;
+    struct stat st;
+    web_plat_io_lock();
+    if (stat(path, &st) == 0) have = (long long)st.st_size;
+    web_plat_io_unlock();
+
+    WiFiClientSecure secure;
+    secure.setInsecure();           /* integrity comes from the pinned SHA-256, checked after */
+    WiFiClient plain;
+    bool https = !strncmp(url, "https://", 8);
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+    http.setTimeout(15000);
+    http.setUserAgent("T-Watch-Ultra");
+    if (!(https ? http.begin(secure, url) : http.begin(plain, url))) return -1;
+    if (have > 0) http.addHeader("Range", String("bytes=") + String((long)have) + "-");
+    int code = http.GET();
+    if (code == 416 && have > 0) { http.end(); return 0; }
+    if (code != 200 && code != 206) { http.end(); return code > 0 ? code : -1; }
+
+    long long len = http.getSize();     /* -1 when unknown */
+    long long done = code == 206 ? have : 0, total = len >= 0 ? done + len : -1;
+    web_plat_io_lock();
+    FILE *f = fopen(path, code == 206 ? "ab" : "wb");
+    web_plat_io_unlock();
+    if (!f) { http.end(); return -1; }
+    WiFiClient *stream = http.getStreamPtr();
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[4096]);
+    long long got = 0;
+    uint32_t last = millis();
+    while (http.connected() && (len < 0 || got < len)) {
+        size_t avail = stream->available();
+        if (!avail) {
+            if (millis() - last > 15000) break;
+            delay(5);
+            continue;
+        }
+        int n = stream->readBytes(buf.get(), avail < 4096 ? avail : 4096);
+        if (n <= 0) break;
+        web_plat_io_lock();
+        size_t w = fwrite(buf.get(), 1, (size_t)n, f);
+        web_plat_io_unlock();
+        if (w != (size_t)n) break;
+        got += n;
+        done += n;
+        last = millis();
+        progress(done, total);
+    }
+    web_plat_io_lock();
+    fclose(f);
+    web_plat_io_unlock();
+    http.end();
+    return (len >= 0 && got < len) ? -1 : 0;
 }
 
 void web_plat_io_lock(void)

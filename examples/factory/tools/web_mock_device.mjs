@@ -13,6 +13,11 @@
 //               POST /api/_dev/pairing {open:bool}  open or close pairing
 //               POST /api/_dev/sd {present:bool}     insert or remove the SD card
 //               GET  /api/_dev/input                the last /api/input body
+//     --dl <dir>  also act as the release server for the simulator's desktop download: serves
+//                 <dir>/<file> at /dl/<file> (no pairing, Range supported). With --dev:
+//               POST /api/_dev/dl {cut_after?: bytes, status?: code}  the next /dl request is cut off
+//                                                      after that many bytes, or answers that status
+//               GET  /api/_dev/dl-log                  the /dl requests so far: {file, range, status, sent}
 // Needs Node 18+.
 
 import { createServer } from 'node:http';
@@ -28,6 +33,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(opt('--root', join(tmpdir(), 'mock-twatch')));
 const WEB = resolve(opt('--web', join(HERE, '..', 'web')));
 const PORT = Number(opt('--port', 5620));
+const DL = opt('--dl') ? resolve(opt('--dl')) : null;
+let dlFault = null;
+const dlLog = [];
 const DEV = args.includes('--dev');
 let PIN = opt('--pin', String(randomInt(0, 1000000)).padStart(6, '0'));
 // Pairing works only while the watch shows the PIN (Settings > Web desktop). The mock starts
@@ -310,11 +318,50 @@ async function inputRoute(req, res) {
   return ok(res);
 }
 
+// ---- release server for the simulator's desktop download (--dl) ----
+async function dlRoute(req, res, path) {
+  const name = decodeURIComponent(path.slice(4));
+  const entry = { file: name, range: req.headers.range || null, status: 0, sent: 0 };
+  dlLog.push(entry);
+  const fault = dlFault;
+  dlFault = null;
+  if (fault && fault.status) { entry.status = fault.status; return fail(res, fault.status, 'fault'); }
+  if (!name || name.includes('/') || name.startsWith('.')) { entry.status = 400; return fail(res, 400, 'bad_request'); }
+  const file = join(DL, name);
+  let st;
+  try { st = await fsp.stat(file); } catch { entry.status = 404; return fail(res, 404, 'not_found'); }
+  let start = 0, end = st.size - 1, status = 200;
+  const m = req.headers.range && /bytes=(\d+)-(\d*)/.exec(req.headers.range);
+  if (m) {
+    start = +m[1];
+    if (m[2]) end = Math.min(+m[2], st.size - 1);
+    if (start >= st.size) { entry.status = 416; res.writeHead(416, { 'content-range': `bytes */${st.size}` }); return res.end(); }
+    status = 206;
+  }
+  const headers = { 'content-type': 'application/zip', 'content-length': end - start + 1, 'accept-ranges': 'bytes' };
+  if (status === 206) headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
+  entry.status = status;
+  res.writeHead(status, headers);
+  const data = (await fsp.readFile(file)).subarray(start, end + 1);
+  if (fault && fault.cut_after) {
+    // Send part of it, then drop the connection: a download cut off halfway.
+    const part = data.subarray(0, Math.min(fault.cut_after, data.length));
+    entry.sent = part.length;
+    res.write(part, () => setTimeout(() => res.socket.destroy(), 50));
+    return;
+  }
+  entry.sent = data.length;
+  res.end(data);
+}
+
 // ---- router ----
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://watch.local');
   const path = url.pathname;
   try {
+    if (DL && path.startsWith('/dl/')) return dlRoute(req, res, path);
+    if (DEV && path === '/api/_dev/dl' && req.method === 'POST') { dlFault = (await readJSON(req)) || null; return ok(res); }
+    if (DEV && path === '/api/_dev/dl-log') return json(res, 200, dlLog);
     if (!path.startsWith('/api/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') return fail(res, 405, 'bad_request', 'GET');
       return staticRoute(req, res, path);

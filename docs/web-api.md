@@ -53,6 +53,15 @@ The HTTP and WebSocket API the watch serves to its web desktop (`web-roadmap.md`
 | `POST /api/input` | paired | `{type:"tap", x, y}`, `{type:"long", x, y}` (held 0.9 s), `{type:"swipe", x, y, x2, y2}` (about 0.2 s), or `{type:"button", name:"wake"\|"power_menu"}` → `{ok}`. Coordinates in screen pixels; outside the screen → `400`. Played through a second LVGL pointer device, so the watch UI treats it like a finger |
 | `POST /api/display` | paired | `{on?, brightness?}` → `{ok}`. `on:false` turns the backlight off (the watch stays awake); `on:true` wakes the screen; `brightness` 0–100 changes it live without saving it |
 
+## Desktop install (P3)
+
+The watch keeps its desktop on the card up to date by itself (`web-roadmap.md`, "Getting the desktop onto the card"); these routes show and start it. Capability `desktop.install`.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/desktop` | paired | `{installed, wanted, zip_on_card, state, source, run, progress: {done, total}, error}`. `installed`: version in `/sd/web` or `null`; `wanted`: the version this firmware pins; `zip_on_card`: the newest `twatch-sd-*.zip` in the card's root or `null`; `state`: `idle`, `checking`, `downloading`, `unpacking` or `error`; `run` goes up by one each time a check starts |
+| `POST /api/desktop/install` | paired | `{source: "auto" \| "card" \| "download"}` → `202 {ok}`, the work goes on in the background. `card`: the newest ZIP on the card; `download`: the pinned ZIP from the release; `auto`: what the watch does by itself. No card: `503 sd_missing` |
+
 ## SD card
 
 | Route | Auth | Answer |
@@ -94,6 +103,7 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 | `settings.changed` | the full settings | P1 |
 | `net` | `{mode, ssid, ip, rssi}` | P1 |
 | `theme` | as `device.theme`, when the watch's colour preset changes | P3 |
+| `desktop` | as `GET /api/desktop`, on each state change and about 3 times a second while it downloads or unpacks | P3 |
 | `notify` | `{id, title, body, level}` shown on the watch | P4 |
 | `lora.rx` | `{rssi, snr, len, data_b64}` | P4 |
 | `gnss.fix` | `{lat, lon, alt, sats, hdop, fix}` | P4 |
@@ -125,6 +135,7 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 | `recorder`, `audio.play` | `POST /api/recorder/start\|stop`, `POST /api/audio/play` `{path}` | P4 |
 | `wifi.scan`, `wifi.manage` | `GET /api/wifi/scan`, `GET/POST/DELETE /api/wifi/networks` | P4 |
 | `ble.scan` | `GET /api/ble/scan` | P4 |
+| `desktop.install` | `GET /api/desktop`, `POST /api/desktop/install` | P3 |
 | `link.espnow`, `usb.hid`, `ota`, `wifi.attack` | defined in P5 | P5 |
 
 ## Test hooks (simulator and mock only)
@@ -138,3 +149,5 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/sd` | `{present}`: insert or remove the simulated card (F3 in the simulator window does the same) |
 | `GET /api/_dev/input` | the last `/api/input` body |
 | `POST /api/_dev/theme` | `{preset}` 0–7: switch the watch's colour preset |
+
+The mock can also act as the release server for the simulator (`--dl <dir>`): it serves `<dir>/<file>` at `/dl/<file>` with `Range`, and with `--dev` adds `POST /api/_dev/dl {cut_after?, status?}` (cut the next download off, or answer a status) and `GET /api/_dev/dl-log`. The simulator downloads only when `TWATCH_SIM_DESKTOP_URL` is set (plain HTTP).

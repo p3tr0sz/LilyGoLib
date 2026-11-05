@@ -98,6 +98,13 @@ check('GET /api/sd', r.status === 200 && typeof r.json?.present === 'boolean' &&
 const sdUp = !!r.json?.mounted;
 if (ROOT === '/sd' && !sdUp) { console.log('SD card not mounted: insert one, or use --root flash'); process.exit(1); }
 
+if (caps.includes('desktop.install')) {
+  r = await call('GET', '/api/desktop');
+  check('GET /api/desktop', r.status === 200 && typeof r.json?.wanted === 'string' && typeof r.json.run === 'number' && 'zip_on_card' in r.json, r.json);
+  r = await call('POST', '/api/desktop/install', { source: 'floppy' });
+  check('desktop install: unknown source 400', r.status === 400, r.status);
+}
+
 // ---- events ----
 console.log('events');
 const wsUrl = BASE.replace(/^http/, 'ws') + '/api/events';

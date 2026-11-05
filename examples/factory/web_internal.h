@@ -111,6 +111,20 @@ void web_plat_net_stop(void);
 /* The access point, when it is on. */
 bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
 
+/* ---- desktop self-install (web_desktop.cpp) */
+/* Run fn(arg) on its own task / thread, with room for file and network work. */
+void web_plat_spawn(void (*fn)(void *), void *arg);
+/* Raw DEFLATE (ZIP method 8), whole buffer: the ROM's tinfl on the watch, zlib in the simulator. */
+bool web_plat_inflate_raw(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len);
+/* Can the watch reach the internet now (joined a network)? */
+bool web_plat_online(void);
+/* Where releases are: the ZIP is fetched from <base>/<zip name>. */
+std::string web_plat_desktop_url(const char *version, const char *zip_name);
+/* Download url to path, resuming from the file's current size when the server takes a Range.
+ * progress(done, total). Returns 0 when complete, the HTTP status on an HTTP error, -1 on a
+ * network error. Runs on the desktop task. */
+int web_plat_download(const char *url, const char *path, std::function<void(long long, long long)> progress);
+
 /* Serialise access to the SD/SPI bus around one file I/O step (no-op in the simulator). */
 void web_plat_io_lock(void);
 void web_plat_io_unlock(void);
@@ -123,6 +137,13 @@ bool web_ui_run(std::function<void()> fn, uint32_t timeout_ms = 3000);
 /* Screen, input and display routes (web_screen.cpp). true when the path was one of them. */
 bool web_screen_handle(web_req_t *r);
 std::string web_screen_last_input(void);
+
+/* Desktop self-install (web_desktop.cpp). */
+void web_desktop_check(const char *source);      /* "auto", "card" or "download"; returns at once */
+void web_desktop_card_mounted(void);             /* a card was just mounted: check, without the retry pause */
+bool web_desktop_handle(web_req_t *r);
+std::string web_desktop_json(void);
+void web_desktop_status_line(char *out, size_t n);
 
 /* Files routes (web_fs.cpp). */
 void web_fs_handle(web_req_t *r);

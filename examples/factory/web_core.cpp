@@ -30,7 +30,7 @@
 #define WEB_PIN_LOCK_MS         30000
 #define WEB_STATIC_CHUNK        8192
 
-static const char *const WEB_CAPS[] = { "files", "files.flash", "sd", "settings", "time", "screen", "input", "display" };
+static const char *const WEB_CAPS[] = { "files", "files.flash", "sd", "settings", "time", "screen", "input", "display", "desktop.install" };
 
 /* ---------------------------------------------------------------- state */
 
@@ -56,6 +56,7 @@ static uint32_t s_idle_off_s = 600;
 static web_dev_info_t s_dev;
 static web_sd_info_t s_sd;
 static bool s_sd_user_unmounted = false;
+static bool s_card_seen = false;        /* the desktop check has seen this card mounted */
 static bool s_have_snapshot = false;
 
 /* The watch theme the desktop follows: accent, accent_dim, card, track (0xRRGGBB). */
@@ -700,6 +701,7 @@ static void handle_sd_mount(web_req_t *r, bool mount)
             web_sd_info_t sd;
             web_plat_sd_info(&sd, false);
             ok = sd.present && (sd.mounted || web_plat_sd_mount());
+            if (ok) s_card_seen = false;
         } else {
             web_plat_sd_unmount();
         }
@@ -837,6 +839,9 @@ static void monitor_timer_cb(lv_timer_t *t)
         s_have_snapshot = true;
     }
     if (sd_changed) read_sd_snapshot();
+    /* A card was mounted (or the server just started with one): the watch makes sure its desktop is there. */
+    if (s_running && sd.mounted && !s_card_seen) web_desktop_card_mounted();
+    s_card_seen = sd.mounted;
     if (first) return;
     char b[160];
     if (battery_changed) {
@@ -1057,6 +1062,7 @@ void web_api_handle(web_req_t *r)
             web_sim_set_sd_present(present);
             if (present) web_plat_sd_mount(); else web_plat_sd_unmount();
             read_sd_snapshot();
+            s_card_seen = false;        /* the monitor checks the desktop on this card */
         });
         publish_sd();
         web_sd_info_t sd;
@@ -1100,6 +1106,7 @@ void web_api_handle(web_req_t *r)
     if (is(r, "POST", "/api/sd/unmount")) return handle_sd_mount(r, false);
     if (!strcmp(r->path, "/api/files") || !strncmp(r->path, "/api/files/", 11)) return web_fs_handle(r);
     if (web_screen_handle(r)) return;
+    if (web_desktop_handle(r)) return;
     web_resp_error(r, 404, "not_found");
 }
 
@@ -1126,6 +1133,7 @@ bool web_server_start(void)
     }
     s_running = true;
     s_last_request_ms = now_ms();
+    s_card_seen = false;                /* the monitor checks the desktop on the card */
     web_plat_log("[web] server on port %u", (unsigned)port);
     return true;
 }
@@ -1214,6 +1222,7 @@ void web_server_status(web_status_t *out)
     snprintf(out->host, sizeof(out->host), "watch.local");
     out->ap_active = web_plat_ap_info(out->ap_ssid, sizeof(out->ap_ssid), out->ap_pass, sizeof(out->ap_pass));
     out->sessions = (unsigned)s_sessions.size();
+    web_desktop_status_line(out->desktop, sizeof(out->desktop));
 }
 
 void web_server_forget_browsers(void)
