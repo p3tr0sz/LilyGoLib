@@ -15,6 +15,10 @@ const APPS = [
   { id: 'nfc', title: 'NFC', icon: 'nfc', caps: ['nfc'], load: () => import('../apps/nfc/app.js') },
   { id: 'recorder', title: 'Recorder', icon: 'mic', caps: ['recorder'], load: () => import('../apps/recorder/app.js') },
   { id: 'scanners', title: 'Scanners', icon: 'radar', capsAny: ['wifi.scan', 'ble.scan'], load: () => import('../apps/scanners/app.js') },
+  { id: 'link', title: 'Link', icon: 'link', caps: ['link.espnow'], load: () => import('../apps/link/app.js') },
+  { id: 'hid', title: 'BadUSB', icon: 'usb', caps: ['usb.hid'], load: () => import('../apps/hid/app.js') },
+  { id: 'wifitools', title: 'Net Tools', icon: 'globe', caps: ['wifi.tools'], load: () => import('../apps/wifitools/app.js') },
+  { id: 'ota', title: 'Update', icon: 'cpu', caps: ['ota'], load: () => import('../apps/ota/app.js') },
   { id: 'settings', title: 'Settings', icon: 'settings', caps: ['settings'], load: () => import('../apps/settings/app.js') },
 ];
 const allowed = (app) => (app.caps || []).every((c) => state.caps.includes(c)) &&

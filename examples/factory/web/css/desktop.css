@@ -342,3 +342,19 @@ textarea.field { min-height: 80px; resize: vertical; }
   .tbl .hide-sm { display: none; }
   .bubble { max-width: 90%; }
 }
+
+/* P5 tools */
+.callout { padding: 10px 12px; border: 1px solid #262626; border-left: 3px solid var(--accent); border-radius: var(--radius-s); background: var(--bg); color: var(--text-2); margin-bottom: 12px; }
+.callout.warn { border-left-color: #e0a92b; }
+.callout.ok { border-left-color: var(--accent); color: var(--text); }
+.app .panel { margin-bottom: 12px; }
+.app .panel h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+.srow.ok { color: var(--accent); }
+.srow.error { color: #ff6b6b; }
+.w3 { width: 88px; flex: 0 0 auto; }
+.chans { display: flex; gap: 4px; align-items: flex-end; height: 120px; padding-top: 6px; }
+.chanbar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 4px; }
+.chanbar i { display: block; width: 70%; background: #3a3a3a; border-radius: 3px 3px 0 0; min-height: 4px; }
+.chanbar.best i { background: var(--accent); }
+.chanbar .sub { font-size: 11px; }
+textarea.mono { font-family: var(--mono); line-height: 1.4; }

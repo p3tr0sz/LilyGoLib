@@ -17,6 +17,8 @@
 //               POST /api/_dev/app {name}            act as if that app were open on the watch ("" for none)
 //               POST /api/_dev/lora {text|data_b64, rssi?, snr?}  a LoRa packet arrives (when listen is on)
 //               POST /api/_dev/nfc {uid?, type?, text?}           a tag is held to the reader (while it scans)
+//               POST /api/_dev/link {peer?|rx:{name,size}}        a watch appears in range, or sends this watch a file
+//               POST /api/_dev/hid {available}                    pretend a USB host did/didn't enumerate the keyboard
 //     --dl <dir>  also act as the release server for the simulator's desktop download: serves
 //                 <dir>/<file> at /dl/<file> (no pairing, Range supported). With --dev:
 //               POST /api/_dev/dl {cut_after?: bytes, status?: code}  the next /dl request is cut off
@@ -54,7 +56,7 @@ const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
-  'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan'];
+  'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -378,7 +380,8 @@ function log(text) {
 // The app open on the watch (POST /api/_dev/app): the watch UI wins, the tool answers 503 busy.
 let watchApp = '';
 const BUSY = { lora: ['LoRa', 'Walkie', 'Sub-G', 'LoRaWAN'], nfc: ['NFC', 'NFC Card', 'PN532'],
-  audio: ['Recorder', 'Player', 'Net Radio', 'Walkie'], ble: ['BLE Scan', 'BLE HID'] };
+  audio: ['Recorder', 'Player', 'Net Radio', 'Walkie'], ble: ['BLE Scan', 'BLE HID'],
+  hid: ['BadUSB'], net: ['Network Tools', 'Wi-Fi Analyzer'] };
 function busy(res, tool) {
   if (!BUSY[tool].includes(watchApp)) return false;
   fail(res, 503, 'busy', `${watchApp} is open on the watch`, { app: watchApp });
@@ -556,6 +559,7 @@ function audioStop() {
 function watchAppOpened() {
   if (BUSY.nfc.includes(watchApp)) nfcStop();
   if (BUSY.audio.includes(watchApp)) { recStop(); audioStop(); }
+  if (BUSY.hid.includes(watchApp)) hidStop();
 }
 
 const WIFI = [['Home Network', 'a4:2b:b0:11:22:33', -48, 6, 'wpa2'], ['Home Network 5G', 'a4:2b:b0:11:22:34', -57, 36, 'wpa2/wpa3'],
@@ -567,6 +571,78 @@ const BLE = [['Mi Smart Band 8', 'c8:47:8c:01:02:03', -55, true, '5701a1b2', ['f
 
 const wifiScan = { state: { scanning: false, ts: null, networks: [] } };
 const bleScan = { state: { scanning: false, ts: null, devices: [] } };
+
+
+// ================= P5 tools =================
+const MAC = '24:6f:28:b2:c3:d4';
+const MAC4 = MAC.replace(/:/g, '').slice(-4).toUpperCase();
+
+// ---- Link: ESP-NOW file transfer ----
+let link = { enabled: false, name: `T-Watch-${MAC4}`, mac: MAC, peers: [], transfer: null, timer: null };
+const linkState = () => ({ enabled: link.enabled, mac: link.mac, name: link.name, peers: link.peers, transfer: link.transfer });
+const linkPublish = () => publish('link', linkState());
+function linkClearTransfer() { if (link.timer) { clearInterval(link.timer); link.timer = null; } }
+async function uniqueLinkPath(name) {
+  await fsp.mkdir(join(ROOTS.sd, 'data', 'link'), { recursive: true });
+  let base = String(name).replace(/[/\\]/g, '_') || 'file';
+  const dot = base.lastIndexOf('.'), stem = dot > 0 ? base.slice(0, dot) : base, ext = dot > 0 ? base.slice(dot) : '';
+  for (let i = 2; existsSync(join(ROOTS.sd, 'data', 'link', base)); i++) base = `${stem} (${i})${ext}`;
+  return `/sd/data/link/${base}`;
+}
+function linkRun(dir, peer, name, size) {
+  linkClearTransfer();
+  link.transfer = { dir, peer, name, size, done: 0, state: dir === 'tx' ? 'sending' : 'receiving', error: null };
+  linkPublish();
+  const step = Math.max(1, Math.round(size / 6));
+  link.timer = setInterval(() => {
+    if (!link.transfer) return clearInterval(link.timer);
+    link.transfer.done = Math.min(size, link.transfer.done + step);
+    if (link.transfer.done >= size) { link.transfer.state = 'done'; linkClearTransfer(); }
+    linkPublish();
+  }, 250);
+}
+
+// ---- USB HID: keyboard scripts (BadUSB) ----
+let hid = { available: false, state: 'idle', script: '', line: 0, lines: 0, timer: null };
+const hidState = () => ({ available: hid.available, state: hid.state, script: hid.script, line: hid.line, lines: hid.lines });
+const hidPublish = () => publish('hid', hidState());
+function hidStop() {
+  if (hid.timer) { clearTimeout(hid.timer); hid.timer = null; }
+  if (hid.state !== 'idle') { hid.state = 'idle'; hid.line = 0; hidPublish(); }
+}
+function hidRun(text, scriptName) {
+  hidStop();
+  const lines = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('REM'));
+  hid.script = scriptName || ''; hid.lines = lines.length; hid.line = 0; hid.state = 'armed';
+  hidPublish();
+  hid.timer = setTimeout(function tick() {              // arm ~0.2s, then one line every ~120ms
+    hid.state = 'running';
+    if (hid.line >= hid.lines) { hid.state = 'idle'; hid.line = 0; hid.timer = null; hidPublish(); return; }
+    hid.line += 1; hidPublish();
+    hid.timer = setTimeout(tick, 120);
+  }, 200);
+}
+
+// ---- Wi-Fi tools: diagnostics + analyzer ----
+let net = { connected: true, ssid: 'Home Network', ip: '192.168.1.50', gateway: '192.168.1.1',
+  netmask: '255.255.255.0', dns: '192.168.1.1', rssi: -48, channel: 6, mac: MAC };
+function fakeIp(host) { let h = 0; for (const c of String(host)) h = (h * 31 + c.charCodeAt(0)) & 0xffff; return `93.184.${(h >> 8) & 255}.${(h & 255) || 1}`; }
+function netChannels() {
+  const aps = WIFI.filter((w) => w[3] <= 14).map(([ssid, bssid, rssi, channel]) => ({ ssid, bssid, channel, rssi }));
+  const channels = [];
+  for (let ch = 1; ch <= 13; ch++) {
+    let count = 0, score = 0;
+    for (const a of aps) { const d = Math.abs(a.channel - ch); if (d <= 4) { if (d === 0) count += 1; score += Math.max(0, 5 - d); } }
+    channels.push({ channel: ch, count, score });
+  }
+  const best = channels.reduce((b, c) => (c.score < b.score ? c : b), channels[0]).channel;
+  return { best, channels, aps };
+}
+
+// ---- OTA ----
+const OTA_MAX = 4 * 1024 * 1024;
+let ota = { slot: 'app0', other_slot: 'app1', state: 'idle', progress: { done: 0, total: 0 }, error: null, can_rollback: true };
+const otaState = () => ({ slot: ota.slot, other_slot: ota.other_slot, state: ota.state, progress: ota.progress, error: ota.error, can_rollback: ota.can_rollback });
 
 async function toolsRoute(req, res, url, path) {
   const m = req.method;
@@ -710,6 +786,113 @@ async function toolsRoute(req, res, url, path) {
     }
     return json(res, 202, { ok: true });
   }
+
+  // ---- Link ----
+  if (path === '/api/link' && m === 'GET') return json(res, 200, linkState());
+  if (path === '/api/link/enable' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    if (typeof b.on !== 'boolean') return fail(res, 400, 'bad_request', 'on: true or false');
+    link.enabled = b.on;
+    if (!link.enabled) { link.peers = []; linkClearTransfer(); link.transfer = null; }
+    log(`[link] ${link.enabled ? 'on' : 'off'}`);
+    linkPublish();
+    return ok(res, { enabled: link.enabled });
+  }
+  if (path === '/api/link/send' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    if (!link.enabled) return fail(res, 409, 'conflict', 'link is off');
+    if (link.transfer && link.transfer.state !== 'done' && link.transfer.state !== 'error') return fail(res, 409, 'conflict', 'a transfer is in flight');
+    const to = String(b.to_mac || '');
+    const broadcast = to.toLowerCase() === 'ff:ff:ff:ff:ff:ff';
+    if (!broadcast && !link.peers.some((pr) => pr.mac === to)) return fail(res, 404, 'not_found', 'no such peer');
+    const r = resolvePath(b && b.path); if (r.error) return pathError(res, r.error);
+    let st; try { st = await fsp.stat(r.abs); if (!st.isFile()) throw 0; } catch { return fail(res, 404, 'not_found'); }
+    const name = b.path.split('/').pop();
+    log(`[link] sending ${name} (${st.size} B) to ${broadcast ? 'everyone' : to}`);
+    linkRun('tx', to, name, st.size);
+    return json(res, 202, { ok: true });
+  }
+  if (path === '/api/link/cancel' && m === 'POST') {
+    linkClearTransfer();
+    if (link.transfer && link.transfer.state !== 'done') { link.transfer.state = 'error'; link.transfer.error = 'cancelled'; linkPublish(); }
+    return ok(res);
+  }
+
+  // ---- USB HID (BadUSB) ----
+  if (path === '/api/hid' && m === 'GET') return json(res, 200, hidState());
+  if (path === '/api/hid/type' && m === 'POST') {
+    if (busy(res, 'hid')) return;
+    if (!hid.available) return fail(res, 503, 'hid_unavailable', 'no USB host');
+    const b = (await readJSON(req)) || {};
+    if (typeof b.text !== 'string' || b.text.length < 1 || b.text.length > 1024) return fail(res, 400, 'bad_request', 'text: 1-1024 chars');
+    log(`[hid] type ${b.text.length} chars`);
+    return ok(res);
+  }
+  if (path === '/api/hid/run' && m === 'POST') {
+    if (busy(res, 'hid')) return;
+    if (!hid.available) return fail(res, 503, 'hid_unavailable', 'no USB host');
+    if (hid.state !== 'idle') return fail(res, 409, 'conflict', 'already running');
+    const b = (await readJSON(req)) || {};
+    let text, name = '';
+    if (typeof b.path === 'string') {
+      if (!/\.(txt|duck|ducky)$/i.test(b.path)) return fail(res, 400, 'bad_request', 'script must be .txt/.duck/.ducky');
+      const r = resolvePath(b.path); if (r.error) return pathError(res, r.error);
+      try { text = await fsp.readFile(r.abs, 'utf8'); } catch { return fail(res, 404, 'not_found'); }
+      name = b.path.split('/').pop();
+    } else if (typeof b.text === 'string') {
+      if (b.text.length > 16384) return fail(res, 400, 'bad_request', 'script up to 16 KB');
+      text = b.text;
+    } else return fail(res, 400, 'bad_request', 'path or text');
+    log(`[hid] run ${name || 'inline script'}`);
+    hidRun(text, name);
+    return json(res, 202, { ok: true });
+  }
+  if (path === '/api/hid/stop' && m === 'POST') { hidStop(); return ok(res); }
+
+  // ---- Wi-Fi tools ----
+  if (path === '/api/net' && m === 'GET') { if (busy(res, 'net')) return; return json(res, 200, net); }
+  if (path === '/api/net/resolve' && m === 'POST') {
+    if (busy(res, 'net')) return;
+    if (!net.connected) return fail(res, 409, 'offline', 'WiFi is disconnected');
+    const b = (await readJSON(req)) || {};
+    if (typeof b.host !== 'string' || !b.host) return fail(res, 400, 'bad_request', 'host');
+    const found = b.host.includes('.');
+    return json(res, 200, { ok: found, ip: found ? fakeIp(b.host) : null, ms: 12 + Math.floor(Math.random() * 30) });
+  }
+  if (path === '/api/net/tcp' && m === 'POST') {
+    if (busy(res, 'net')) return;
+    const b = (await readJSON(req)) || {};
+    if (!isInt(b.port, 1, 65535)) return fail(res, 400, 'bad_request', 'port: 1-65535');
+    if (typeof b.host !== 'string' || !b.host) return fail(res, 400, 'bad_request', 'host');
+    if (!net.connected) return fail(res, 409, 'offline', 'WiFi is disconnected');
+    const open = [22, 80, 443].includes(b.port);
+    return json(res, 200, { ok: open, ms: 18 + Math.floor(Math.random() * 40) });
+  }
+  if (path === '/api/net/channels' && m === 'GET') { if (busy(res, 'net')) return; return json(res, 200, netChannels()); }
+
+  // ---- OTA ----
+  if (path === '/api/ota' && m === 'GET') return json(res, 200, otaState());
+  if (path === '/api/ota/upload' && m === 'POST') {
+    const data = await readBody(req);
+    if (data.length < 8) { ota.state = 'error'; ota.error = 'bad_image'; publish('ota', otaState()); return fail(res, 400, 'bad_image', 'not a firmware image'); }
+    if (data.length > OTA_MAX) { ota.state = 'error'; ota.error = 'too large'; publish('ota', otaState()); return fail(res, 413, 'too_large', 'image is larger than the slot'); }
+    ota.error = null; ota.state = 'writing'; ota.progress = { done: 0, total: data.length }; publish('ota', otaState());
+    ota.progress = { done: data.length, total: data.length }; ota.state = 'ready'; publish('ota', otaState());
+    log(`[ota] wrote ${data.length} B to ${ota.other_slot}`);
+    return ok(res, { size: data.length });
+  }
+  if (path === '/api/ota/commit' && m === 'POST') {
+    if (ota.state !== 'ready') return fail(res, 409, 'conflict', 'nothing uploaded');
+    log('[ota] commit: the watch would reboot into the new slot now');
+    ota.state = 'idle'; ota.progress = { done: 0, total: 0 }; publish('ota', otaState());
+    return ok(res);
+  }
+  if (path === '/api/ota/rollback' && m === 'POST') {
+    if (!ota.can_rollback) return fail(res, 409, 'conflict', 'nothing to roll back to');
+    log('[ota] rollback: the watch would reboot into the other slot now');
+    return ok(res);
+  }
+
   return null;
 }
 
@@ -783,6 +966,31 @@ const server = createServer(async (req, res) => {
       const b = (await readJSON(req)) || {};
       if (nfc.scanning) nfcTag(b.uid || undefined, b.type || undefined, b.text);
       return ok(res, { read: nfc.scanning });
+    }
+    if (DEV && path === '/api/_dev/link' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      if (b.rx && typeof b.rx === 'object') {                 // a watch sends this one a file
+        if (!sd.mounted) return fail(res, 503, 'sd_missing', 'no card');
+        const size = isInt(b.rx.size, 0, 1 << 30) ? b.rx.size : 1024;
+        const apiPath = await uniqueLinkPath(b.rx.name || 'file.bin');
+        await fsp.writeFile(resolvePath(apiPath).abs, Buffer.alloc(size));
+        publish('files.changed', { op: 'write', path: apiPath });
+        linkRun('rx', (b.peer && b.peer.mac) || 'ff:ff:ff:ff:ff:ff', apiPath.split('/').pop(), size);
+        return ok(res, { path: apiPath });
+      }
+      const given = typeof b.peer === 'string' ? { name: b.peer } : (b.peer || {});
+      const randMac = () => Array.from({ length: 6 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(':');
+      const peer = Object.assign({ mac: randMac(), name: 'T-Watch-7E4F', rssi: -57, last_seen: nowEpoch() }, given);
+      if (!link.peers.some((pr) => pr.mac === peer.mac)) link.peers.push(peer);
+      linkPublish();
+      return ok(res, { peers: link.peers.length, mac: peer.mac });
+    }
+    if (DEV && path === '/api/_dev/hid' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      hid.available = b.available !== false;
+      if (!hid.available) hidStop();
+      hidPublish();
+      return ok(res, { available: hid.available });
     }
     if (DEV && path === '/api/_dev/sd' && req.method === 'POST') {
       const b = (await readJSON(req)) || {};

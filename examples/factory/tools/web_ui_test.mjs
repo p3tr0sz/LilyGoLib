@@ -451,6 +451,72 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await shot('16-scanners');
   }
 
+  // ---- P5 tools ----
+  if (has('link.espnow')) {
+    console.log('link');
+    await call('POST', '/api/link/enable', { on: false });            // start from off
+    await go('#app=link');
+    check('Link opens', await waitFor('document.querySelector(".link")'));
+    await js(`$t('.link .btn', 'Link off')?.click();`);
+    check('Link turns on', await waitFor('$t(".link .btn", "Link on")', 4000));
+    await call('POST', '/api/_dev/link', {});                          // a watch appears in range
+    check('a peer shows up', await waitFor('document.querySelectorAll(".link .tbl tbody tr").length >= 1', 4000));
+    await call('PUT', '/api/files/content?path=%2Fsd%2Fui-test%2Fsend.txt', 'x'.repeat(60000), true);
+    await js(`$type(document.querySelector('.link .form input'), '/sd/ui-test/send.txt');
+              const sel = document.querySelector('.link select'); sel.selectedIndex = sel.options.length - 1;
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+              $t('.link .btn', 'Send').click();`);
+    check('a transfer shows progress', await waitFor('document.querySelector(".link .progress i")', 4000));
+    check('the transfer finishes', await waitFor('/Done/.test(document.querySelector(".link")?.textContent || "")', 6000));
+    await shot('18-link');
+  }
+
+  if (has('usb.hid')) {
+    console.log('hid');
+    await call('POST', '/api/_dev/hid', { available: false });
+    await go('#app=hid');
+    check('BadUSB opens', await waitFor('document.querySelector(".hid")'));
+    check('shows the authorisation warning', await waitFor('[...document.querySelectorAll(".hid .callout")].some((c) => /authorised/i.test(c.textContent))'));
+    check('greys out while no host', await waitFor('document.querySelector(".hid .btn[disabled]")'));
+    await call('POST', '/api/_dev/hid', { available: true });
+    check('ready once a host enumerates it', await waitFor('[...document.querySelectorAll(".hid .callout")].some((c) => /ready/i.test(c.textContent))', 4000));
+    await js(`$type(document.querySelector('.hid input.field'), 'hello'); $t('.hid .btn', 'Type').click();`);
+    check('typing a line is accepted', await waitFor('!window.__err', 1500) !== false, errors[errors.length - 1]);
+    await js(`document.querySelector('.hid textarea').value = 'STRING a\\nENTER\\nSTRING b\\n'; $t('.hid .btn', 'Run').click();`);
+    check('a script runs line by line', await waitFor('/line \\d+\\/\\d+/.test(document.querySelector(".hid .toolbar")?.textContent || "") || /Arming/.test(document.body.textContent)', 4000));
+    await shot('19-hid');
+    await call('POST', '/api/_dev/hid', { available: false });
+  }
+
+  if (has('wifi.tools')) {
+    console.log('wifitools');
+    await go('#app=wifitools');
+    check('Net Tools opens', await waitFor('document.querySelector(".wifitools")'));
+    check('shows the connection', await waitFor('document.querySelector(".wifitools .srow .mono")'));
+    await js(`$type(document.querySelector('.wifitools input.field'), 'example.com'); $t('.wifitools .btn', 'Resolve').click();`);
+    check('a DNS lookup answers', await waitFor('/→/.test(document.querySelector(".wifitools")?.textContent || "")', 4000));
+    await js(`$t('.wifitools .btn', 'Connect').click();`);
+    check('a TCP test answers', await waitFor('/TCP .*(open|refused)/.test(document.body.textContent)', 4000));
+    check('the channel chart draws', await waitFor('document.querySelectorAll(".wifitools .chanbar").length === 13', 4000));
+    check('a best channel is marked', await waitFor('document.querySelector(".wifitools .chanbar.best")'));
+    await shot('20-wifitools');
+  }
+
+  if (has('ota')) {
+    console.log('ota');
+    await go('#app=ota');
+    check('Update opens', await waitFor('document.querySelector(".ota")'));
+    check('shows the running slot', await waitFor('[...document.querySelectorAll(".ota .srow .mono")].some((x) => /app[01]/.test(x.textContent))'));
+    check('commit is disabled before an upload', await waitFor('$t(".ota .btn", "Reboot into new firmware")?.disabled === true'));
+    // Upload a fake image straight through the API (a DataTransfer file is awkward in CDP).
+    const img = Buffer.concat([Buffer.from([0xe9]), Buffer.alloc(2048)]);
+    const up = await fetch(`${BASE}/api/ota/upload`, { method: 'POST', headers: { cookie }, body: img });
+    check('upload accepts a valid image', up.status === 200, up.status);
+    check('state becomes ready (via event)', await waitFor('$t(".ota .btn", "Reboot into new firmware")?.disabled === false', 4000));
+    await shot('21-ota');
+    await call('POST', '/api/ota/commit', {});                         // reset mock to idle; no reboot
+  }
+
   // ---- phone
   console.log('phone layout');
   await S('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
@@ -477,6 +543,8 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await call('DELETE', '/api/files?path=%2Fsd%2Fui-test&recursive=1').catch(() => {});
   for (const p of made) await call('DELETE', `/api/files?path=${encodeURIComponent(p)}&recursive=1`).catch(() => {});
   await call('POST', '/api/_dev/app', { name: '' }).catch(() => {});
+  await call('POST', '/api/_dev/hid', { available: false }).catch(() => {});
+  await call('POST', '/api/link/enable', { on: false }).catch(() => {});
   // Leave the card as it was: remove only what the test put there.
   if (!hadDesktop) await call('DELETE', '/api/files?path=%2Fsd%2Fweb&recursive=1').catch(() => {});
   if (!hadData) await call('DELETE', '/api/files?path=%2Fsd%2Fdata&recursive=1').catch(() => {});

@@ -71,6 +71,37 @@ export const api = {
   wifiResult: () => request('GET', '/api/wifi/scan'),
   bleScan: (seconds) => request('POST', '/api/ble/scan', { json: { seconds } }),
   bleResult: () => request('GET', '/api/ble/scan'),
+  // P5
+  link: () => request('GET', '/api/link'),
+  linkEnable: (on) => request('POST', '/api/link/enable', { json: { on } }),
+  linkSend: (path, to_mac) => request('POST', '/api/link/send', { json: { path, to_mac } }),
+  linkCancel: () => request('POST', '/api/link/cancel'),
+  hid: () => request('GET', '/api/hid'),
+  hidType: (text) => request('POST', '/api/hid/type', { json: { text } }),
+  hidRun: (body) => request('POST', '/api/hid/run', { json: body }),
+  hidStop: () => request('POST', '/api/hid/stop'),
+  net: () => request('GET', '/api/net'),
+  netResolve: (host) => request('POST', '/api/net/resolve', { json: { host } }),
+  netTcp: (host, port) => request('POST', '/api/net/tcp', { json: { host, port } }),
+  netChannels: () => request('GET', '/api/net/channels'),
+  ota: () => request('GET', '/api/ota'),
+  otaCommit: () => request('POST', '/api/ota/commit'),
+  otaRollback: () => request('POST', '/api/ota/rollback'),
+  // OTA upload streams raw bytes with progress (like file upload).
+  otaUpload(blob, onProgress) {
+    return new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', '/api/ota/upload');
+      x.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+      x.onload = () => {
+        let data = null; try { data = JSON.parse(x.responseText); } catch {}
+        if (x.status >= 200 && x.status < 300) resolve(data);
+        else { if (x.status === 401) listeners401.forEach((fn) => fn()); reject(new ApiError(x.status, data && data.error, data && data.message, data)); }
+      };
+      x.onerror = () => reject(new ApiError(0, 'offline', 'Upload interrupted'));
+      x.send(blob);
+    });
+  },
   writeText: (path, text) => request('PUT', `/api/files/content?path=${q(path)}`, { body: text, headers: { 'content-type': 'application/octet-stream' } }),
   sdMount: () => request('POST', '/api/sd/mount'),
   sdUnmount: () => request('POST', '/api/sd/unmount'),
