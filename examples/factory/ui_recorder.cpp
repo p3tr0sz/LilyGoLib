@@ -46,6 +46,9 @@ static lv_obj_t   *time_label   = NULL;
 static lv_obj_t   *level_bar    = NULL;   // mic level indicator
 static lv_obj_t   *level_label  = NULL;
 static lv_obj_t   *input_source_label = NULL;
+#if FACTORY_WATCH_UI
+static lv_obj_t   *level_card   = NULL;   // shown only while recording
+#endif
 
 // ============================================================
 // Audio devices
@@ -78,6 +81,7 @@ static lv_timer_t   *s_tick_timer = NULL;
 // ============================================================
 // Visual helpers
 // ============================================================
+#if !FACTORY_WATCH_UI
 static void btn_set_enabled(lv_obj_t *btn, bool on)
 {
     lv_obj_set_style_bg_opa(btn, on ? LV_OPA_100 : LV_OPA_40, 0);
@@ -90,6 +94,7 @@ static void slider_set_enabled(lv_obj_t *sl, bool on)
     lv_obj_set_style_bg_opa(sl, on ? LV_OPA_100 : LV_OPA_40, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(sl, on ? LV_OPA_100 : LV_OPA_40, LV_PART_KNOB);
 }
+#endif
 
 static bool using_external_mic_source()
 {
@@ -159,14 +164,59 @@ static void update_time_label(uint32_t elapsed_ms)
         elapsed_ms = max_ms;
     }
     uint32_t sec = elapsed_ms / 1000;
+#if FACTORY_WATCH_UI
+    /* Say the limit: "00:03 / 00:05". */
+    char buf[24];
+    lv_snprintf(buf, sizeof(buf), "%02lu:%02lu / %02lu:%02lu", sec / 60, sec % 60,
+                (unsigned long)(kMaxRecordSec / 60), (unsigned long)(kMaxRecordSec % 60));
+#else
     char buf[8];
     lv_snprintf(buf, sizeof(buf), "%02lu:%02lu", sec / 60, sec % 60);
+#endif
     lv_label_set_text(time_label, buf);
 }
 
 // ============================================================
 // UI refresh
 // ============================================================
+#if FACTORY_WATCH_UI
+/* Pills: the disabled state greys them out; the one usable control stays opaque. */
+static void pill_set(lv_obj_t *btn, const char *text, bool on)
+{
+    if (!btn) return;
+    lv_obj_t *label = lv_obj_get_child(btn, 0);
+    if (label) lv_label_set_text(label, text);
+    if (on) lv_obj_remove_state(btn, LV_STATE_DISABLED);
+    else lv_obj_add_state(btn, LV_STATE_DISABLED);
+}
+
+static void refresh_ui()
+{
+    switch (s_mode) {
+    case 1: /* Recording: Stop is the only control, fully opaque */
+        pill_set(record_btn, "Stop", true);
+        pill_set(play_btn, "Play", false);
+        break;
+    case 2: /* Playing: playback runs to the end */
+        pill_set(record_btn, "Record", false);
+        pill_set(play_btn, "Playing", false);
+        break;
+    default: /* Idle */
+        pill_set(record_btn, "Record", true);
+        pill_set(play_btn, "Play", s_can_play);
+        break;
+    }
+    /* The level shows only while the microphone is recording. */
+    if (level_card) {
+        if (s_mode == 1) lv_obj_remove_flag(level_card, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(level_card, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_mode != 1 && level_bar && level_label) {
+        lv_bar_set_value(level_bar, 0, LV_ANIM_OFF);
+        lv_label_set_text(level_label, "Level 0%");
+    }
+}
+#else
 static void refresh_ui()
 {
     switch (s_mode) {
@@ -198,6 +248,7 @@ static void refresh_ui()
         break;
     }
 }
+#endif
 
 // ============================================================
 // Recording task — reads 320-byte chunks (same as walkie TX)
@@ -345,6 +396,15 @@ static void tick_timer_cb(lv_timer_t *t)
         update_time_label(elapsed_ms);
     }
 
+#if FACTORY_WATCH_UI
+    /* The microphone is open only while recording; the level follows it. */
+    if (s_mode == 1 && level_bar && level_label) {
+        int level = s_current_level;
+        lv_bar_set_value(level_bar, level, LV_ANIM_OFF);
+        lv_label_set_text_fmt(level_label, "Level %d%%", level);
+    }
+    return;
+#endif
     // Update mic level bar
     if (level_bar && level_label) {
         int level = 0;
@@ -450,6 +510,7 @@ static void volume_slider_event(lv_event_t *e)
 // ============================================================
 // Button factory
 // ============================================================
+#if !FACTORY_WATCH_UI
 static lv_obj_t *create_icon_button(lv_obj_t *parent, const char *text)
 {
     lv_obj_t *btn = lv_btn_create(parent);
@@ -466,10 +527,68 @@ static lv_obj_t *create_icon_button(lv_obj_t *parent, const char *text)
 
     return btn;
 }
+#endif
 
 // ============================================================
 // Build the recorder page
 // ============================================================
+#if FACTORY_WATCH_UI
+static void build_recorder_ui(lv_obj_t *parent)
+{
+    lv_obj_t *mc = parent;
+    lv_obj_set_flex_flow(mc, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(mc, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_bg_opa(mc, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(mc, UI_COLOR_BG, 0);
+    lv_obj_set_style_pad_row(mc, 12, LV_PART_MAIN);
+
+    /* Elapsed time and the limit, big, first. */
+    time_label = lv_label_create(mc);
+    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(time_label, UI_COLOR_ACCENT, 0);
+    update_time_label(0);
+
+    if (hw_has_mic_input_source_setting()) {
+        input_source_label = lv_label_create(mc);
+        lv_label_set_text_fmt(input_source_label, "Source: %s", hw_get_mic_input_source_name());
+        lv_obj_set_style_text_font(input_source_label, UI_FONT_SMALL, 0);
+        lv_obj_set_style_text_color(input_source_label, UI_COLOR_TEXT_SECONDARY, 0);
+    } else {
+        input_source_label = NULL;
+    }
+
+    /* Stacked full-width pills; the row's last child is the button. */
+    lv_obj_t *row = ui_create_card_action(mc, LV_SYMBOL_AUDIO, "Record", record_btn_cb);
+    record_btn = lv_obj_get_child(row, -1);
+    row = ui_create_card_action(mc, LV_SYMBOL_PLAY, "Play", play_btn_cb);
+    play_btn = lv_obj_get_child(row, -1);
+
+    /* Mic level, shown only while recording (refresh_ui). */
+    level_card = ui_create_card(mc, "Microphone");
+    level_label = lv_label_create(level_card);
+    lv_label_set_text(level_label, "Level 0%");
+    lv_obj_set_style_text_font(level_label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(level_label, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_margin_bottom(level_label, 8, 0);
+
+    level_bar = lv_bar_create(level_card);
+    lv_obj_set_width(level_bar, LV_PCT(100));
+    lv_obj_set_height(level_bar, 16);
+    lv_bar_set_range(level_bar, 0, 100);
+    lv_bar_set_value(level_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(level_bar, UI_COLOR_TRACK, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(level_bar, UI_COLOR_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(level_bar, 8, LV_PART_MAIN);
+    lv_obj_set_style_radius(level_bar, 8, LV_PART_INDICATOR);
+
+    /* No slider in the page: the row opens the full-screen level page. */
+    lv_obj_t *card = ui_create_card(mc, NULL);
+    ui_create_card_level(card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100,
+                         hw_get_volume(), volume_slider_event);
+
+    refresh_ui();
+}
+#else
 static void build_recorder_ui(lv_obj_t *parent)
 {
     lv_obj_t *mc = parent;
@@ -541,14 +660,6 @@ static void build_recorder_ui(lv_obj_t *parent)
     lv_obj_set_style_radius(level_bar, 4, LV_PART_MAIN);
     lv_obj_set_style_radius(level_bar, 4, LV_PART_INDICATOR);
 
-#if FACTORY_WATCH_UI
-    /* No slider in the page: the row opens the full-screen level page. */
-    lv_obj_t *volume_row = ui_create_card_level(mc, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100,
-                                                hw_get_volume(), volume_slider_event);
-    lv_obj_set_width(volume_row, LV_PCT(90));
-    lv_obj_add_flag(lv_obj_get_child(mc, -1), LV_OBJ_FLAG_HIDDEN);   /* its divider */
-    return;
-#endif
     lv_obj_t *ac = lv_obj_create(mc);
     lv_obj_set_size(ac, LV_PCT(90), 70);
     lv_obj_set_flex_flow(ac, LV_FLEX_FLOW_COLUMN);
@@ -582,6 +693,7 @@ static void build_recorder_ui(lv_obj_t *parent)
     ui_prepare_slider_for_encoder(vs);
     lv_obj_add_event_cb(vs, volume_slider_event, LV_EVENT_VALUE_CHANGED, NULL);
 }
+#endif
 
 // ============================================================
 // Back button
@@ -614,6 +726,9 @@ static void back_event_handler(lv_event_t *e)
     s_mode     = 0;
     s_can_play = false;
     input_source_label = NULL;
+#if FACTORY_WATCH_UI
+    level_card = NULL;
+#endif
 
     if (page_container) {
         ui_destroy_app_page(page_container);
@@ -644,6 +759,7 @@ void ui_recorder_enter(lv_obj_t *parent)
         return;
     }
 
+#if !FACTORY_WATCH_UI
     // Open microphone for level monitoring
     if (audioInput->open(kBitsPerSample, kChannels, kSampleRate)) {
         s_mic_is_open = true;
@@ -654,6 +770,7 @@ void ui_recorder_enter(lv_obj_t *parent)
     } else {
         LILYGO_LOG_PRINTLN("[INIT] Failed to open mic for level monitoring");
     }
+#endif
 
     page_container = ui_create_app_page(parent, "Recorder", back_event_handler);
     build_recorder_ui(page_container);

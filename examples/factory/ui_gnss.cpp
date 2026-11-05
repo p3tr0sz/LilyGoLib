@@ -45,6 +45,19 @@ typedef struct {
     lv_obj_t *altitude;
     lv_obj_t *cn0_chart;
     gnss_cn0_bar_t cn0_bars[GNSS_UI_MAX_CN0_BARS];
+#if FACTORY_WATCH_UI
+    lv_obj_t *headline;     /* "No fix · 4 satellites" or the position */
+    lv_obj_t *systems;      /* "GPS 8 (3 used) · Galileo 5" */
+    lv_obj_t *pos_card;
+    lv_obj_t *lat_row;
+    lv_obj_t *lng_row;
+    lv_obj_t *date_row;
+    lv_obj_t *date;
+    lv_obj_t *time_row;
+    lv_obj_t *time;
+    lv_obj_t *speed_row;
+    lv_obj_t *alt_row;
+#endif
 } gnss_label_t;
 
 static lv_obj_t *page_container = NULL;
@@ -67,6 +80,9 @@ static lv_obj_t *nmea_serial_prev_focus = NULL;
 
 static void nmea_switch_event(lv_event_t *e);
 static void fix_beep_switch_event(lv_event_t *e);
+#if FACTORY_WATCH_UI
+static gps_params_t gnss_param;     /* Last reading, for pages built between updates */
+#endif
 
 static const gps_satellite_system_t gnss_systems[GPS_SIGNAL_MAX_CONSTELLATIONS] = {
     GPS_SAT_SYSTEM_GPS,
@@ -76,6 +92,25 @@ static const gps_satellite_system_t gnss_systems[GPS_SIGNAL_MAX_CONSTELLATIONS] 
     GPS_SAT_SYSTEM_QZSS
 };
 
+#if FACTORY_WATCH_UI
+static const char *system_name(gps_satellite_system_t system)
+{
+    switch (system) {
+    case GPS_SAT_SYSTEM_GPS:
+        return "GPS";
+    case GPS_SAT_SYSTEM_GLONASS:
+        return "GLONASS";
+    case GPS_SAT_SYSTEM_BEIDOU:
+        return "BeiDou";
+    case GPS_SAT_SYSTEM_GALILEO:
+        return "Galileo";
+    case GPS_SAT_SYSTEM_QZSS:
+        return "QZSS";
+    default:
+        return "Other";
+    }
+}
+#else
 static const char *system_short_name(gps_satellite_system_t system)
 {
     switch (system) {
@@ -93,6 +128,7 @@ static const char *system_short_name(gps_satellite_system_t system)
         return "UNK";
     }
 }
+#endif
 
 static const char *antenna_state_name(gps_antenna_state_t state)
 {
@@ -118,6 +154,7 @@ static bool is_system_visible(gps_satellite_system_t system)
     return system != GPS_SAT_SYSTEM_QZSS;
 }
 
+#if !FACTORY_WATCH_UI   /* The CN0 chart: on the watch, counts in words instead */
 static lv_color_t system_color(gps_satellite_system_t system)
 {
     switch (system) {
@@ -196,6 +233,7 @@ static lv_color_t satellite_bar_color(const gps_signal_satellite_t &sat)
     }
     return base;
 }
+#endif
 
 static lv_obj_t *add_info_row(lv_obj_t *card, const char *title, const char *value, lv_obj_t **out_label)
 {
@@ -204,7 +242,7 @@ static lv_obj_t *add_info_row(lv_obj_t *card, const char *title, const char *val
     return row;
 }
 
-#ifdef GPS_PPS
+#if defined(GPS_PPS) && !FACTORY_WATCH_UI
 static void pps_led_off_cb(lv_timer_t *t)
 {
     lv_obj_t *led = (lv_obj_t *)lv_timer_get_user_data(t);
@@ -246,6 +284,7 @@ static void create_pps_row(lv_obj_t *card)
 }
 #endif
 
+#if !FACTORY_WATCH_UI
 static void create_cn0_legend(lv_obj_t *card)
 {
     lv_obj_t *legend = lv_obj_create(card);
@@ -395,7 +434,156 @@ static void update_cn0_chart(const gps_params_t &param)
         lv_obj_add_flag(gnss_labels.cn0_bars[i].column, LV_OBJ_FLAG_HIDDEN);
     }
 }
+#endif
 
+#if FACTORY_WATCH_UI
+/* Changes a card row only when it has to; dividers follow (ui_card_row_set_hidden). */
+static void set_row_hidden(lv_obj_t *row, bool hidden)
+{
+    if (!row || !lv_obj_is_valid(row)) return;
+    if (lv_obj_has_flag(row, LV_OBJ_FLAG_HIDDEN) == hidden) return;
+    ui_card_row_set_hidden(row, hidden);
+}
+
+static void set_label(lv_obj_t *label, const char *text)
+{
+    if (label && lv_obj_is_valid(label)) lv_label_set_text(label, text);
+}
+
+static void update_position_labels(const gps_params_t &param)
+{
+    char buffer[64];
+
+    /* No rows of "--": each shows once it has a value. */
+    if (param.location_valid) {
+        lv_snprintf(buffer, sizeof(buffer), "%.06f", param.lat);
+        set_label(gnss_labels.lat, buffer);
+        lv_snprintf(buffer, sizeof(buffer), "%.06f", param.lng);
+        set_label(gnss_labels.lng, buffer);
+    }
+    set_row_hidden(gnss_labels.lat_row, !param.location_valid);
+    set_row_hidden(gnss_labels.lng_row, !param.location_valid);
+
+    if (param.datetime_valid) {
+        strftime(buffer, sizeof(buffer), "%Y-%m-%d", &param.datetime);
+        set_label(gnss_labels.date, buffer);
+        strftime(buffer, sizeof(buffer), "%H:%M:%S", &param.datetime);
+        set_label(gnss_labels.time, buffer);
+    }
+    set_row_hidden(gnss_labels.date_row, !param.datetime_valid);
+    set_row_hidden(gnss_labels.time_row, !param.datetime_valid);
+
+    if (param.speed_valid) {
+        lv_snprintf(buffer, sizeof(buffer), "%.02f km/h", param.speed);
+        set_label(gnss_labels.speed, buffer);
+    }
+    set_row_hidden(gnss_labels.speed_row, !param.speed_valid);
+
+    if (param.altitude_valid) {
+        lv_snprintf(buffer, sizeof(buffer), "%.01f m", param.altitude);
+        set_label(gnss_labels.altitude, buffer);
+    }
+    set_row_hidden(gnss_labels.alt_row, !param.altitude_valid);
+
+    bool any = param.location_valid || param.datetime_valid || param.speed_valid || param.altitude_valid;
+    if (gnss_labels.pos_card && lv_obj_is_valid(gnss_labels.pos_card)) {
+        if (any) lv_obj_remove_flag(gnss_labels.pos_card, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(gnss_labels.pos_card, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* The Details page: Model, first fix time and bytes received. */
+static void render_gnss_details(const gps_params_t &param)
+{
+    set_label(gnss_labels.model, param.model[0] ? param.model : "N.A");
+    if (gnss_labels.ttff && lv_obj_is_valid(gnss_labels.ttff)) {
+        if (param.ttff_valid) {
+            lv_label_set_text_fmt(gnss_labels.ttff, "%lu.%01lu s",
+                                  (unsigned long)(param.ttff_ms / 1000),
+                                  (unsigned long)((param.ttff_ms % 1000) / 100));
+        } else {
+            lv_label_set_text(gnss_labels.ttff, "--");
+        }
+    }
+    if (gnss_labels.rx_size && lv_obj_is_valid(gnss_labels.rx_size)) {
+        lv_label_set_text_fmt(gnss_labels.rx_size, "%u", param.rx_size);
+    }
+}
+
+static void render_gnss_view(const gps_params_t &param)
+{
+    char buffer[96];
+
+    if (gnss_labels.antenna_row) {
+        bool show_antenna = is_l76k_model(param.model);
+        if (show_antenna) {
+            set_label(gnss_labels.antenna, antenna_state_name(param.antenna_state));
+        }
+        set_row_hidden(gnss_labels.antenna_row, !show_antenna);
+    }
+    update_position_labels(param);
+
+    uint16_t visible = 0;
+    uint16_t tracking = 0;
+    uint16_t used = 0;
+    for (uint16_t i = 0; i < param.signal_satellite_count; ++i) {
+        if (is_system_visible(param.signal_satellites[i].system)) {
+            visible++;
+        }
+    }
+
+    /* Satellites per system in words: "GPS 8 (3 used) · Galileo 5". */
+    size_t len = 0;
+    buffer[0] = '\0';
+    for (uint16_t i = 0; i < param.constellation_count; ++i) {
+        const gps_signal_constellation_t &c = param.constellations[i];
+        if (!is_system_visible(c.system)) {
+            continue;
+        }
+        tracking += c.tracking;
+        used += c.used;
+        uint16_t count = c.visible > c.tracking ? c.visible : c.tracking;
+        if (count == 0 || len >= sizeof(buffer) - 1) {
+            continue;
+        }
+        int n;
+        if (c.used) {
+            n = lv_snprintf(buffer + len, sizeof(buffer) - len, "%s%s %u (%u used)",
+                            len ? " \xC2\xB7 " : "", system_name(c.system), count, c.used);
+        } else {
+            n = lv_snprintf(buffer + len, sizeof(buffer) - len, "%s%s %u",
+                            len ? " \xC2\xB7 " : "", system_name(c.system), count);
+        }
+        if (n > 0) {
+            len += (size_t)n;
+            if (len > sizeof(buffer) - 1) len = sizeof(buffer) - 1;
+        }
+    }
+    set_label(gnss_labels.systems, len ? buffer : "Looking for satellites");
+
+    if (gnss_labels.visible) lv_label_set_text_fmt(gnss_labels.visible, "%u", visible);
+    if (gnss_labels.tracking) lv_label_set_text_fmt(gnss_labels.tracking, "%u", tracking);
+    if (gnss_labels.used) lv_label_set_text_fmt(gnss_labels.used, "%u", used);
+
+    /* The fix first, in words. */
+    if (param.location_valid) {
+        lv_snprintf(buffer, sizeof(buffer), "%.5f, %.5f", param.lat, param.lng);
+    } else {
+        lv_snprintf(buffer, sizeof(buffer), "No fix \xC2\xB7 %u satellite%s",
+                    visible, visible == 1 ? "" : "s");
+    }
+    set_label(gnss_labels.headline, buffer);
+
+#ifdef GPS_PPS
+    /* Time pulse: a pulse arrives every second while the receiver has time. */
+    uint32_t now = lv_tick_get();
+    bool pulsing = last_pps_event_time != 0 && now - last_pps_event_time < 2500;
+    set_label(gnss_labels.pps, pulsing ? "Yes" : "No");
+#endif
+
+    render_gnss_details(param);
+}
+#else
 static void update_position_labels(const gps_params_t &param)
 {
     char buffer[64];
@@ -473,6 +661,7 @@ static void render_gnss_view(const gps_params_t &param)
         update_cn0_chart(param);
     }
 }
+#endif
 
 static void handle_pps_event(const gps_params_t &param)
 {
@@ -487,10 +676,12 @@ static void handle_pps_event(const gps_params_t &param)
     }
     last_pps_event_time = now;
 
+#if !FACTORY_WATCH_UI   /* The watch says "Time pulse: Yes" instead of blinking */
     if (gnss_labels.pps && lv_obj_is_valid(gnss_labels.pps)) {
         lv_led_on(gnss_labels.pps);
         lv_timer_create(pps_led_off_cb, GNSS_UI_PPS_LED_MS, gnss_labels.pps);
     }
+#endif
 
     if (!param.location_valid) {
         last_fix_beep_time = 0;
@@ -509,7 +700,11 @@ static void handle_pps_event(const gps_params_t &param)
 
 static void update_gnss_view(void)
 {
+#if FACTORY_WATCH_UI
+    gps_params_t &param = gnss_param;
+#else
     static gps_params_t param;
+#endif
     static uint32_t screen_update_time = 0;
 
     param.nmea_to_serial = nmea_to_serial;
@@ -517,7 +712,9 @@ static void update_gnss_view(void)
     handle_pps_event(param);
 
     if (nmea_to_serial) {
-        lv_label_set_text_fmt(gnss_labels.rx_size, "%u", param.rx_size);
+        if (gnss_labels.rx_size && lv_obj_is_valid(gnss_labels.rx_size)) {
+            lv_label_set_text_fmt(gnss_labels.rx_size, "%u", param.rx_size);
+        }
         if (lv_tick_get() < screen_update_time) {
             return;
         }
@@ -534,6 +731,83 @@ static void timer_cb(lv_timer_t *t)
     update_gnss_view();
 }
 
+#if FACTORY_WATCH_UI
+static void details_page_delete_cb(lv_event_t *e)
+{
+    (void)e;
+    /* The labels go with the page; the updaters skip NULL. */
+    gnss_labels.model = NULL;
+    gnss_labels.ttff = NULL;
+    gnss_labels.rx_size = NULL;
+    nmea_serial_switch = NULL;
+}
+
+static void open_details_cb(lv_event_t *e)
+{
+    lv_obj_t *content = ui_push_page(lv_event_get_target_obj(e), "Details");
+    lv_obj_add_event_cb(content, details_page_delete_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_t *card = ui_create_card(content, NULL);
+    add_info_row(card, "Model", "N.A", &gnss_labels.model);
+    add_info_row(card, "First fix", "--", &gnss_labels.ttff);
+    add_info_row(card, "Data received", "0", &gnss_labels.rx_size);
+    lv_obj_t *row = ui_create_card_switch(card, LV_SYMBOL_USB, "NMEA to serial",
+                                          nmea_to_serial, nmea_switch_event);
+    nmea_serial_switch = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+#ifdef GPS_PPS
+    ui_create_card_switch(card, LV_SYMBOL_AUDIO, "Beep on fix", fix_beep_enabled, fix_beep_switch_event);
+#endif
+    render_gnss_details(gnss_param);
+}
+
+static void create_gnss_summary(void)
+{
+    /* The fix first, in body type. */
+    lv_obj_t *card = ui_create_card(page_container, NULL);
+    gnss_labels.headline = lv_label_create(card);
+    lv_label_set_text(gnss_labels.headline, "No fix");
+    lv_label_set_long_mode(gnss_labels.headline, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(gnss_labels.headline, LV_PCT(100));
+    lv_obj_set_style_text_font(gnss_labels.headline, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(gnss_labels.headline, UI_COLOR_TEXT_PRIMARY, 0);
+
+    /* Position rows show once they have a value; the card hides while none has. */
+    card = ui_create_card(page_container, "Position");
+    gnss_labels.pos_card = card;
+    gnss_labels.lat_row = add_info_row(card, "Latitude", "--", &gnss_labels.lat);
+    gnss_labels.lng_row = add_info_row(card, "Longitude", "--", &gnss_labels.lng);
+    gnss_labels.date_row = add_info_row(card, "Date", "--", &gnss_labels.date);
+    gnss_labels.time_row = add_info_row(card, "Time", "--", &gnss_labels.time);
+    gnss_labels.speed_row = add_info_row(card, "Speed", "--", &gnss_labels.speed);
+    gnss_labels.alt_row = add_info_row(card, "Altitude", "--", &gnss_labels.altitude);
+    ui_card_row_set_hidden(gnss_labels.lat_row, true);
+    ui_card_row_set_hidden(gnss_labels.lng_row, true);
+    ui_card_row_set_hidden(gnss_labels.date_row, true);
+    ui_card_row_set_hidden(gnss_labels.time_row, true);
+    ui_card_row_set_hidden(gnss_labels.speed_row, true);
+    ui_card_row_set_hidden(gnss_labels.alt_row, true);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+
+    /* Satellites in words instead of the sideways CN0 chart. */
+    card = ui_create_card(page_container, "Satellites");
+    gnss_labels.systems = lv_label_create(card);
+    lv_label_set_text(gnss_labels.systems, "Looking for satellites");
+    lv_label_set_long_mode(gnss_labels.systems, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(gnss_labels.systems, LV_PCT(100));
+    lv_obj_set_style_text_font(gnss_labels.systems, UI_FONT_SMALL, 0);
+    lv_obj_set_style_text_color(gnss_labels.systems, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_pad_bottom(gnss_labels.systems, 8, 0);
+    add_info_row(card, "In view", "0", &gnss_labels.visible);
+    add_info_row(card, "Tracking", "0", &gnss_labels.tracking);
+    add_info_row(card, "Used", "0", &gnss_labels.used);
+#ifdef GPS_PPS
+    add_info_row(card, "Time pulse", "No", &gnss_labels.pps);
+#endif
+    gnss_labels.antenna_row = add_info_row(card, "Antenna", "Unknown", &gnss_labels.antenna);
+    ui_card_row_set_hidden(gnss_labels.antenna_row, true);
+
+    ui_create_menu_row(page_container, LV_SYMBOL_LIST, "Details", open_details_cb, NULL);
+}
+#else
 static void create_gnss_summary(void)
 {
     lv_obj_t *card = ui_create_card(page_container, "Summary");
@@ -560,6 +834,7 @@ static void create_gnss_summary(void)
     add_info_row(card, "Speed", "--", &gnss_labels.speed);
     add_info_row(card, "Altitude", "--", &gnss_labels.altitude);
 }
+#endif
 
 /* Build page content in small batches after the page is visible. */
 static void detail_build_timer_cb(lv_timer_t *t)
@@ -573,6 +848,15 @@ static void detail_build_timer_cb(lv_timer_t *t)
         return;
     }
 
+#if FACTORY_WATCH_UI
+    /* One page, no chart: done after the summary. */
+    create_gnss_summary();
+    detail_ui_ready = true;
+    lv_timer_del(detail_build_timer);
+    detail_build_timer = NULL;
+    update_gnss_view();
+    return;
+#else
     if (!gnss_labels.model) {
         create_gnss_summary();
         update_gnss_view();
@@ -604,6 +888,7 @@ static void detail_build_timer_cb(lv_timer_t *t)
     lv_timer_del(detail_build_timer);
     detail_build_timer = NULL;
     update_gnss_view();
+#endif
 }
 
 static void close_nmea_serial_mode(void)
@@ -681,14 +966,41 @@ static void show_nmea_serial_mode(void)
     lv_obj_set_width(title, LV_PCT(100));
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title, UI_COLOR_TEXT_PRIMARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(title, UI_FONT_BODY, 0);
+#else
     lv_obj_set_style_text_font(title, is_screen_small() ? &lv_font_montserrat_16 : &lv_font_montserrat_20, 0);
+#endif
 
     lv_obj_t *message = lv_label_create(nmea_serial_overlay);
+#if FACTORY_WATCH_UI
+    lv_label_set_text(message, "GPS data is going to the USB serial port.");
+#else
     lv_label_set_text(message, "All GPS data is currently being redirected to Serial.");
+#endif
     lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(message, LV_PCT(90));
     lv_obj_set_style_text_align(message, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(message, UI_COLOR_TEXT_SECONDARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(message, UI_FONT_SMALL, 0);
+
+    /* A full-width 82 px pill, like the other actions. */
+    lv_obj_t *exit_btn = lv_btn_create(nmea_serial_overlay);
+    lv_obj_set_size(exit_btn, LV_PCT(100), 82);
+    lv_obj_set_style_bg_color(exit_btn, UI_COLOR_ACCENT, 0);
+    lv_obj_set_style_bg_color(exit_btn, UI_COLOR_ACCENT_DIM, LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(exit_btn, 0, 0);
+    lv_obj_set_style_shadow_width(exit_btn, 0, 0);
+    lv_obj_set_style_radius(exit_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_event_cb(exit_btn, nmea_serial_exit_event, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *exit_label = lv_label_create(exit_btn);
+    lv_label_set_text(exit_label, "Stop sending");
+    lv_obj_set_style_text_font(exit_label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(exit_label, lv_color_black(), 0);
+    lv_obj_center(exit_label);
+#else
     lv_obj_set_style_text_font(message, is_screen_small() ? &lv_font_montserrat_12 : &lv_font_montserrat_14, 0);
 
     lv_obj_t *exit_btn = lv_btn_create(nmea_serial_overlay);
@@ -703,6 +1015,7 @@ static void show_nmea_serial_mode(void)
     lv_label_set_text(exit_label, LV_SYMBOL_CLOSE " Exit");
     lv_obj_set_style_text_color(exit_label, lv_color_white(), 0);
     lv_obj_center(exit_label);
+#endif
 
     if (nmea_serial_prev_group) {
         lv_group_add_obj(nmea_serial_prev_group, exit_btn);

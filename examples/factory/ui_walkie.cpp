@@ -164,8 +164,14 @@ static lv_obj_t        *s_pair_btn = NULL;
 // Mic "ripple" indicator (talk/receive visualisation)
 static lv_obj_t        *s_mic_icon   = NULL;
 static lv_obj_t        *s_ripple[2]  = {NULL, NULL};
+#if FACTORY_WATCH_UI
+/* The talk button is the app's one control: big enough to find without looking. */
+static constexpr int    kMicDia      = 160;  // centre mic circle diameter
+static constexpr int    kRippleGrow  = 20;   // how far the rings expand
+#else
 static constexpr int    kMicDia      = 64;   // centre mic circle diameter
 static constexpr int    kRippleGrow  = 36;   // how far the rings expand
+#endif
 
 // Setup-page widgets
 static lv_obj_t        *s_nick_ta    = NULL;
@@ -453,7 +459,11 @@ static void update_contact_count_labels()
 {
     unsigned count = (unsigned)s_contacts.size();
     if (s_peer_count_label) {
+#if FACTORY_WATCH_UI
+        lv_label_set_text_fmt(s_peer_count_label, "Peers (%u)", count);
+#else
         lv_label_set_text_fmt(s_peer_count_label, LV_SYMBOL_CALL " Pair %u", count);
+#endif
     }
     if (s_contact_count_label) {
         lv_label_set_text_fmt(s_contact_count_label, "%u", count);
@@ -489,6 +499,18 @@ static void rebuild_contact_list()
     update_contact_count_labels();
     if (!s_contact_list) return;
     lv_obj_clean(s_contact_list);
+
+#if FACTORY_WATCH_UI
+    /* The watch's peers page: one 88 px card row per peer. */
+    if (s_contacts.empty()) {
+        ui_create_card_info(s_contact_list, NULL, "Searching...", "");
+        return;
+    }
+    for (auto &c : s_contacts) {
+        ui_create_card_info(s_contact_list, LV_SYMBOL_CALL, c.nickname, "");
+    }
+    return;
+#endif
 
     if (s_contacts.empty()) {
         lv_obj_t *empty = lv_label_create(s_contact_list);
@@ -588,7 +610,11 @@ static void walkie_timer_cb(lv_timer_t *t)
         accent  = UI_COLOR_ACCENT_DIM;
         break;
     default:
+#if FACTORY_WATCH_UI
+        caption = "Hold to talk";
+#else
         caption = "IDLE";
+#endif
         accent  = UI_COLOR_TEXT_SECONDARY;
         active  = false;
         break;
@@ -813,21 +839,58 @@ static void ptt_btn_event_cb(lv_event_t *e)
         }
         xTaskNotifyGive(s_tx_task);
     } else if (code == LV_EVENT_RELEASED ||
-               code == LV_EVENT_CLICKED) {
+               code == LV_EVENT_CLICKED
+#if FACTORY_WATCH_UI
+               /* The page scrolls: a drag that turns into a scroll must stop talking too. */
+               || code == LV_EVENT_PRESS_LOST
+#endif
+               ) {
         s_ptt_active = false;
     }
 }
 
 static void close_contacts_overlay()
 {
+#if FACTORY_WATCH_UI
+    /* s_contacts_overlay is the pushed page's content; its user_data is the page root. */
+    if (s_contacts_overlay) {
+        lv_obj_t *root = (lv_obj_t *)lv_obj_get_user_data(s_contacts_overlay);
+        lv_obj_delete(root ? root : s_contacts_overlay);
+        s_contacts_overlay = NULL;
+    }
+#else
     if (s_contacts_overlay) {
         lv_obj_delete(s_contacts_overlay);
         s_contacts_overlay = NULL;
     }
+#endif
     s_contact_list = NULL;
     s_contact_count_label = NULL;
 }
 
+#if FACTORY_WATCH_UI
+/* The peers page is gone (swiped away or deleted with the app page). */
+static void peers_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    s_contacts_overlay = NULL;
+    s_contact_list = NULL;
+    s_contact_count_label = NULL;
+}
+
+/* Watch: the peers list is a pushed full-screen page; swipe right closes it. */
+static void peers_btn_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    if (s_contacts_overlay) return;
+
+    lv_obj_t *content = ui_push_page(lv_event_get_current_target_obj(e), "Peers");
+    lv_obj_add_event_cb(content, peers_page_delete_cb, LV_EVENT_DELETE, NULL);
+    s_contacts_overlay = content;
+    s_contact_list = ui_create_card(content, NULL);
+    rebuild_contact_list();
+}
+#else
 static void contacts_close_cb(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -961,6 +1024,7 @@ static void setup_btn_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     return_to_setup();
 }
+#endif
 
 // ============================================================
 // Talk page: primary PTT surface, with contacts on demand
@@ -968,6 +1032,16 @@ static void setup_btn_cb(lv_event_t *e)
 static void build_walkie_ui(lv_obj_t *parent)
 {
     lv_obj_t *cont = lv_obj_create(parent);
+#if FACTORY_WATCH_UI
+    /* Talk button first, its state under it, then the Peers row. */
+    lv_obj_set_size(cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 0, 0);
+    lv_obj_set_style_pad_row(cont, 6, 0);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+#else
     lv_obj_set_size(cont, lv_pct(100), lv_pct(100));
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(cont, 0, 0);
@@ -975,17 +1049,27 @@ static void build_walkie_ui(lv_obj_t *parent)
     lv_obj_set_style_pad_row(cont, 4, 0);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+#endif
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     apply_walkie_scrollbar_style(parent);
 
     // Status label
     s_status_label = lv_label_create(cont);
+#if FACTORY_WATCH_UI
+    lv_label_set_text(s_status_label, "Hold to talk");
+    lv_obj_set_size(s_status_label, lv_pct(100), LV_SIZE_CONTENT);
+#else
     lv_label_set_text(s_status_label, "IDLE");
     lv_obj_set_size(s_status_label, lv_pct(100), 18);
+#endif
     lv_label_set_long_mode(s_status_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_status_label, UI_COLOR_TEXT_SECONDARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(s_status_label, UI_FONT_BODY, 0);
+#else
     lv_obj_set_style_text_font(s_status_label, &lv_font_montserrat_12, 0);
+#endif
 
     int stage = kMicDia + kRippleGrow;
     lv_obj_t *mic_stage = lv_obj_create(cont);
@@ -996,6 +1080,10 @@ static void build_walkie_ui(lv_obj_t *parent)
     lv_obj_remove_flag(mic_stage, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(mic_stage, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_center(mic_stage);
+#if FACTORY_WATCH_UI
+    /* The button comes first; "Hold to talk" sits under it. */
+    lv_obj_move_to_index(mic_stage, 0);
+#endif
 
     // Ripple rings
     for (int i = 0; i < 2; i++) {
@@ -1041,10 +1129,23 @@ static void build_walkie_ui(lv_obj_t *parent)
     // Talker label
     s_talker_label = lv_label_create(cont);
     lv_label_set_text(s_talker_label, "");
+#if FACTORY_WATCH_UI
+    lv_obj_set_size(s_talker_label, lv_pct(100), LV_SIZE_CONTENT);
+#else
     lv_obj_set_size(s_talker_label, lv_pct(100), 18);
+#endif
     lv_label_set_long_mode(s_talker_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_talker_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_talker_label, UI_COLOR_TEXT_SECONDARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(s_talker_label, UI_FONT_CAPTION, 0);
+
+    /* No Back button: swiping right returns to the setup page. Peers is one row
+     * that opens its own page. */
+    lv_obj_t *peers_row = ui_create_menu_row(parent, LV_SYMBOL_CALL, "Peers (0)",
+                                             peers_btn_cb, NULL);
+    s_peer_count_label = lv_obj_get_child(peers_row, -1);
+#else
     lv_obj_set_style_text_font(s_talker_label, &lv_font_montserrat_12, 0);
 
     lv_obj_t *actions = lv_obj_create(cont);
@@ -1062,6 +1163,7 @@ static void build_walkie_ui(lv_obj_t *parent)
     s_peer_count_label = create_action_button(actions, 112, 30,
                                              LV_SYMBOL_CALL " Pair 0",
                                              peers_btn_cb, true, &s_pair_btn);
+#endif
 
     apply_walkie_action_theme();
     update_contact_count_labels();
@@ -1288,6 +1390,10 @@ static void build_setup_ui(lv_obj_t *parent)
                         wifi_connected ? "WiFi Ch" : "Channel", s_chan_dd);
 
     // ---- Start button ----
+#if FACTORY_WATCH_UI
+    LV_UNUSED(scr_w);
+    ui_create_card_action(settings_card, LV_SYMBOL_PLAY, "Start", start_btn_cb);
+#else
     lv_obj_t *start_row = lv_obj_create(settings_card);
     lv_obj_set_size(start_row, lv_pct(100), 36);
     lv_obj_set_style_bg_opa(start_row, LV_OPA_TRANSP, 0);
@@ -1312,8 +1418,10 @@ static void build_setup_ui(lv_obj_t *parent)
     lv_label_set_text(start_label, LV_SYMBOL_PLAY " Start");
     lv_obj_center(start_label);
     lv_obj_set_style_text_color(start_label, lv_color_white(), 0);
+#endif
 
-#ifdef USING_TOUCHPAD
+    /* The watch's text field opens its own full-screen keyboard page. */
+#if defined(USING_TOUCHPAD) && !FACTORY_WATCH_UI
     s_keyboard = lv_keyboard_create(lv_scr_act());
     lv_obj_set_style_bg_color(s_keyboard, UI_COLOR_CARD_BG, 0);
     lv_obj_set_style_bg_opa(s_keyboard, LV_OPA_COVER, 0);

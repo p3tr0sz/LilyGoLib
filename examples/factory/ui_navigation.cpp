@@ -33,6 +33,11 @@ struct edge_swipe_t {
     lv_obj_t *indicator_arrow;
     lv_timer_t *tracking_timer;
     bool threshold_feedback_sent;
+#if FACTORY_WATCH_UI
+    int32_t root_x0;        /* The page's x when the finger went down */
+    bool following;         /* The page is moving with the finger */
+    bool parent_scrollable; /* The parent's SCROLLABLE flag, off while following */
+#endif
 };
 
 static void edge_swipe_delete_cb(lv_event_t *e);
@@ -164,6 +169,26 @@ static bool edge_swipe_update_indicator(edge_swipe_t *state, lv_indev_t *indev,
         hw_feedback();
     }
 
+#if FACTORY_WATCH_UI
+    /* The page follows the finger (watch-ux-guidelines.md 10.1) once the drag is
+     * clearly sideways; a vertical scroll never moves it. */
+    if (!state->following && inward >= INDICATOR_START_DISTANCE_PX && inward > vertical * 2) {
+        state->following = true;
+        /* Moving the page past the edge makes its parent scrollable sideways,
+         * and the same drag would scroll it too. */
+        lv_obj_t *parent = lv_obj_get_parent(state->root);
+        state->parent_scrollable = parent && lv_obj_has_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+        if (state->parent_scrollable) lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+        /* A slow swipe must not turn into a long press (which would cancel it,
+         * or lift an app list row); restored when the finger lets go. */
+        lv_indev_set_long_press_time(indev, 0xFFFF);
+    }
+    if (state->following) {
+        lv_obj_set_x(state->root, state->root_x0 + inward);
+    }
+    return threshold_reached;
+#endif
+
     if (!state->indicator) return threshold_reached;
 
     lv_display_t *display = lv_indev_get_display(indev);
@@ -208,12 +233,59 @@ static bool edge_swipe_update_indicator(edge_swipe_t *state, lv_indev_t *indev,
     return threshold_reached;
 }
 
+#if FACTORY_WATCH_UI
+static const uint32_t FOLLOW_SETTLE_MS = 160;
+static const uint16_t LONG_PRESS_DEFAULT_MS = 400;   /* LV_INDEV_DEF_LONG_PRESS_TIME */
+
+static void follow_set_x(void *obj, int32_t x)
+{
+    lv_obj_set_x((lv_obj_t *)obj, x);
+}
+
+static void follow_out_done_cb(lv_anim_t *a)
+{
+    edge_swipe_t *state = (edge_swipe_t *)lv_anim_get_user_data(a);
+    if (!lv_obj_is_valid(state->back_target)) return;
+    lv_obj_send_event(state->back_target, state->back_event, NULL);
+}
+
+/* Let go: the page slides back, or out and then goes back. */
+static void follow_settle(edge_swipe_t *state, bool accepted, lv_indev_t *indev)
+{
+    if (!state->following) return;
+    state->following = false;
+    lv_obj_t *parent = lv_obj_get_parent(state->root);
+    if (parent) {
+        lv_obj_scroll_to_x(parent, 0, LV_ANIM_OFF);
+        if (state->parent_scrollable) lv_obj_add_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
+    }
+    /* The app never changes it, so back to LVGL's default (private to lv_indev.c). */
+    if (indev) lv_indev_set_long_press_time(indev, LONG_PRESS_DEFAULT_MS);
+    int32_t width = lv_display_get_horizontal_resolution(NULL);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, state->root);
+    lv_anim_set_values(&a, lv_obj_get_x(state->root), accepted ? width : state->root_x0);
+    lv_anim_set_duration(&a, FOLLOW_SETTLE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, follow_set_x);
+    if (accepted) {
+        lv_anim_set_user_data(&a, state);
+        lv_anim_set_completed_cb(&a, follow_out_done_cb);
+    }
+    lv_anim_start(&a);
+}
+#endif
+
 static void edge_swipe_cancel(edge_swipe_t *state, lv_indev_t *indev)
 {
     if (state->pointer != indev) return;
     state->pointer = NULL;
     edge_swipe_stop_tracking(state);
     edge_swipe_hide_indicator(state, false);
+#if FACTORY_WATCH_UI
+    follow_settle(state, false, indev);
+#endif
 }
 
 static void edge_swipe_tracking_timer_cb(lv_timer_t *timer)
@@ -223,8 +295,15 @@ static void edge_swipe_tracking_timer_cb(lv_timer_t *timer)
         edge_swipe_stop_tracking(state);
         return;
     }
-    if (lv_tick_elaps(state->started_at) > SWIPE_TIMEOUT_MS ||
-            !lv_obj_is_visible(state->root)) {
+    bool timed_out = lv_tick_elaps(state->started_at) > SWIPE_TIMEOUT_MS;
+    bool gone = !lv_obj_is_visible(state->root);
+#if FACTORY_WATCH_UI
+    /* A slow swipe still goes back, and a page moving with the finger is
+     * meant to leave the screen. */
+    timed_out = timed_out && !state->following;
+    gone = gone && !state->following;
+#endif
+    if (timed_out || gone) {
         edge_swipe_cancel(state, state->pointer);
         return;
     }
@@ -272,7 +351,14 @@ static void edge_swipe_input_cb(lv_event_t *e)
         state->started_at = lv_tick_get();
         state->min_distance = LV_CLAMP(40, width / 5, 80);
         state->threshold_feedback_sent = false;
+#if FACTORY_WATCH_UI
+        /* The page itself moves, so no bubble indicator. */
+        lv_anim_delete(state->root, follow_set_x);
+        state->root_x0 = lv_obj_get_x(state->root);
+        state->following = false;
+#else
         edge_swipe_create_indicator(state, lv_indev_get_display(indev));
+#endif
         edge_swipe_update_indicator(state, indev, point);
         // Input-device callbacks do not receive PRESSING events; poll only during this gesture.
         state->tracking_timer = lv_timer_create(edge_swipe_tracking_timer_cb, 16, state);
@@ -280,8 +366,13 @@ static void edge_swipe_input_cb(lv_event_t *e)
     }
 
     if (state->pointer != indev) return;
-    if (lv_tick_elaps(state->started_at) > SWIPE_TIMEOUT_MS ||
-            !lv_obj_is_visible(state->root) || !edge_swipe_contains(state->root, target) ||
+    bool too_slow = lv_tick_elaps(state->started_at) > SWIPE_TIMEOUT_MS;
+    bool gone = !lv_obj_is_visible(state->root);
+#if FACTORY_WATCH_UI
+    too_slow = too_slow && !state->following;
+    gone = gone && !state->following;
+#endif
+    if (too_slow || gone || !edge_swipe_contains(state->root, target) ||
             !lv_obj_is_valid(state->back_target) || lv_obj_has_state(state->back_target, LV_STATE_DISABLED)) {
         edge_swipe_cancel(state, indev);
         return;
@@ -293,6 +384,15 @@ static void edge_swipe_input_cb(lv_event_t *e)
     state->pointer = NULL;
     edge_swipe_stop_tracking(state);
     edge_swipe_hide_indicator(state, accepted);
+#if FACTORY_WATCH_UI
+    if (state->following) {
+        /* Slide out from where the finger let go and then go back, or slide
+         * back into place. Either way this release clicks nothing. */
+        lv_indev_reset(indev, NULL);
+        follow_settle(state, accepted, indev);
+        return;
+    }
+#endif
     if (!accepted) return;
 
     // Reset before navigation: the handler may delete the page, and this release must not click a widget.

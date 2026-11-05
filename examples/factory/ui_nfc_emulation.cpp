@@ -22,6 +22,19 @@ static lv_obj_t *tech_dropdown = NULL;
 static lv_obj_t *url_btn = NULL;
 static lv_obj_t *text_btn = NULL;
 static lv_obj_t *wifi_btn = NULL;
+#if FACTORY_WATCH_UI
+/* Watch: one scrolling list of cards. Pills and rows are shown or hidden by
+ * update_controls(); the buttons above stay NULL on the watch. */
+static lv_obj_t *url_row = NULL;
+static lv_obj_t *text_row = NULL;
+static lv_obj_t *wifi_row = NULL;
+static lv_obj_t *stop_row = NULL;
+static lv_obj_t *tech_row = NULL;
+static lv_obj_t *sharing_row = NULL;
+static lv_obj_t *reads_row = NULL;
+static lv_obj_t *content_card = NULL;
+static bool watch_has_shared = false;
+#endif
 
 static bool nfc_card_running = false;
 static LilyGoNfcEmulationKind active_kind = LILYGO_NFC_EMULATION_URL;
@@ -31,6 +44,18 @@ static const char *kDefaultUrl = "https://github.com/Xinyuan-LilyGO";
 static const char *kDefaultText = "LilyGo NFC Card Emulation";
 static const char *kDefaultWifiSsid = "LilyGo-NFC";
 static const char *kDefaultWifiPassword = "12345678";
+
+/* The watch's plain words, or the original text on other boards. */
+static const char *pick_text(const char *watch, const char *other)
+{
+#if FACTORY_WATCH_UI
+    (void)other;
+    return watch;
+#else
+    (void)watch;
+    return other;
+#endif
+}
 
 static bool compact_screen()
 {
@@ -217,11 +242,11 @@ static const char *template_short_name(LilyGoNfcEmulationKind kind)
 {
     switch (kind) {
     case LILYGO_NFC_EMULATION_URL:
-        return "URL";
+        return pick_text("Link", "URL");
     case LILYGO_NFC_EMULATION_TEXT:
         return "Text";
     case LILYGO_NFC_EMULATION_WIFI:
-        return "WiFi";
+        return pick_text("Wi-Fi", "WiFi");
     default:
         return "--";
     }
@@ -231,22 +256,22 @@ static const char *event_state_text(LilyGoNfcEvent event, const LilyGoNfcEmulati
 {
     if (event == LILYGO_NFC_EVENT_START_FAILED ||
             event == LILYGO_NFC_EVENT_EMULATION_ERROR) {
-        return "Error";
+        return pick_text("Couldn't share", "Error");
     }
     if (event == LILYGO_NFC_EVENT_STOPPED) {
         return "Stopped";
     }
     if (event == LILYGO_NFC_EVENT_EMULATION_ACTIVATED) {
-        return "Reading";
+        return pick_text("Phone connected", "Reading");
     }
     if (status.readerActive) {
-        return "Reading";
+        return pick_text("Phone connected", "Reading");
     }
     if (nfc_card_running || event == LILYGO_NFC_EVENT_EMULATION_RELEASED ||
             event == LILYGO_NFC_EVENT_EMULATION_STARTED) {
-        return "Waiting";
+        return pick_text("Waiting for phone", "Waiting");
     }
-    return "Idle";
+    return pick_text("Ready", "Idle");
 }
 
 static void update_controls()
@@ -285,14 +310,34 @@ static void update_controls()
         if (wifi_active) lv_obj_add_state(wifi_btn, LV_STATE_CHECKED);
         else lv_obj_clear_state(wifi_btn, LV_STATE_CHECKED);
     }
+
+#if FACTORY_WATCH_UI
+    /* Three "Share" pills while idle, one "Stop" pill while sharing. */
+    ui_card_row_set_hidden(url_row, nfc_card_running);
+    ui_card_row_set_hidden(text_row, nfc_card_running);
+    ui_card_row_set_hidden(wifi_row, nfc_card_running);
+    ui_card_row_set_hidden(stop_row, !nfc_card_running);
+    /* The type can't change while sharing; what's shared shows once started. */
+    ui_card_row_set_hidden(tech_row, nfc_card_running);
+    ui_card_row_set_hidden(sharing_row, !watch_has_shared);
+    ui_card_row_set_hidden(reads_row, !watch_has_shared);
+    if (content_card) {
+        if (watch_has_shared) lv_obj_remove_flag(content_card, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(content_card, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
 }
 
 static void format_count_label(const LilyGoNfcEmulationStatus &status)
 {
     char buf[32];
+#if FACTORY_WATCH_UI
+    snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(status.readCount));
+#else
     snprintf(buf, sizeof(buf), "R%lu F%lu",
              static_cast<unsigned long>(status.readCount),
              static_cast<unsigned long>(status.exchangeCount));
+#endif
     set_label_text(count_value, buf);
 }
 
@@ -302,7 +347,11 @@ static void update_emulation_view(LilyGoNfcEvent event, const LilyGoNfcEmulation
 
     char buf[192];
     set_label_text(state_value, event_state_text(event, status));
+#if FACTORY_WATCH_UI
+    set_label_text(template_value, template_short_name(status.kind));
+#else
     set_label_text(template_value, status.templateName[0] ? status.templateName : template_short_name(status.kind));
+#endif
 
     if (status.readerActive && status.activeTechnology[0] && strcmp(status.activeTechnology, "--") != 0) {
         snprintf(buf, sizeof(buf), "%s/%s", status.activeTechnology, status.activeInterface);
@@ -318,20 +367,24 @@ static void update_emulation_view(LilyGoNfcEvent event, const LilyGoNfcEmulation
 
     if (event == LILYGO_NFC_EVENT_START_FAILED ||
             event == LILYGO_NFC_EVENT_EMULATION_ERROR) {
+#if FACTORY_WATCH_UI
+        snprintf(buf, sizeof(buf), "%s", status.errorText[0] ? status.errorText : "Try again");
+#else
         snprintf(buf, sizeof(buf), "Error %u: %s",
                  status.lastError,
                  status.errorText[0] ? status.errorText : "NFC emulation error");
+#endif
         set_label_text(hint_value, buf);
     } else if (event == LILYGO_NFC_EVENT_EMULATION_ACTIVATED) {
-        set_label_text(hint_value, "Phone detected. Keep it close.");
+        set_label_text(hint_value, pick_text("Keep the phone close", "Phone detected. Keep it close."));
     } else if (event == LILYGO_NFC_EVENT_EMULATION_RELEASED) {
-        set_label_text(hint_value, "Read finished. Waiting for next phone.");
+        set_label_text(hint_value, pick_text("Done. Waiting for next phone", "Read finished. Waiting for next phone."));
     } else if (event == LILYGO_NFC_EVENT_STOPPED) {
-        set_label_text(hint_value, "Stopped.");
+        set_label_text(hint_value, pick_text("Pick what to share", "Stopped."));
     } else if (status.tech == LILYGO_NFC_EMULATION_TECH_NFCA_T4T) {
-        set_label_text(hint_value, "NFC-A T4T is experimental.");
+        set_label_text(hint_value, pick_text("Type A may not work", "NFC-A T4T is experimental."));
     } else {
-        set_label_text(hint_value, "Hold phone near NFC antenna.");
+        set_label_text(hint_value, pick_text("Hold a phone to the watch", "Hold phone near NFC antenna."));
     }
 
     update_controls();
@@ -373,7 +426,7 @@ static bool start_template(LilyGoNfcEmulationKind kind)
             hw_stop_nfc();
             update_controls();
             set_label_text(state_value, "Stopped");
-            set_label_text(hint_value, "Stopped.");
+            set_label_text(hint_value, pick_text("Pick what to share", "Stopped."));
         }
         return false;
     }
@@ -386,6 +439,9 @@ static bool start_template(LilyGoNfcEmulationKind kind)
     config.userData = NULL;
 
     active_kind = kind;
+#if FACTORY_WATCH_UI
+    watch_has_shared = true;
+#endif
 
     switch (kind) {
     case LILYGO_NFC_EMULATION_URL:
@@ -412,7 +468,7 @@ static bool start_template(LilyGoNfcEmulationKind kind)
 
     set_label_text(state_value, "Starting");
     set_label_text(template_value, template_short_name(kind));
-    set_label_text(hint_value, "Starting...");
+    set_label_text(hint_value, pick_text("One moment", "Starting..."));
     update_controls();
 
     const bool started = hw_start_nfc_emulation(config);
@@ -452,6 +508,15 @@ static void wifi_btn_cb(lv_event_t *e)
     (void)e;
     start_template(LILYGO_NFC_EMULATION_WIFI);
 }
+
+#if FACTORY_WATCH_UI
+static void stop_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    /* start_template() stops the running template when asked for it again. */
+    start_template(active_kind);
+}
+#endif
 
 static void tech_dropdown_cb(lv_event_t *e)
 {
@@ -589,6 +654,55 @@ static void build_large_layout()
     lv_obj_set_flex_grow(payload_panel, 1);
 }
 
+#if FACTORY_WATCH_UI
+/* One scrolling list: what's happening, the actions, then the details. */
+static void build_watch_layout()
+{
+    lv_obj_t *status_card = ui_create_card(page_container, NULL);
+    state_value = lv_label_create(status_card);
+    lv_label_set_text(state_value, "Ready");
+    lv_obj_set_width(state_value, LV_PCT(100));
+    lv_label_set_long_mode(state_value, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(state_value, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(state_value, UI_FONT_BODY, 0);
+
+    hint_value = lv_label_create(status_card);
+    lv_label_set_text(hint_value, "Pick what to share");
+    lv_obj_set_width(hint_value, LV_PCT(100));
+    lv_label_set_long_mode(hint_value, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(hint_value, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_text_font(hint_value, UI_FONT_CAPTION, 0);
+
+    url_row = ui_create_card_action(page_container, LV_SYMBOL_UPLOAD, "Share link", url_btn_cb);
+    text_row = ui_create_card_action(page_container, LV_SYMBOL_EDIT, "Share text", text_btn_cb);
+    wifi_row = ui_create_card_action(page_container, LV_SYMBOL_WIFI, "Share Wi-Fi", wifi_btn_cb);
+    stop_row = ui_create_card_action(page_container, LV_SYMBOL_STOP, "Stop", stop_btn_cb);
+
+    /* Same option order as the other boards' dropdown, so the index is the tech. */
+    lv_obj_t *card = ui_create_card(page_container, NULL);
+    tech_row = ui_create_card_picker(card, LV_SYMBOL_SETTINGS, "Card type",
+                                     "Type F\nType A (test)\nType A + F",
+                                     (uint8_t)selected_tech, tech_dropdown_cb);
+    tech_dropdown = lv_obj_get_child(tech_row, lv_obj_get_child_count(tech_row) - 1);
+
+    sharing_row = ui_create_card_info(card, LV_SYMBOL_UPLOAD, "Sharing", "--");
+    template_value = lv_obj_get_child(sharing_row, lv_obj_get_child_count(sharing_row) - 1);
+    reads_row = ui_create_card_info(card, LV_SYMBOL_EYE_OPEN, "Times read", "0");
+    count_value = lv_obj_get_child(reads_row, lv_obj_get_child_count(reads_row) - 1);
+
+    /* A link or text can be long: it gets its own card and wraps. */
+    content_card = ui_create_card(page_container, "Content");
+    payload_value = lv_label_create(content_card);
+    lv_label_set_text(payload_value, "--");
+    lv_obj_set_width(payload_value, LV_PCT(100));
+    lv_label_set_long_mode(payload_value, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(payload_value, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(payload_value, UI_FONT_SMALL, 0);
+
+    tech_value = NULL;   /* The picker row shows the type. */
+}
+#endif
+
 static void back_event_handler(lv_event_t *e)
 {
     (void)e;
@@ -607,12 +721,27 @@ static void back_event_handler(lv_event_t *e)
     url_btn = NULL;
     text_btn = NULL;
     wifi_btn = NULL;
+#if FACTORY_WATCH_UI
+    url_row = NULL;
+    text_row = NULL;
+    wifi_row = NULL;
+    stop_row = NULL;
+    tech_row = NULL;
+    sharing_row = NULL;
+    reads_row = NULL;
+    content_card = NULL;
+    watch_has_shared = false;
+#endif
     menu_show();
 }
 
 void ui_nfc_emulation_enter(lv_obj_t *parent)
 {
     page_container = ui_create_app_page(parent, "NFC Card", back_event_handler);
+#if FACTORY_WATCH_UI
+    /* The shared page layout as it is: no resized nav, no fixed height. */
+    build_watch_layout();
+#else
     apply_round_safe_area(page_container);
 
     lv_obj_set_style_pad_left(page_container, round_safe_screen() ? 32 : 6, 0);
@@ -627,6 +756,7 @@ void ui_nfc_emulation_enter(lv_obj_t *parent)
     } else {
         build_large_layout();
     }
+#endif
 
     update_controls();
 }
@@ -645,9 +775,35 @@ app_t ui_nfc_emulation_main = {
 
 #else
 
+#if FACTORY_WATCH_UI
+static lv_obj_t *stub_page = NULL;
+
+static void stub_back_event_handler(lv_event_t *e)
+{
+    (void)e;
+    if (stub_page) {
+        ui_destroy_app_page(stub_page);
+        stub_page = NULL;
+    }
+    menu_show();
+}
+#endif
+
 void ui_nfc_emulation_enter(lv_obj_t *parent)
 {
+#if FACTORY_WATCH_UI
+    /* The simulator has no NFC chip: a page that says so, with the usual back. */
+    stub_page = ui_create_app_page(parent, "NFC Card", stub_back_event_handler);
+    lv_obj_t *card = ui_create_card(stub_page, NULL);
+    lv_obj_t *label = lv_label_create(card);
+    lv_label_set_text(label, "Card emulation needs the watch");
+    lv_obj_set_width(label, LV_PCT(100));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(label, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
+#else
     (void)parent;
+#endif
 }
 
 void ui_nfc_emulation_exit(lv_obj_t *parent)

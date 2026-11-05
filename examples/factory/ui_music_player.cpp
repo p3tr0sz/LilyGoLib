@@ -13,7 +13,9 @@
 
 #if !defined(EXCLUDE_AUDIO_PLAYER)
 
-#ifdef USING_AUDIO_CODEC
+/* The watch has no codec, but its amplifier output scales samples in software, so
+ * hw_set_volume() works there too. */
+#if defined(USING_AUDIO_CODEC) || FACTORY_WATCH_UI
 #define HAS_VOLUME_SLIDER
 #endif
 
@@ -137,6 +139,15 @@ static void refresh_row_styles()
 
         if (!view.row) continue;
 
+#if FACTORY_WATCH_UI
+        /* Pill rows from ui_create_menu_row(): the disc's icon says which track is
+         * current (a speaker instead of a note), the accent edge only repeats it. */
+        lv_obj_set_style_border_width(view.row, selected ? 2 : 0, 0);
+        lv_obj_set_style_border_color(view.row, UI_COLOR_ACCENT, 0);
+        if (view.icon) {
+            lv_label_set_text(view.icon, selected ? LV_SYMBOL_VOLUME_MAX : LV_SYMBOL_AUDIO);
+        }
+#else
         lv_obj_set_style_bg_color(view.row, selected ? UI_COLOR_ACCENT : UI_COLOR_CARD_BG, 0);
         lv_obj_set_style_bg_opa(view.row, selected ? LV_OPA_20 : LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(view.row, selected ? 1 : 0, 0);
@@ -153,6 +164,7 @@ static void refresh_row_styles()
         if (view.meta) {
             lv_obj_set_style_text_color(view.meta, selected ? UI_COLOR_ACCENT : UI_COLOR_TEXT_SECONDARY, 0);
         }
+#endif
     }
 }
 
@@ -317,7 +329,12 @@ static lv_obj_t *create_control_button(lv_obj_t *parent, const char *symbol,
                                        bool primary, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_button_create(parent);
+#if FACTORY_WATCH_UI
+    /* Round targets: 82 px for play/pause, 64 px for previous and next. */
+    lv_obj_set_size(btn, primary ? 82 : 64, primary ? 82 : 64);
+#else
     lv_obj_set_size(btn, primary ? 62 : 46, primary ? 62 : 46);
+#endif
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, LV_STATE_FOCUSED);
@@ -346,7 +363,11 @@ static lv_obj_t *create_control_button(lv_obj_t *parent, const char *symbol,
     lv_obj_t *label = lv_label_create(btn);
     lv_label_set_text(label, symbol);
     lv_obj_set_style_text_color(label, primary ? lv_color_black() : UI_COLOR_TEXT_PRIMARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(label, primary ? &lv_font_montserrat_32 : &lv_font_montserrat_24, 0);
+#else
     lv_obj_set_style_text_font(label, primary ? &lv_font_montserrat_24 : &lv_font_montserrat_18, 0);
+#endif
     lv_obj_center(label);
 
     if (primary) {
@@ -414,7 +435,11 @@ static void create_player_header(lv_obj_t *parent)
     lv_label_set_long_mode(track_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(track_title_label, LV_PCT(100));
     lv_obj_set_style_text_color(track_title_label, UI_COLOR_TEXT_PRIMARY, 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(track_title_label, UI_FONT_BODY, 0);
+#else
     lv_obj_set_style_text_font(track_title_label, is_screen_small() ? &lv_font_montserrat_16 : &lv_font_montserrat_20, 0);
+#endif
 
     track_meta_label = lv_label_create(info);
     lv_label_set_text(track_meta_label, "MP3 / WAV / FLAC");
@@ -424,7 +449,12 @@ static void create_player_header(lv_obj_t *parent)
     lv_obj_set_style_text_font(track_meta_label, &lv_font_montserrat_12, 0);
 
     lv_obj_t *state_row = lv_obj_create(info);
+#if FACTORY_WATCH_UI
+    /* 12 px draws at 22 px here; a fixed 22 px row clipped it. */
+    lv_obj_set_size(state_row, LV_PCT(100), LV_SIZE_CONTENT);
+#else
     lv_obj_set_size(state_row, LV_PCT(100), 22);
+#endif
     lv_obj_set_style_bg_opa(state_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(state_row, 0, 0);
     lv_obj_set_style_shadow_width(state_row, 0, 0);
@@ -452,12 +482,16 @@ static void create_controls(lv_obj_t *parent)
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t *control_row = lv_obj_create(card);
+#if FACTORY_WATCH_UI
+    lv_obj_set_size(control_row, LV_PCT(100), 88);
+#else
     lv_obj_set_size(control_row, LV_PCT(100), 68);
+#endif
     lv_obj_set_style_bg_opa(control_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(control_row, 0, 0);
     lv_obj_set_style_shadow_width(control_row, 0, 0);
     lv_obj_set_style_pad_all(control_row, 0, 0);
-    lv_obj_set_style_pad_column(control_row, 18, 0);
+    lv_obj_set_style_pad_column(control_row, FACTORY_WATCH_UI ? 28 : 18, 0);
     lv_obj_set_flex_flow(control_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(control_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -466,8 +500,10 @@ static void create_controls(lv_obj_t *parent)
     create_control_button(control_row, LV_SYMBOL_NEXT, false, next_cb);
 
 #if defined(HAS_VOLUME_SLIDER) && FACTORY_WATCH_UI
-    /* No slider in the page: the row opens the full-screen level page. */
-    ui_create_card_level(card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100, hw_get_volume(),
+    /* No slider in the page: the row opens the full-screen level page. It gets its
+     * own card so it lines up like the other card rows. */
+    lv_obj_t *volume_card = ui_create_card(parent, NULL);
+    ui_create_card_level(volume_card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100, hw_get_volume(),
                          volume_slider_event);
 #elif defined(HAS_VOLUME_SLIDER)
     lv_obj_t *volume_row = lv_obj_create(card);
@@ -512,6 +548,19 @@ static void create_controls(lv_obj_t *parent)
 static lv_obj_t *create_track_row(lv_obj_t *parent, size_t index)
 {
     const AudioParams_t &track = music_list[index];
+
+#if FACTORY_WATCH_UI
+    /* An 88 px pill row; the whole row plays the track. Children: the icon disc
+     * (its label is the icon) and the title. */
+    lv_obj_t *row = ui_create_menu_row(parent, LV_SYMBOL_AUDIO, track_display_name(track.file_name),
+                                       track_row_cb, NULL);
+    lv_obj_set_user_data(row, (void *)(index + 1));
+    lv_obj_t *disc = lv_obj_get_child(row, 0);
+    lv_obj_t *icon = disc ? lv_obj_get_child(disc, 0) : NULL;
+    lv_obj_t *name = lv_obj_get_child(row, -1);
+    row_views.push_back({row, icon, name, NULL});
+    return row;
+#else
 
 #if defined(USING_TOUCHPAD) || defined(HAS_TOUCHSCREEN)
     lv_obj_t *row = lv_obj_create(parent);
@@ -575,10 +624,28 @@ static lv_obj_t *create_track_row(lv_obj_t *parent, size_t index)
         lv_group_add_obj(group, row);
     }
     return row;
+#endif
 }
 
 static void create_library(lv_obj_t *parent)
 {
+#if FACTORY_WATCH_UI
+    /* Tracks are pill rows on the page itself, not rows inside a card. */
+    row_views.clear();
+    if (!has_tracks()) {
+        library_card = ui_create_card(parent, NULL);
+        lv_obj_t *empty = lv_label_create(library_card);
+        lv_label_set_text(empty, "No music on SD");
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(empty, LV_PCT(100));
+        lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(empty, UI_FONT_BODY, 0);
+        return;
+    }
+    for (size_t i = 0; i < music_list.size(); ++i) {
+        create_track_row(parent, i);
+    }
+#else
     library_card = ui_create_card(parent, "Library");
 
     if (!has_tracks()) {
@@ -595,6 +662,7 @@ static void create_library(lv_obj_t *parent)
     for (size_t i = 0; i < music_list.size(); ++i) {
         create_track_row(library_card, i);
     }
+#endif
 }
 
 static void back_event_handler(lv_event_t *e)

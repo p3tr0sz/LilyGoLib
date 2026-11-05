@@ -121,8 +121,7 @@ extern uint32_t ui_active_track;
 #if FACTORY_WATCH_UI
 /* Nothing that has to be read is under 22 px (watch-ux-guidelines.md 4.1,
  * Apple's 12 pt minimum), so the sizes apps chose for small screens map to the
- * smallest readable ones: 10 to 16 -> 22, 18 -> 24. 20 px stays for the few
- * places that ask for it directly (header clock). */
+ * smallest readable ones: 10 to 16 and 20 -> 22, 18 -> 24. */
 LV_FONT_DECLARE(font_latin_20)
 LV_FONT_DECLARE(font_latin_22)
 LV_FONT_DECLARE(font_latin_24)
@@ -131,7 +130,7 @@ LV_FONT_DECLARE(font_latin_24)
 #define lv_font_montserrat_14 font_latin_22
 #define lv_font_montserrat_16 font_latin_22
 #define lv_font_montserrat_18 font_latin_24
-#define lv_font_montserrat_20 font_latin_20
+#define lv_font_montserrat_20 font_latin_22   /* 20 px is under the floor too */
 LV_FONT_DECLARE(font_latin_22)
 #define lv_font_montserrat_22 font_latin_22
 LV_FONT_DECLARE(font_latin_24)

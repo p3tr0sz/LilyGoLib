@@ -44,23 +44,14 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 7b | Steady keyboard field; WiFi and BLE scan rows like other card rows | Done; BLE rows need checking on hardware |
 | 8 | Fixes from the audit against `watch-ux-guidelines.md` | Done; haptic patterns and File Manager need checking on hardware |
 | 8b | App list order (drag to reorder, saved) and crash recovery | Done in the simulator; needs checking on hardware |
+| 8c | Arrange apps, names, message pills, screen off in apps, pages follow the finger, fixes for apps outside the simulator | Done; the apps outside the simulator need checking on hardware |
 
 ## Next steps
 
 In order. Details are in the follow-up sections further down.
 
-1. **Get the firmware building, then check everything on the wrist.** `pio run -e twatch_ultra` in `LilyGoLib-PlatformIO` now gets past SensorLib (pin raised to `^0.5.1`) and Button2 (added, 2.7.0), and the factory app and LVGL compile. It stops at `demo_ce.h: No such file or directory` in `src/nfc/LilyGoNfcService.cpp`: the `NFC-RFAL-fork` it fetches is older or newer than this checkout expects. Pin the fork to the commit this checkout was written against. Then flash the watch and go through the hardware checks: phases 4–8b follow-ups, and the crash-recovery test below.
-2. **Decisions waiting on you:**
-   - **"Arrange apps":** a visible way into reordering, so a long press isn't the only way (guideline 2.4).
-   - **Corner picker order:** whether the face corner picker lists apps in the app list's order.
-3. **App names match page titles.** The list says "BLE Scan", "SD Info", "File Manager", "IMU", "LoRa", "DisplayTest" and "QRCode"; the pages say "BLE Scanner", "SD Card", "SD Manager", "Sensor" and "LoRa Hub". Give `register_app()` watch names that match the titles ("Display test", "QR code"). Saved corners and app order find apps by name hash, so add the old names to `app_renames[]`.
-4. **Messages:** `create_msgbox()` pills are 64 px with white text on the accent; action pills are 82 px with dark text. Use the same pill.
-5. **Apps not reviewed yet:** BLE HID, Music, Net Radio, Compass, Walkie, GNSS, Recorder, LoRa Hub with a module, and NFC Card (a black screen in the simulator). None run in the simulator, so review them on the watch against the guidelines' checklist.
-6. **Power and motion** (guidelines 9.1, 9.2, 10.1):
-   - **Screen off inside apps:** a timeout that apps which must keep running opt out of (see "Later").
-   - **Lock clock:** drop its two endless glow animations.
-   - **Page slides:** make them follow the finger.
-7. **Bigger features, in order of value:**
+1. **Get the firmware building, then check everything on the wrist.** `pio run -e twatch_ultra` in `LilyGoLib-PlatformIO` gets past SensorLib (`^0.5.1`) and Button2 (2.7.0), and the factory app and LVGL compile. It stops at `demo_ce.h: No such file or directory` in `src/nfc/LilyGoNfcService.cpp`. That header is in `lewisxhe/ST25R3916-NFC-RFAL` v1.0.1, the library `docs/third_party.md` lists; it combines the `ST25R3916-fork` and `NFC-RFAL-fork` the project pulls in now. Swap those two `lib_deps` for it. Then flash and go through the hardware checks: the phase 4–8c follow-ups and the crash-recovery test.
+2. **Bigger features, in order of value:**
    - **Wi-Fi from the phone:** set up Wi-Fi over BLE, so there's no password typing.
    - **Quick settings:** swipe down on the face for brightness, Wi-Fi and BLE.
    - **Always-on clock:** a dim clock that stays on.
@@ -363,6 +354,54 @@ Checked in the simulator with temporary hooks (since removed): the message after
 - Force each case: an `LV_ASSERT_NULL(NULL)`, an endless loop in an app, and a NULL pointer write. Each should come back on the face with the app's name within about 20 s (a few seconds for the faults).
 - Leave the watch asleep for a few minutes: it must not restart on waking.
 - A normal power on shows no message.
+
+### What phase 8c changed (2026-11-05)
+
+Items 2–6 of the previous next-steps list.
+
+- **Arrange apps:** the last row of the app list. Tapping it shows a drag handle (≡) on every app row and turns the row into "Done". Dragging a handle moves its row straight away, with no long press, and dragging elsewhere on the row scrolls the list. The long press stays as a shortcut, so it is no longer the only way to reorder (2.4). The mode ends when the list closes.
+- **Corner picker order:** it lists apps in the app list's order (`watch_app_list_order()` in `ui_app_list.cpp`, which the list uses too).
+- **App names = page titles** on the watch (`watch_app_names[]` in `ui_main.cpp`):
+  - BLE Scan → BLE Scanner, I2C Scan → I2C Scanner, SD Info → SD Card, IMU/Accel → Sensor
+  - File Manager → Files (its title too), QRCode → QR Code (its title too)
+  - DisplayTest → Display Test, LoRa → LoRa Hub, IR Record/Play → IR Recorder/Player, Walkie → Walkie Talkie
+
+  The old names are in `app_renames[]`, so saved corners and the saved order still find them. `FACTORY_SIM_APP` takes the new names.
+- **Messages:** `create_msgbox()` buttons are 82 px pills with dark text and the body font, like action pills. The plain last button is 64 px text.
+- **Text floor:** 20 px Montserrat draws at 22 px too.
+- **Screen off inside apps:** after the display timeout an open app keeps running with the backlight off. There's no light sleep, so music, recording, scans and timers carry on. The next touch or button lights it again in the same app, and that touch presses nothing. Apps that call `set_low_power_mode_flag(false)` stay lit. The simulator shows a black overlay; click it.
+- **Lock clock:** no breathing glows on the watch.
+- **Pages follow the finger** (10.1, `ui_navigation.cpp`): a sideways drag moves the page with the finger instead of showing the bubble. Letting go past the threshold slides it out and goes back; short of it, it slides back. While the page follows, the long press is suspended and the 1 s swipe limit doesn't apply, so a slow or paused swipe still works and doesn't lift an app list row. Pushed pages show the page below. An app's top page shows black behind it, because the list or face is on another tile.
+- **Apps outside the simulator**, from the audit:
+  - **NFC Card:** one scrolling list instead of two columns. A headline state ("Waiting for phone"), "Share link / text / Wi-Fi" pills, or one "Stop" while sharing, and a plain card-type picker. The simulator shows an "NFC Card" page saying it needs the watch, instead of a black screen.
+  - **Player:** 64/82 px round controls, track rows as menu rows with a speaker icon on the current one, title in the body font, a volume level row, and "No music on SD".
+  - **Net Radio:** streams first, the Config path row gone, a volume level row, and "Connect to Wi-Fi first". `hw_set_volume()` scales samples in software, so volume works on the Ultra's amplifier.
+  - **Walkie Talkie:** a 160 px talk button with "Hold to talk", a "Peers (N)" row that opens a pushed page, no Back button, and a Start pill. Losing the press (it turned into a scroll) also stops talking.
+  - **Recorder:**
+    - Record/Stop and Play are stacked pills; Stop is fully opaque while recording.
+    - "00:03 / 00:05" in 48 px.
+    - The microphone opens only while recording, so there's no idle level animation. The level card shows only while recording.
+    - Play says "Playing" while playing; playback can't be stopped.
+  - **GNSS:**
+    - A headline first ("No fix · 4 satellites", or the position).
+    - Position rows show only once they have a value, with separate Date and Time rows.
+    - Per-system satellite counts ("GPS 8 (3 used) · Galileo 5") replace the sideways colour-only chart. "Time pulse Yes/No" replaces the blinking LED.
+    - Model, First fix, Data received, NMEA to serial and Beep on fix are on a "Details" page.
+    - The NMEA screen has an 82 px "Stop sending" pill.
+  - **LoRa Hub:**
+    - Profiles are 88 px menu rows, the active one marked "Active".
+    - "Edit profile" in the session card and "Add profile" at the end of the list, instead of a nav-bar button, a floating "+" and long press only.
+    - Plain labels: Frequency, Signal, Spreading, Coding rate, Network ID, Power.
+    - Dark text on sent bubbles. The chat flows in the page.
+    - LoRa CW opens a page saying "Attach an antenna first", with a hold-to-start pill.
+    - The editor saves with one full-width pill; a swipe right discards. "Delete profile" needs a hold.
+
+### Phase 8c follow-ups
+
+- **Check on hardware:** every app above (none runs in the simulator, though all compile for the Ultra), and the screen going off in an app while music plays and while a scan runs.
+- **LoRa Hub editor:** a swipe right now discards unsaved edits without asking. Check that this is what people expect, or save on the way out.
+- **Walkie Talkie:** the talk page is about as tall as the screen, so it may scroll a few pixels.
+- **Swiping back from an app's top page:** black shows behind it while it moves; the list or face is on another tile. Showing it would mean drawing the home tile under the app tile during the drag.
 
 ### Phase 8 follow-ups
 

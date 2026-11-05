@@ -349,6 +349,7 @@ static void set_status(const char *text, lv_color_t color)
     lv_obj_set_style_text_color(status_label, color, 0);
 }
 
+#if !FACTORY_WATCH_UI
 static void format_profile_summary(const lora_profile_entry_t &profile, char *out, size_t out_len)
 {
     if (!out || out_len == 0) return;
@@ -370,6 +371,7 @@ static void format_params_summary(const radio_params_t &params, char *out, size_
              (unsigned)params.cr,
              (unsigned)params.power);
 }
+#endif
 
 static void format_interval_ms(uint32_t interval_ms, char *out, size_t out_len)
 {
@@ -661,8 +663,12 @@ static void select_dropdown_by_float(lv_obj_t *dd, float value, float (*getter)(
 
 static void set_interval_custom_visible(bool visible)
 {
+#if FACTORY_WATCH_UI
+    ui_card_row_set_hidden(edit_interval_custom_row, !visible);
+#else
     set_hidden(edit_interval_custom_row, !visible);
     set_hidden(edit_interval_custom_divider, !visible);
+#endif
     if (!visible && edit_interval_ta) {
         hide_keyboard();
     }
@@ -726,8 +732,12 @@ static void format_sync_word_text(uint8_t value, char *out, size_t out_len)
 
 static void set_sync_custom_visible(bool visible)
 {
+#if FACTORY_WATCH_UI
+    ui_card_row_set_hidden(edit_sync_custom_row, !visible);
+#else
     set_hidden(edit_sync_custom_row, !visible);
     set_hidden(edit_sync_custom_divider, !visible);
+#endif
     if (!visible && edit_sync_ta) {
         hide_keyboard();
     }
@@ -783,9 +793,22 @@ static void update_chat_labels(void)
 {
     if (rf_summary_label) {
         char buf[96];
+#if FACTORY_WATCH_UI
+        /* One value that fits the row; the rest is on the Edit profile page. */
+        snprintf(buf, sizeof(buf), "%.1f MHz", lora_params.freq);
+#else
         format_params_summary(lora_params, buf, sizeof(buf));
+#endif
         lv_label_set_text(rf_summary_label, buf);
     }
+#if FACTORY_WATCH_UI
+    /* Counts only: the mode and its settings are in State, so the value doesn't wrap. */
+    if (traffic_label) {
+        lv_label_set_text_fmt(traffic_label, "Sent %lu · Got %lu",
+                              (unsigned long)tx_counter,
+                              (unsigned long)rx_counter);
+    }
+#else
     if (traffic_label) {
         if (session_mode == LORA_SESSION_CW) {
             lv_label_set_text_fmt(traffic_label, "TX %lu  RX %lu  CW active",
@@ -805,6 +828,7 @@ static void update_chat_labels(void)
                                   (unsigned long)rx_counter);
         }
     }
+#endif
 }
 
 static void set_hidden(lv_obj_t *obj, bool hidden)
@@ -862,7 +886,12 @@ static void update_session_control_visibility(void)
     bool chat_mode = session_mode == LORA_SESSION_CHAT;
     bool auto_tx_mode = session_mode == LORA_SESSION_AUTO_TX;
 
+#if FACTORY_WATCH_UI
+    /* With its divider, so the card doesn't show a double line. */
+    ui_card_row_set_hidden(payload_mode_row, !auto_tx_mode);
+#else
     set_hidden(payload_mode_row, !auto_tx_mode);
+#endif
 
     if (!chat_mode) {
         hide_keyboard();
@@ -943,6 +972,7 @@ static void add_to_default_group(lv_obj_t *obj)
     }
 }
 
+#if !FACTORY_WATCH_UI
 static void focus_scroll_cb(lv_event_t *e)
 {
     lv_obj_t *obj = lv_event_get_target_obj(e);
@@ -954,6 +984,7 @@ static void focus_scroll_cb(lv_event_t *e)
         lv_obj_scroll_to_view_recursive(obj, LV_ANIM_ON);
     }
 }
+#endif
 
 static void profile_title_focus_visual_cb(lv_event_t *e)
 {
@@ -1031,6 +1062,9 @@ static void chat_area_event_cb(lv_event_t *e)
     }
 }
 
+#if !FACTORY_WATCH_UI
+/* The watch has an "Edit profile" row in the session card instead (no 28 px button
+ * in the nav bar). */
 static void create_nav_edit_button(void)
 {
     delete_nav_edit_button();
@@ -1059,6 +1093,7 @@ static void create_nav_edit_button(void)
     lv_obj_set_style_text_color(label, UI_COLOR_ACCENT, 0);
     lv_obj_center(label);
 }
+#endif
 
 static void reset_page_refs(void)
 {
@@ -1202,7 +1237,12 @@ static void add_message(const char *text, bool sent, const char *meta)
     lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(body, LV_SIZE_CONTENT);
     lv_obj_set_style_max_width(body, lv_pct(100), 0);
+#if FACTORY_WATCH_UI
+    /* Dark text on the accent fill reads on every preset (Mint, Lime, Amber, Mono). */
+    lv_obj_set_style_text_color(body, sent ? lv_color_black() : lv_color_white(), 0);
+#else
     lv_obj_set_style_text_color(body, lv_color_white(), 0);
+#endif
     lv_obj_set_style_text_font(body, font_body(), 0);
 
     lv_obj_t *time = lv_label_create(bubble);
@@ -1211,11 +1251,24 @@ static void add_message(const char *text, bool sent, const char *meta)
     } else {
         lv_label_set_text(time, time_text());
     }
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_color(time, sent ? lv_color_black() : UI_COLOR_TEXT_SECONDARY, 0);
+#else
     lv_obj_set_style_text_color(time, sent ? lv_color_hex(0xE8FFF8) : UI_COLOR_TEXT_SECONDARY, 0);
+#endif
     lv_obj_set_style_text_font(time, font_meta(), 0);
 
     msg_count++;
+#if FACTORY_WATCH_UI
+    /* Messages flow in the page; bring the newest one into view. Not while the
+     * chat is still being built, so the session card shows first. */
+    if (input_bar && page_container) {
+        lv_obj_update_layout(page_container);
+        lv_obj_scroll_to_view_recursive(row, LV_ANIM_ON);
+    }
+#else
     lv_obj_scroll_to_y(msg_page, lv_obj_get_height(msg_cont), LV_ANIM_ON);
+#endif
 }
 
 static void finish_async_tx(int16_t state)
@@ -1491,6 +1544,11 @@ static void rx_timer_cb(lv_timer_t *t)
         recv_buf[len] = '\0';
         rx_counter++;
         char meta[48];
+#if FACTORY_WATCH_UI
+        snprintf(meta, sizeof(meta), "Signal %d dBm", rx_params.rssi);
+        add_message(recv_buf, false, meta);
+        update_chat_labels();
+#else
         snprintf(meta, sizeof(meta), "RSSI %d  SNR %d", rx_params.rssi, rx_params.snr);
         add_message(recv_buf, false, meta);
         if (traffic_label) {
@@ -1499,6 +1557,7 @@ static void rx_timer_cb(lv_timer_t *t)
                                   (unsigned long)rx_counter,
                                   meta);
         }
+#endif
         hw_feedback();
         hw_set_radio_listening();
     }
@@ -1557,6 +1616,43 @@ static void send_btn_cb(lv_event_t *e)
     send_current_input();
 }
 
+#if FACTORY_WATCH_UI
+/* ── Watch: continuous wave needs an antenna ──
+ * Picking "LoRa CW" pushes a short page; the pill starts it only after a hold,
+ * and swiping right leaves the mode as it was. */
+static void cw_start_cb(lv_event_t *e)
+{
+    lv_obj_t *content = (lv_obj_t *)lv_event_get_user_data(e);
+    if (factory_mode_dd) {
+        lv_dropdown_set_selected(factory_mode_dd, session_mode_to_dropdown(LORA_SESSION_CW));
+    }
+#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+    schedule_factory_mode_apply(LORA_SESSION_CW);
+#else
+    apply_factory_mode(LORA_SESSION_CW);
+#endif
+    ui_pop_page(content);
+}
+
+static void open_cw_page(lv_obj_t *from)
+{
+    lv_obj_t *content = ui_push_page(from, "LoRa CW");
+    lv_obj_t *card = ui_create_card(content, NULL);
+    lv_obj_t *label = lv_label_create(card);
+    lv_label_set_text(label, "Attach an antenna first");
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(label, LV_PCT(100));
+    lv_obj_set_style_pad_ver(label, 12, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(label, UI_COLOR_TEXT_PRIMARY, 0);
+
+    lv_obj_t *row = ui_create_card_action(content, LV_SYMBOL_PLAY, "Start CW", NULL);
+    lv_obj_t *btn = lv_obj_get_child(row, -1);
+    lv_obj_add_event_cb(btn, cw_start_cb, LV_EVENT_CLICKED, content);
+    ui_require_hold_hint(btn, "Hold to start");
+}
+#endif
+
 static void factory_mode_cb(lv_event_t *e)
 {
     lv_obj_t *dd = lv_event_get_target_obj(e);
@@ -1579,6 +1675,13 @@ static void factory_mode_cb(lv_event_t *e)
         apply_factory_mode(mode);
         return;
     }
+
+#if FACTORY_WATCH_UI
+    /* The picker shows the current mode until the hold on the CW page starts it. */
+    if (dd) lv_dropdown_set_selected(dd, session_mode_to_dropdown(session_mode));
+    if (dd) open_cw_page(dd);
+    return;
+#endif
 
     if (cw_warning_msgbox) return;
     static const char *btns[] = {"Enable CW", "Cancel", ""};
@@ -1683,6 +1786,7 @@ static void profile_card_event_cb(lv_event_t *e)
     hw_feedback();
 }
 
+#if !FACTORY_WATCH_UI
 static void bind_profile_click(lv_obj_t *obj, uint8_t index)
 {
     if (!obj) return;
@@ -1691,6 +1795,7 @@ static void bind_profile_click(lv_obj_t *obj, uint8_t index)
     lv_obj_add_event_cb(obj, profile_card_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)index);
     lv_obj_add_event_cb(obj, profile_card_event_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)index);
 }
+#endif
 
 static void add_profile_cb(lv_event_t *e)
 {
@@ -1723,6 +1828,9 @@ static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colo
     return btn;
 }
 
+#if !FACTORY_WATCH_UI
+/* The watch has an "Add profile" row at the end of the list instead of a floating
+ * button over it. */
 static void create_add_button(void)
 {
     delete_add_button();
@@ -1748,6 +1856,7 @@ static void create_add_button(void)
     lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
     lv_obj_center(label);
 }
+#endif
 
 static void render_profile_list(void)
 {
@@ -1784,6 +1893,24 @@ static void render_profile_list(void)
     lv_obj_add_event_cb(title, profile_title_focus_visual_cb, LV_EVENT_ALL, NULL);
     add_to_default_group(title);
 
+#if FACTORY_WATCH_UI
+    /* One 88 px row a profile; "Active" in words, not only a coloured border.
+     * A tap opens it; Edit profile is on its page, and a long press here is a
+     * shortcut to the same editor. */
+    for (uint8_t i = 0; i < profile_count; ++i) {
+        if (!profile_visible(profiles[i])) continue;
+        lv_obj_t *row = ui_create_menu_row(page_container, LV_SYMBOL_WIFI, profiles[i].name,
+                                           profile_card_event_cb, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, profile_card_event_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
+        if (i == active_profile_index) {
+            lv_obj_t *active = lv_label_create(row);
+            lv_label_set_text(active, "Active");
+            lv_obj_set_style_text_font(active, UI_FONT_SMALL, 0);
+            lv_obj_set_style_text_color(active, UI_COLOR_ACCENT, 0);
+        }
+    }
+    ui_create_menu_row(page_container, LV_SYMBOL_PLUS, "Add profile", add_profile_cb, NULL);
+#else
     lv_obj_t *hint = lv_label_create(page_container);
     lv_label_set_text(hint, "Tap to open. Long press to edit.");
     lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
@@ -1846,10 +1973,28 @@ static void render_profile_list(void)
     }
 
     create_add_button();
+#endif
 }
 
 static void build_chat_area(lv_obj_t *parent)
 {
+#if FACTORY_WATCH_UI
+    /* Messages flow in the page, which scrolls; no box scrolling inside it. */
+    msg_page = lv_obj_create(parent);
+    lv_obj_remove_style_all(msg_page);
+    lv_obj_set_size(msg_page, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_remove_flag(msg_page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(msg_page, LV_OBJ_FLAG_CLICKABLE);
+
+    msg_cont = lv_obj_create(msg_page);
+    lv_obj_remove_style_all(msg_cont);
+    lv_obj_set_size(msg_cont, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_row(msg_cont, 3, 0);
+    lv_obj_set_flex_flow(msg_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(msg_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(msg_cont, LV_OBJ_FLAG_CLICKABLE);
+    return;
+#endif
     msg_page = lv_obj_create(parent);
     lv_obj_set_size(msg_page, LV_PCT(100), is_screen_small() ? 152 : 210);
     lv_obj_set_style_bg_color(msg_page, UI_COLOR_BG, 0);
@@ -2010,7 +2155,8 @@ static void render_chat(uint8_t index)
     lv_obj_t *row = ui_create_card_info(card, LV_SYMBOL_WIFI, "State", "Starting");
     status_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
     if (status_label) {
-#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+        /* On the watch the title sizes to "State" and the value takes the rest. */
+#if defined(ARDUINO_T_WATCH_S3_ULTRA) && !FACTORY_WATCH_UI
         lv_obj_t *state_title = lv_obj_get_child(row, 1);
         if (state_title) {
             lv_obj_set_width(state_title, LORA_HUB_ULTRA_STATE_TITLE_WIDTH);
@@ -2020,10 +2166,12 @@ static void render_chat(uint8_t index)
 #endif
         lv_label_set_long_mode(status_label, LV_LABEL_LONG_DOT);
     }
-    row = ui_create_card_info(card, LV_SYMBOL_SETTINGS, "RF", "--");
+    row = ui_create_card_info(card, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Frequency" : "RF", "--");
     rf_summary_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
     if (rf_summary_label) {
-#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+#if FACTORY_WATCH_UI
+        /* Fills the rest of the row (flex grow from ui_create_card_info()). */
+#elif defined(ARDUINO_T_WATCH_S3_ULTRA)
         lv_obj_set_width(rf_summary_label, 300);
 #else
         lv_obj_set_width(rf_summary_label, 190);
@@ -2036,7 +2184,12 @@ static void render_chat(uint8_t index)
 #if defined(HAS_USB_RF_SWITCH)
     create_ultra_rf_switch_control(card);
 #endif
+#if FACTORY_WATCH_UI
+    /* A whole row instead of the small nav bar button. */
+    ui_create_menu_row(card, LV_SYMBOL_EDIT, "Edit profile", edit_current_cb, NULL);
+#else
     create_nav_edit_button();
+#endif
 
     build_chat_area(page_container);
     add_message(profiles[index].builtin ? "Factory test ready." : "Listening with this profile.",
@@ -2215,6 +2368,7 @@ static void cancel_editor_cb(lv_event_t *e)
     hw_feedback();
 }
 
+#if !FACTORY_WATCH_UI
 static void save_prompt_cb(lv_event_t *e)
 {
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_current_target(e);
@@ -2249,6 +2403,7 @@ static void show_save_prompt(void)
                                    "Save changes before leaving?", btns,
                                    save_prompt_cb, NULL);
 }
+#endif
 
 static bool delete_profile_index(uint8_t index)
 {
@@ -2266,6 +2421,25 @@ static bool delete_profile_index(uint8_t index)
     return true;
 }
 
+#if FACTORY_WATCH_UI
+/* Runs after the hold; deferred so the pill isn't deleted inside its own event. */
+static void delete_profile_async_cb(void *)
+{
+    if (current_screen != LORA_SCREEN_EDIT) return;
+    if (editing_source_index >= 0 && delete_profile_index((uint8_t)editing_source_index)) {
+        ui_toast("Profile deleted");
+        render_profile_list();
+    } else {
+        ui_msg_pop_up("LoRa", "Factory profiles cannot be deleted.");
+    }
+}
+
+static void delete_hold_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    lv_async_call(delete_profile_async_cb, NULL);
+}
+#else
 static void delete_prompt_cb(lv_event_t *e)
 {
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_current_target(e);
@@ -2301,6 +2475,7 @@ static void delete_editor_cb(lv_event_t *e)
                                    delete_prompt_cb, NULL);
     hw_feedback();
 }
+#endif
 
 static void render_profile_editor(int16_t source_index, bool return_to_chat)
 {
@@ -2327,6 +2502,13 @@ static void render_profile_editor(int16_t source_index, bool return_to_chat)
         editing_profile.builtin = false;
     }
 
+#if FACTORY_WATCH_UI
+    /* No Cancel/Save pair up here: Save is a pill at the bottom, swipe right cancels. */
+    lv_obj_t *title = lv_label_create(page_container);
+    lv_label_set_text(title, source_index < 0 ? "New profile" : "Edit profile");
+    lv_obj_set_style_text_color(title, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(title, UI_FONT_BODY, 0);
+#else
     lv_obj_t *top = lv_obj_create(page_container);
     lv_obj_set_size(top, LV_PCT(100), 40);
     lv_obj_set_style_bg_opa(top, LV_OPA_TRANSP, 0);
@@ -2351,6 +2533,7 @@ static void render_profile_editor(int16_t source_index, bool return_to_chat)
     lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     make_button(actions, "Cancel", lv_color_hex(0x333333), 72, cancel_editor_cb);
     make_button(actions, "Save", UI_COLOR_ACCENT, 62, save_editor_cb);
+#endif
 
     lv_obj_t *card = ui_create_card(page_container, "Profile");
     edit_name_ta = create_textarea_item(card, LV_SYMBOL_EDIT, "Name", "Profile name", 23, NULL);
@@ -2362,20 +2545,20 @@ static void render_profile_editor(int16_t source_index, bool return_to_chat)
     populate_edit_frequencies();
     edit_bw_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, "Bandwidth",
                                       radio_get_bandwidth_list(is_high_freq(editing_profile.freq)), edit_param_event_cb, "b");
-    edit_power_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, "TX Power",
+    edit_power_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Power" : "TX Power",
                                          radio_get_tx_power_list(is_high_freq(editing_profile.freq)), edit_param_event_cb, "p");
     edit_interval_dd = create_dropdown_item(card, LV_SYMBOL_LOOP, "Interval",
                                             LORA_HUB_INTERVAL_LIST, edit_param_event_cb, "i");
     edit_interval_ta = create_textarea_item(card, LV_SYMBOL_EDIT, "Seconds", "1",
                                             11, "0123456789.",
                                             &edit_interval_custom_row, &edit_interval_custom_divider);
-    edit_sf_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, "SF", LORA_HUB_SF_LIST,
+    edit_sf_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Spreading" : "SF", LORA_HUB_SF_LIST,
                                       edit_param_event_cb, "s");
-    edit_cr_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, "CR", LORA_HUB_CR_LIST,
+    edit_cr_dd = create_dropdown_item(card, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Coding rate" : "CR", LORA_HUB_CR_LIST,
                                       edit_param_event_cb, "c");
-    edit_sync_dd = create_dropdown_item(card, LV_SYMBOL_EDIT, "Sync Word",
+    edit_sync_dd = create_dropdown_item(card, LV_SYMBOL_EDIT, FACTORY_WATCH_UI ? "Network ID" : "Sync Word",
                                         LORA_HUB_SYNC_WORD_LIST, edit_param_event_cb, "w");
-    edit_sync_ta = create_textarea_item(card, LV_SYMBOL_EDIT, "Custom Sync", "0xCD",
+    edit_sync_ta = create_textarea_item(card, LV_SYMBOL_EDIT, FACTORY_WATCH_UI ? "Custom ID" : "Custom Sync", "0xCD",
                                         4, "0123456789xXaAbBcCdDeEfF",
                                         &edit_sync_custom_row, &edit_sync_custom_divider);
 
@@ -2397,6 +2580,22 @@ static void render_profile_editor(int16_t source_index, bool return_to_chat)
     lv_textarea_set_text(edit_sync_ta, sync_buf);
     set_sync_custom_visible(sync_dropdown_from_word(editing_profile.sync_word) == LORA_SYNC_CUSTOM);
 
+#if FACTORY_WATCH_UI
+    if (source_index >= 0 && source_index < (int16_t)profile_count && profiles[source_index].builtin) {
+        lv_obj_t *hint = lv_label_create(page_container);
+        lv_label_set_text(hint, "Saved as a new profile");
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(hint, LV_PCT(100));
+        lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
+    }
+    ui_create_card_action(page_container, LV_SYMBOL_SAVE, "Save", save_editor_cb);
+    if (source_index >= LORA_HUB_FACTORY_COUNT && source_index < (int16_t)profile_count) {
+        lv_obj_t *del = ui_create_card_action(page_container, LV_SYMBOL_TRASH, "Delete profile",
+                                              delete_hold_cb);
+        ui_require_hold_hint(lv_obj_get_child(del, -1), "Hold to delete");
+    }
+#else
     if (source_index >= LORA_HUB_FACTORY_COUNT && source_index < (int16_t)profile_count) {
         card = ui_create_card(page_container, "Danger");
         ui_create_card_button(card, LV_SYMBOL_TRASH, NULL, "Delete Profile", delete_editor_cb);
@@ -2408,6 +2607,7 @@ static void render_profile_editor(int16_t source_index, bool return_to_chat)
     lv_obj_set_width(hint, LV_PCT(100));
     lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
     lv_obj_set_style_text_font(hint, font_meta(), 0);
+#endif
 
     edit_dirty = false;
 }
@@ -2462,11 +2662,16 @@ static void cleanup(void)
 static void back_event_handler(lv_event_t *e)
 {
     if (current_screen == LORA_SCREEN_EDIT) {
+#if FACTORY_WATCH_UI
+        /* Swipe right cancels; the Save pill saves. */
+        cancel_editor_cb(e);
+#else
         if (edit_dirty) {
             show_save_prompt();
         } else {
             cancel_editor_cb(e);
         }
+#endif
         return;
     }
 
@@ -2589,7 +2794,8 @@ void ui_lora_hub_enter(lv_obj_t *parent)
     register_profile_filter_shortcut();
 #endif
 
-#ifdef USING_TOUCHPAD
+#if defined(USING_TOUCHPAD) && !FACTORY_WATCH_UI
+    /* The watch types on ui_open_text_page() instead; keyboard stays NULL there. */
     keyboard = lv_keyboard_create(lv_layer_top());
     lv_obj_set_size(keyboard, LV_PCT(100), LV_PCT(45));
     lv_obj_align(keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);

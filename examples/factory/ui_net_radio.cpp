@@ -14,7 +14,9 @@
 #define NETWORK_AUDIO_UI_MAX_STREAMS 24
 #define NETWORK_AUDIO_CONFIG_PATH_TEXT "/radio_streams.txt"
 
-#ifdef USING_AUDIO_CODEC
+/* The watch has no codec, but its amplifier output scales samples in software, so
+ * hw_set_volume() works there too. */
+#if defined(USING_AUDIO_CODEC) || FACTORY_WATCH_UI
 #define HAS_VOLUME_SLIDER
 #endif
 
@@ -88,9 +90,15 @@ static void show_wifi_offline_msgbox()
     }
 
     static const char *btns[] = {"OK", ""};
+#if FACTORY_WATCH_UI
+    wifi_msgbox = create_msgbox(lv_scr_act(), "Wi-Fi offline",
+                                "Connect to Wi-Fi first",
+                                btns, wifi_msgbox_event, NULL);
+#else
     wifi_msgbox = create_msgbox(lv_scr_act(), "WiFi Offline",
                                 "Network radio requires WiFi.\nPlease connect to WiFi first.",
                                 btns, wifi_msgbox_event, NULL);
+#endif
 }
 
 static void update_status_timer(lv_timer_t *t)
@@ -183,8 +191,7 @@ static void create_volume_row(lv_obj_t *card)
     /* No slider in the page: the row opens the full-screen level page. */
     ui_create_card_level(card, LV_SYMBOL_VOLUME_MAX, "Volume", 0, 100, hw_get_volume(),
                          volume_slider_event);
-    return;
-#endif
+#else
     lv_obj_t *row = lv_obj_create(card);
     lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -231,6 +238,7 @@ static void create_volume_row(lv_obj_t *card)
     lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(div, 0, 0);
     lv_obj_set_style_radius(div, 0, 0);
+#endif
 }
 
 static void create_stream_row(lv_obj_t *card, NetworkAudioStreamParams_t *stream)
@@ -289,6 +297,32 @@ void ui_net_radio_enter(lv_obj_t *parent)
 
     page_container = ui_create_app_page(parent, "Net Radio", back_event_handler);
 
+#if FACTORY_WATCH_UI
+    /* Stations first, then what's playing; the config file path stays off the
+     * watch (it's only named when there's nothing to play). */
+    lv_obj_t *card = ui_create_card(page_container, "Streams");
+    uint32_t stream_count = stream_list.size();
+    if (stream_count > NETWORK_AUDIO_UI_MAX_STREAMS) {
+        stream_count = NETWORK_AUDIO_UI_MAX_STREAMS;
+    }
+    if (stream_count == 0) {
+        lv_obj_t *empty = lv_label_create(card);
+        lv_label_set_text(empty, "Add stations in radio_streams.txt");
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(empty, LV_PCT(100));
+        lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(empty, UI_FONT_BODY, 0);
+    }
+    for (uint32_t i = 0; i < stream_count; ++i) {
+        create_stream_row(card, &stream_list[i]);
+    }
+
+    card = ui_create_card(page_container, "Status");
+    lv_obj_t *row = ui_create_card_info(card, LV_SYMBOL_WIFI, "WiFi", hw_get_wifi_connected() ? "Connected" : "Offline");
+    wifi_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+    row = ui_create_card_info(card, LV_SYMBOL_AUDIO, "State", "Ready");
+    status_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+#else
     lv_obj_t *card = ui_create_card(page_container, "Status");
     lv_obj_t *row = ui_create_card_info(card, LV_SYMBOL_WIFI, "WiFi", hw_get_wifi_connected() ? "Connected" : "Offline");
     wifi_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
@@ -307,9 +341,15 @@ void ui_net_radio_enter(lv_obj_t *parent)
     for (uint32_t i = 0; i < stream_count; ++i) {
         create_stream_row(card, &stream_list[i]);
     }
+#endif
 
 #ifdef HAS_VOLUME_SLIDER
+#if FACTORY_WATCH_UI
+    /* The row already says "Volume". */
+    card = ui_create_card(page_container, NULL);
+#else
     card = ui_create_card(page_container, "Volume");
+#endif
     create_volume_row(card);
 #endif
 
