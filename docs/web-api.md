@@ -25,9 +25,9 @@ The PIN (6 digits) is shown on the watch while its Web page is open and is never
 |---|---|---|
 | `GET /api/caps` | public | → `{api:1, board:"twatch-ultra", fw:"<version>", caps:[...]}` |
 | `GET /api/device` | public | → see below. Without pairing only `board`, `fw`, `battery`, `sd.present` |
-| `POST /api/time` | paired | `{epoch, tz}` (`tz` = IANA name or POSIX string) → `{ok}`. The desktop sends the browser's clock when the watch's is not synced |
-| `GET /api/settings` | paired | → `{brightness, screen_timeout_s, lang, tz, web_idle_off_s}` |
-| `PATCH /api/settings` | paired | any subset of those fields → the full settings. Publishes `settings.changed` |
+| `POST /api/time` | paired | `{epoch, offset_min?, tz?}` → `{ok}`. `epoch` is UTC seconds; `offset_min` the UTC offset the watch shows (it has no DST rules, so the desktop sends the current one); `tz` an IANA name kept for display. The desktop sends the browser's clock when the watch's is not synced |
+| `GET /api/settings` | paired | → `{brightness, screen_timeout_s, web_idle_off_s}`. `brightness` 0–100 (mapped to the display's levels, so a value may come back ±1), `screen_timeout_s` 0–255, `web_idle_off_s` 0–86400 |
+| `PATCH /api/settings` | paired | any subset of those fields → the full settings. Out of range: `400`. Publishes `settings.changed` |
 | `POST /api/system/reboot` | paired | → `{ok}` |
 
 `GET /api/device`:
@@ -38,7 +38,7 @@ The PIN (6 digits) is shown on the watch while its Web page is open and is never
   "sd": { "present": true, "mounted": true },
   "flash": { "total": 8257536, "free": 102400 },
   "net": { "mode": "sta", "ssid": "home", "ip": "192.168.1.50", "rssi": -58, "host": "watch.local" },
-  "time": { "epoch": 1762369200, "tz": "Europe/Warsaw", "synced": true },
+  "time": { "epoch": 1762369200, "offset_min": 60, "synced": true, "tz": "Europe/Warsaw" },
   "mem": { "heap_free": 182000, "psram_free": 6100000 } }
 ```
 

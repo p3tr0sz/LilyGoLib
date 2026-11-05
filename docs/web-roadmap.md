@@ -75,7 +75,7 @@ The SD card is a first-class part of the system, not an optional extra:
 | Phase | What | Estimate | State |
 |---|---|---|---|
 | P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done |
-| P1 | Firmware API core: server, Wi-Fi/AP + mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the embedded rescue desktop | 2 weeks | |
+| P1 | Firmware API core: server, Wi-Fi/AP + mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the embedded rescue desktop | 2 weeks | In progress: core, simulator transport and watch transport written; `web_api_test.mjs` passes on the simulator (50/50, flash 47/47). To do: run on the watch (its build is blocked by a missing `demo_ce.h` in the NFC code, unrelated), access-point fallback, `not_fat32` detection |
 | P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | |
 | P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop) | 1 week | |
 | P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
@@ -84,6 +84,28 @@ The SD card is a first-class part of the system, not an optional extra:
 | P7 | `web_api_test.mjs` on every firmware change; desktop load probe | ongoing | |
 
 The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, change settings and drive the watch screen from the browser.
+
+## Testing
+
+One test, `examples/factory/tools/web_api_test.mjs`, runs against three targets:
+
+| Target | What runs | How |
+|---|---|---|
+| PC, no simulator | `web_mock_device.mjs` | `node web_api_test.mjs --url http://localhost:5620 --dev-pin` |
+| LVGL simulator (`emulator_watch_ultra`) | the real web code, built for the desktop | `pio run -e emulator_watch_ultra -t execute`, then `node web_api_test.mjs --url http://localhost:8080 --dev-pin` |
+| Watch | the same code on `esp_http_server` | `node web_api_test.mjs --url http://<watch-ip> --pin <pin>` |
+
+How the simulator runs the real web code:
+
+- **One core, two transports.**
+  - Shared files (`web_core.cpp`, `web_fs.cpp`, `web_json.cpp`) hold the routing, pairing, files, SD and events. They use no ESP calls and only POSIX file calls, which work on the watch's `/sd` and `/ffat` mounts as well as on the PC.
+  - They talk to a thin transport (`web_internal.h`): read the request, send status, headers and body chunks, send a WebSocket message.
+  - The watch uses `web_transport_esp.cpp` (`esp_http_server`).
+  - The simulator uses `web_transport_posix.cpp`, a small HTTP/1.1 + WebSocket server on `localhost:8080`, written here with no extra library and limited to the same number of connections as the watch.
+- **Storage on the PC.** `/sd` is a folder (`sim_sd/` in the working directory, or `TWATCH_SIM_SD`) and `/flash` another (`sim_flash/`, or `TWATCH_SIM_FLASH`). F3 in the simulator window inserts or removes the card (F2 is already the power button); the web server mounts and unmounts it and the browser gets `sd.changed`. The watch's own SD pages are not built for the simulator yet, so they don't see this card.
+- **Same threading as the watch.** The server runs in its own task (watch) or thread (simulator). Anything that touches LVGL or the hardware goes through a queue that an `lv_timer` drains in the UI loop.
+- **Test hooks only in the simulator.** `/api/_dev/pin` and `/api/_dev/sd` are compiled only without `ARDUINO`; the watch never has them. The PIN is also printed to the console.
+- **Fake hardware.** GNSS, LoRa, IR and NFC answer with fixed fake data in the simulator, as the desktop build already does for audio and network radio.
 
 ## Where the code goes
 

@@ -21,6 +21,20 @@
 #include "examples/lv_examples.h"
 
 #include "hal_interface.h"
+#if FACTORY_WEB
+#include "web_server.h"
+extern void web_sim_toggle_sd(void);
+
+/* Simulator stand-in for the SD card slot: F3 inserts or removes the card. */
+static int sdl_sd_key_watch(void *userdata, SDL_Event *event)
+{
+    LV_UNUSED(userdata);
+    if (event->type == SDL_KEYDOWN && event->key.keysym.sym == SDLK_F3 && !event->key.repeat) {
+        web_sim_toggle_sd();
+    }
+    return 1;
+}
+#endif
 
 extern void setupGui();
 extern void hw_init();
@@ -103,6 +117,10 @@ extern "C" int main(void)
     //****************** */
     hw_init();
     setupGui();
+#if FACTORY_WEB
+    SDL_AddEventWatch(sdl_sd_key_watch, NULL);
+    web_server_start();
+#endif
 
 
     //****************** */

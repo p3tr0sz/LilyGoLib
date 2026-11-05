@@ -2487,6 +2487,15 @@ void hw_set_usb_rf_switch(bool to_usb);
 #endif
 #endif
 
+/* Web desktop server: web API v1 over Wi-Fi (docs/web-roadmap.md) */
+#ifndef FACTORY_WEB
+#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+#define FACTORY_WEB                    1
+#else
+#define FACTORY_WEB                    0
+#endif
+#endif
+
 #ifndef FACTORY_HAS_TOUCHSCREEN
 #if defined(HAS_TOUCHSCREEN)
 #define FACTORY_HAS_TOUCHSCREEN        1

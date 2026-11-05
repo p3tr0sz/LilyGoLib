@@ -15,6 +15,7 @@
 #include "hal_interface.h"
 #include <WiFi.h>
 #include "event_define.h"
+#include "web_server.h"
 #if defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
 #include "screen_web_server.h"
 #endif
@@ -152,7 +153,9 @@ void setup()
     hw_init();
 
     setupGui();
-#if defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
+#if FACTORY_WEB
+    web_server_start();
+#elif defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
     screen_web_server_setup();
 #endif
 

@@ -36,8 +36,8 @@ const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
-let settings = { brightness: 60, screen_timeout_s: 15, lang: 'en', tz: 'UTC', web_idle_off_s: 600 };
-let clock = { offset_ms: 0, tz: 'UTC', synced: false };
+let settings = { brightness: 60, screen_timeout_s: 15, web_idle_off_s: 600 };
+let clock = { offset_ms: 0, tz: 'UTC', offset_min: 0, synced: false };
 let battery = { percent: 76, charging: false, mv: 3968 };
 
 // ---- helpers ----
@@ -106,7 +106,7 @@ function device(paired) {
     board: 'twatch-ultra', fw: FW, uptime_s: Math.floor((Date.now() - BOOT) / 1000), battery,
     sd: { present: sd.present, mounted: sd.mounted }, flash: flashStatus(),
     net: { mode: 'sta', ssid: 'mock-wifi', ip: '127.0.0.1', rssi: -55, host: 'watch.local' },
-    time: { epoch: nowEpoch(), tz: clock.tz, synced: clock.synced },
+    time: { epoch: nowEpoch(), offset_min: clock.offset_min, synced: clock.synced, tz: clock.tz },
     mem: { heap_free: 182000, psram_free: 6100000 },
   };
   return paired ? full : { board: full.board, fw: full.fw, battery: full.battery, sd: { present: sd.present } };
@@ -276,8 +276,10 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/time' && req.method === 'POST') {
       const b = await readJSON(req);
-      if (!b || !Number.isFinite(b.epoch)) return fail(res, 400, 'bad_request', 'epoch');
-      clock = { offset_ms: b.epoch * 1000 - Date.now(), tz: typeof b.tz === 'string' && b.tz ? b.tz : clock.tz, synced: true };
+      if (!b || !Number.isFinite(b.epoch) || b.epoch < 0) return fail(res, 400, 'bad_request', 'epoch');
+      if ('offset_min' in b && !(Number.isFinite(b.offset_min) && Math.abs(b.offset_min) <= 840)) return fail(res, 400, 'bad_request', 'offset_min');
+      clock = { offset_ms: b.epoch * 1000 - Date.now(), tz: typeof b.tz === 'string' && b.tz ? b.tz : clock.tz,
+        offset_min: 'offset_min' in b ? Math.trunc(b.offset_min) : clock.offset_min, synced: true };
       return ok(res);
     }
     if (path === '/api/settings' && req.method === 'GET') return json(res, 200, settings);
@@ -290,6 +292,8 @@ const server = createServer(async (req, res) => {
         next[k] = b[k];
       }
       if (next.brightness < 0 || next.brightness > 100) return fail(res, 400, 'bad_request', 'brightness 0-100');
+      if (next.screen_timeout_s < 0 || next.screen_timeout_s > 255) return fail(res, 400, 'bad_request', 'screen_timeout_s 0-255');
+      if (next.web_idle_off_s < 0 || next.web_idle_off_s > 86400) return fail(res, 400, 'bad_request', 'web_idle_off_s 0-86400');
       settings = next;
       publish('settings.changed', settings);
       return json(res, 200, settings);
