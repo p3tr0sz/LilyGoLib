@@ -5,7 +5,7 @@ The HTTP and WebSocket API the watch serves to its web desktop (`web-roadmap.md`
 ## Conventions
 
 - JSON in and out, UTF-8. File contents are raw bytes.
-- Errors: HTTP status + `{"error":"<code>","message":"..."}`. Codes: `bad_request` 400, `unpaired` 401, `not_found` 404, `conflict` 409, `too_large` 413, `locked` 429, `sd_missing` 503, `busy` 503 (a radio or tool is in use on the watch).
+- Errors: HTTP status + `{"error":"<code>","message":"..."}`. Codes: `bad_request` 400, `unpaired` 401, `pairing_closed` 403, `not_found` 404, `conflict` 409, `too_large` 413, `locked` 429, `sd_missing` 503, `busy` 503 (a radio or tool is in use on the watch).
 - **public** routes work before pairing; all others need the session cookie, else `401 unpaired`.
 - A route listed for a later phase answers `404 not_found` until its capability is in `/api/caps`.
 
@@ -14,17 +14,17 @@ The HTTP and WebSocket API the watch serves to its web desktop (`web-roadmap.md`
 | Route | Auth | Body → answer |
 |---|---|---|
 | `GET /api/auth` | public | → `{paired, method:"pin"}` |
-| `POST /api/auth/pair` | public | `{pin}` → `{ok:true}` + `Set-Cookie: session=<token>; Path=/; Max-Age=7776000; HttpOnly; SameSite=Strict`. Wrong PIN: `401 bad_pin`. 5 misses: `429 locked` with `retry_ms`, for 30 s |
+| `POST /api/auth/pair` | public | `{pin}` → `{ok:true}` + `Set-Cookie: session=<token>; Path=/; Max-Age=7776000; HttpOnly; SameSite=Strict`. Wrong PIN: `401 bad_pin`. 5 misses: `429 locked` with `retry_ms`, for 30 s. Pairing not open on the watch: `403 pairing_closed` |
 | `POST /api/auth/logout` | paired | `{all?:bool}` → `{ok, revoked}`. `all` ends every session, including this one |
 
-The PIN (6 digits) is shown on the watch while its Web page is open and is never sent over HTTP. Sessions survive reboots (NVS), expire after 90 days unused.
+**Pairing window.** Pairing works only while the watch shows **Settings › Web desktop**: opening that page opens pairing with a **new** 6-digit PIN, leaving it closes pairing. Whoever pairs must be holding the watch. The PIN is never sent over HTTP (the watch also logs it to its serial port). Sessions are kept on the watch's flash (`/ffat/.web/state.txt`) and expire after 90 days unused; Settings › Web desktop › Forget browsers ends them all.
 
 ## System
 
 | Route | Auth | Body → answer |
 |---|---|---|
 | `GET /api/caps` | public | → `{api:1, board:"twatch-ultra", fw:"<version>", caps:[...]}` |
-| `GET /api/device` | public | → see below. Without pairing only `board`, `fw`, `battery`, `sd.present` |
+| `GET /api/device` | public | → see below. Without pairing only `board`, `fw`, `battery`, `theme`, `sd.present` |
 | `POST /api/time` | paired | `{epoch, offset_min?, tz?}` → `{ok}`. `epoch` is UTC seconds; `offset_min` the UTC offset the watch shows (it has no DST rules, so the desktop sends the current one); `tz` an IANA name kept for display. The desktop sends the browser's clock when the watch's is not synced |
 | `GET /api/settings` | paired | → `{brightness, screen_timeout_s, web_idle_off_s}`. `brightness` 0–100 (mapped to the display's levels, so a value may come back ±1), `screen_timeout_s` 0–255, `web_idle_off_s` 0–86400 |
 | `PATCH /api/settings` | paired | any subset of those fields → the full settings. Out of range: `400`. Publishes `settings.changed` |
@@ -39,8 +39,19 @@ The PIN (6 digits) is shown on the watch while its Web page is open and is never
   "flash": { "total": 8257536, "free": 102400 },
   "net": { "mode": "sta", "ssid": "home", "ip": "192.168.1.50", "rssi": -58, "host": "watch.local" },
   "time": { "epoch": 1762369200, "offset_min": 60, "synced": true, "tz": "Europe/Warsaw" },
-  "mem": { "heap_free": 182000, "psram_free": 6100000 } }
+  "mem": { "heap_free": 182000, "psram_free": 6100000 },
+  "theme": { "accent": "#00d4aa", "accent_dim": "#009977", "card": "#1a1a1a", "track": "#333333", "name": "Mint" } }
 ```
+
+`theme` is the watch's colour preset; the desktop and the rescue page use its colours, and follow a change live through the `theme` event.
+
+## Screen, input and display (P3)
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/screen?format=rle565\|rgb565` | paired | the screen as it is now (screen and top layer, from an LVGL snapshot). Headers `X-Width`, `X-Height`, `ETag` (a hash of the frame); `If-None-Match` with the same frame → `304`. `rle565` (default): runs of `[count u16 LE][colour u16 LE]` row by row, count 1–65535 (a watch face is about 20–45 KB instead of 400 KB). `rgb565`: raw little-endian pixels. No PNG: the browser makes images itself |
+| `POST /api/input` | paired | `{type:"tap", x, y}`, `{type:"long", x, y}` (held 0.9 s), `{type:"swipe", x, y, x2, y2}` (about 0.2 s), or `{type:"button", name:"wake"\|"power_menu"}` → `{ok}`. Coordinates in screen pixels; outside the screen → `400`. Played through a second LVGL pointer device, so the watch UI treats it like a finger |
+| `POST /api/display` | paired | `{on?, brightness?}` → `{ok}`. `on:false` turns the backlight off (the watch stays awake); `on:true` wakes the screen; `brightness` 0–100 changes it live without saving it |
 
 ## SD card
 
@@ -82,6 +93,7 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 | `files.changed` | `{op:"write"\|"mkdir"\|"move"\|"delete", path, to?}` | P1 |
 | `settings.changed` | the full settings | P1 |
 | `net` | `{mode, ssid, ip, rssi}` | P1 |
+| `theme` | as `device.theme`, when the watch's colour preset changes | P3 |
 | `notify` | `{id, title, body, level}` shown on the watch | P4 |
 | `lora.rx` | `{rssi, snr, len, data_b64}` | P4 |
 | `gnss.fix` | `{lat, lon, alt, sats, hdop, fix}` | P4 |
@@ -101,9 +113,9 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 |---|---|---|
 | `files`, `sd`, `settings`, `time` | as above | P1 |
 | `files.flash` | `/flash/...` paths | P1 |
-| `screen` | `GET /api/screen` (PNG; `?format=rgb565` raw) | P3 |
-| `input` | `POST /api/input` `{type:"tap"\|"swipe"\|"long"\|"button", x, y, x2?, y2?, name?}` | P3 |
-| `display` | `POST /api/display` `{on?, brightness?}` | P3 |
+| `screen` | `GET /api/screen` | P3 |
+| `input` | `POST /api/input` | P3 |
+| `display` | `POST /api/display` | P3 |
 | `notify` | `POST /api/notify` `{id?, title, body, level, vibrate?}`; same `id` replaces | P4 |
 | `sensors.imu` | `GET /api/sensors` | P4 |
 | `gnss` | `GET /api/gnss`, events `gnss.fix` | P4 |
@@ -114,3 +126,15 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 | `wifi.scan`, `wifi.manage` | `GET /api/wifi/scan`, `GET/POST/DELETE /api/wifi/networks` | P4 |
 | `ble.scan` | `GET /api/ble/scan` | P4 |
 | `link.espnow`, `usb.hid`, `ota`, `wifi.attack` | defined in P5 | P5 |
+
+## Test hooks (simulator and mock only)
+
+Compiled only without `ARDUINO`; the watch never has them.
+
+| Route | What it does |
+|---|---|
+| `GET /api/_dev/pin` | opens pairing like the Web page does, and returns the PIN |
+| `POST /api/_dev/pairing` | `{open}`: open or close pairing |
+| `POST /api/_dev/sd` | `{present}`: insert or remove the simulated card (F3 in the simulator window does the same) |
+| `GET /api/_dev/input` | the last `/api/input` body |
+| `POST /api/_dev/theme` | `{preset}` 0–7: switch the watch's colour preset |

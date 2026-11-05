@@ -328,6 +328,10 @@ void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta);
 void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta);
 /* Settings > Keyboard: which language's accented letters the keyboard offers. */
 void ui_keyboard_settings_build(lv_obj_t *content);
+#if FACTORY_WEB
+/* Settings > Web desktop (ui_web.cpp): server on/off, QR code, address, PIN. */
+void ui_web_settings_build(lv_obj_t *content);
+#endif
 /* A tappable pill row: icon in an accent disc and the title. */
 lv_obj_t *ui_create_menu_row(lv_obj_t *parent, const char *symbol, const char *title,
                              lv_event_cb_t cb, void *user_data);

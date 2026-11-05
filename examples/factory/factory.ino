@@ -152,9 +152,12 @@ void setup()
 
     hw_init();
 
+#if FACTORY_WEB
+    web_server_init();
+#endif
     setupGui();
 #if FACTORY_WEB
-    web_server_start();
+    if (web_server_enabled()) web_server_start();     /* Settings > Web desktop */
 #elif defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
     screen_web_server_setup();
 #endif

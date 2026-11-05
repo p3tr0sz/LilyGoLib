@@ -104,6 +104,13 @@ void web_plat_reboot(void);
 /* One line to the console (serial on the watch, stdout in the simulator). */
 void web_plat_log(const char *fmt, ...);
 
+/* Wi-Fi housekeeping, once a second while the server runs (UI thread): on the watch, start the
+ * watch's own access point when no known network is joined, and stop it again once one is. */
+void web_plat_net_tick(bool server_running);
+void web_plat_net_stop(void);
+/* The access point, when it is on. */
+bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+
 /* Serialise access to the SD/SPI bus around one file I/O step (no-op in the simulator). */
 void web_plat_io_lock(void);
 void web_plat_io_unlock(void);
@@ -112,6 +119,10 @@ void web_plat_io_unlock(void);
 
 /* Run fn on the LVGL/UI thread and wait for it (up to timeout_ms). false on timeout. */
 bool web_ui_run(std::function<void()> fn, uint32_t timeout_ms = 3000);
+
+/* Screen, input and display routes (web_screen.cpp). true when the path was one of them. */
+bool web_screen_handle(web_req_t *r);
+std::string web_screen_last_input(void);
 
 /* Files routes (web_fs.cpp). */
 void web_fs_handle(web_req_t *r);

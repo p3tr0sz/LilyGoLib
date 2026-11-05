@@ -9,8 +9,10 @@
 //     --web   desktop to serve at / when the card has none (default: examples/factory/web; a missing
 //             folder means the rescue page, like a watch with no desktop on its card)
 //     --dev   adds test hooks the watch never has:
-//               GET  /api/_dev/pin               the pairing PIN
-//               POST /api/_dev/sd {present:bool}  insert or remove the SD card
+//               GET  /api/_dev/pin                  the PIN; opens pairing like the watch's Web page
+//               POST /api/_dev/pairing {open:bool}  open or close pairing
+//               POST /api/_dev/sd {present:bool}     insert or remove the SD card
+//               GET  /api/_dev/input                the last /api/input body
 // Needs Node 18+.
 
 import { createServer } from 'node:http';
@@ -27,19 +29,28 @@ const ROOT = resolve(opt('--root', join(tmpdir(), 'mock-twatch')));
 const WEB = resolve(opt('--web', join(HERE, '..', 'web')));
 const PORT = Number(opt('--port', 5620));
 const DEV = args.includes('--dev');
-const PIN = opt('--pin', String(randomInt(0, 1000000)).padStart(6, '0'));
+let PIN = opt('--pin', String(randomInt(0, 1000000)).padStart(6, '0'));
+// Pairing works only while the watch shows the PIN (Settings > Web desktop). The mock starts
+// with it open unless --dev, where /api/_dev/pin opens it like the tests do on the simulator.
+let pairingOpen = !args.includes('--dev');
 const FW = '0.1.0+web.mock';
 const BOOT = Date.now();
 const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
-const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time'];
+const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
 let settings = { brightness: 60, screen_timeout_s: 15, web_idle_off_s: 600 };
 let clock = { offset_ms: 0, tz: 'UTC', offset_min: 0, synced: false };
 let battery = { percent: 76, charging: false, mv: 3968 };
+const PRESETS = [['#00d4aa', '#009977', '#1a1a1a', '#333333', 'Mint'], ['#0088ff', '#0066cc', '#1a1a2e', '#333344', 'Ocean'],
+  ['#ff6b35', '#cc5522', '#2a1a1a', '#443333', 'Sunset'], ['#b577ff', '#8833cc', '#1e1a2a', '#3a3344', 'Violet'],
+  ['#ff3366', '#cc2255', '#2a1a20', '#443338', 'Cherry'], ['#88cc00', '#669900', '#1a2a1a', '#334433', 'Lime'],
+  ['#ffb800', '#cc9200', '#2a2a1a', '#444433', 'Amber'], ['#ffffff', '#cccccc', '#2a2a2a', '#555555', 'Mono']]
+  .map(([accent, accent_dim, card, track, name]) => ({ accent, accent_dim, card, track, name }));
+let theme = PRESETS[0];
 
 // ---- helpers ----
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -110,7 +121,8 @@ function device(paired) {
     time: { epoch: nowEpoch(), offset_min: clock.offset_min, synced: clock.synced, tz: clock.tz },
     mem: { heap_free: 182000, psram_free: 6100000 },
   };
-  return paired ? full : { board: full.board, fw: full.fw, battery: full.battery, sd: { present: sd.present } };
+  full.theme = theme;
+  return paired ? full : { board: full.board, fw: full.fw, battery: full.battery, theme, sd: { present: sd.present } };
 }
 
 // ---- files ----
@@ -236,6 +248,68 @@ async function staticRoute(req, res, path) {
   createReadStream(file).pipe(res);
 }
 
+// ---- screen and input: a fake 502x410 watch face; taps leave dots, so a test sees the screen change ----
+const SW = 502, SH = 410;
+let screenOn = true;
+let lastInput = {};
+const dots = [];
+const rgb565 = (r, g, b) => ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+function frame() {
+  const px = new Uint16Array(SW * SH);
+  if (!screenOn) return px;
+  const card = rgb565(26, 26, 26), accent = rgb565(0, 212, 170), white = rgb565(255, 255, 255);
+  const rect = (x0, y0, w, h, c) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) if (x >= 0 && y >= 0 && x < SW && y < SH) px[y * SW + x] = c; };
+  rect(30, 20, 190, 64, card);                    // battery pill
+  rect(150, 140, 200, 90, white);                 // "clock"
+  rect(200, 245, 100, 12, accent);                // date
+  rect(30, 315, 80, 80, card); rect(392, 315, 80, 80, card);
+  rect(220, 393, 62, 5, rgb565(80, 80, 80));      // swipe-up hint
+  for (const [x, y] of dots) rect(x - 4, y - 4, 9, 9, accent);
+  return px;
+}
+function screenRoute(req, res, url) {
+  const fmt = url.searchParams.get('format') || 'rle565';
+  if (fmt !== 'rle565' && fmt !== 'rgb565') return fail(res, 400, 'bad_request', 'format: rle565 or rgb565');
+  const px = frame();
+  let h = 2166136261;
+  for (const v of px) { h = Math.imul(h ^ (v & 255), 16777619); h = Math.imul(h ^ (v >> 8), 16777619); }
+  const etag = `"${fmt}-${(h >>> 0).toString(16).padStart(8, '0')}"`;
+  const headers = { etag, 'cache-control': 'no-cache', 'x-width': SW, 'x-height': SH };
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, headers); return res.end(); }
+  let body;
+  if (fmt === 'rgb565') body = Buffer.from(px.buffer);
+  else {
+    const out = [];
+    for (let i = 0; i < px.length;) {
+      let n = 1;
+      while (i + n < px.length && px[i + n] === px[i] && n < 65535) n++;
+      out.push(n, px[i]);
+      i += n;
+    }
+    body = Buffer.from(Uint16Array.from(out).buffer);
+  }
+  res.writeHead(200, { ...headers, 'content-type': 'application/octet-stream', 'content-length': body.length });
+  res.end(body);
+}
+async function inputRoute(req, res) {
+  const b = await readJSON(req);
+  if (!b || typeof b.type !== 'string') return fail(res, 400, 'bad_request', 'type');
+  const inside = (x, y) => Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0 && x < SW && y < SH;
+  if (b.type === 'tap' || b.type === 'long') {
+    if (!inside(b.x, b.y)) return fail(res, 400, 'bad_request', `x 0-${SW - 1}, y 0-${SH - 1}`);
+    dots.push([Math.trunc(b.x), Math.trunc(b.y)]);
+    if (dots.length > 20) dots.shift();
+    screenOn = true;
+  } else if (b.type === 'swipe') {
+    if (!inside(b.x, b.y) || !inside(b.x2, b.y2)) return fail(res, 400, 'bad_request', 'x, y, x2, y2 inside the screen');
+  } else if (b.type === 'button') {
+    if (b.name !== 'power_menu' && b.name !== 'wake') return fail(res, 400, 'bad_request', 'name: power_menu or wake');
+    screenOn = true;
+  } else return fail(res, 400, 'bad_request', 'type: tap, long, swipe or button');
+  lastInput = b;
+  return ok(res);
+}
+
 // ---- router ----
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://watch.local');
@@ -250,6 +324,7 @@ const server = createServer(async (req, res) => {
     if (path === '/api/auth/pair' && req.method === 'POST') {
       const now = Date.now();
       if (now < lockedUntil) return fail(res, 429, 'locked', 'too many tries', { retry_ms: lockedUntil - now });
+      if (!pairingOpen) return fail(res, 403, 'pairing_closed', 'Open Settings > Web desktop on the watch to see the PIN');
       const b = await readJSON(req);
       if (b && String(b.pin || '') === PIN) {
         misses = 0;
@@ -263,7 +338,25 @@ const server = createServer(async (req, res) => {
     }
     if (path === '/api/caps' && req.method === 'GET') return json(res, 200, { api: 1, board: 'twatch-ultra', fw: FW, caps: CAPS });
     if (path === '/api/device' && req.method === 'GET') return json(res, 200, device(isPaired(req)));
-    if (DEV && path === '/api/_dev/pin') return json(res, 200, { pin: PIN });
+    if (DEV && path === '/api/_dev/pin') {
+      if (!pairingOpen) { PIN = String(randomInt(0, 1000000)).padStart(6, '0'); pairingOpen = true; misses = 0; lockedUntil = 0; }
+      return json(res, 200, { pin: PIN });
+    }
+    if (DEV && path === '/api/_dev/pairing' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      const open = b.open !== false;
+      if (open && !pairingOpen) PIN = String(randomInt(0, 1000000)).padStart(6, '0');
+      pairingOpen = open;
+      return ok(res);
+    }
+    if (DEV && path === '/api/_dev/input') return json(res, 200, lastInput);
+    if (DEV && path === '/api/_dev/theme' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      if (!PRESETS[b.preset]) return fail(res, 400, 'bad_request', 'preset');
+      theme = PRESETS[b.preset];
+      publish('theme', theme);
+      return ok(res);
+    }
     if (DEV && path === '/api/_dev/sd' && req.method === 'POST') {
       const b = (await readJSON(req)) || {};
       sd.present = !!b.present; sd.mounted = sd.present; sd.error = null;
@@ -311,6 +404,15 @@ const server = createServer(async (req, res) => {
       sd.mounted = true; publish('sd.changed', sdStatus()); return ok(res);
     }
     if (path === '/api/files' || path.startsWith('/api/files/')) return filesRoute(req, res, url, path);
+    if (path === '/api/screen' && req.method === 'GET') return screenRoute(req, res, url);
+    if (path === '/api/input' && req.method === 'POST') return inputRoute(req, res);
+    if (path === '/api/display' && req.method === 'POST') {
+      const b = await readJSON(req);
+      if (!b || typeof b !== 'object') return fail(res, 400, 'bad_request', 'bad JSON');
+      if ('brightness' in b && !(Number.isFinite(b.brightness) && b.brightness >= 0 && b.brightness <= 100)) return fail(res, 400, 'bad_request', 'brightness 0-100');
+      if ('on' in b) screenOn = !!b.on;
+      return ok(res);
+    }
     return fail(res, 404, 'not_found');
   } catch (e) {
     if (!res.headersSent) fail(res, 500, 'internal', String(e && e.message || e));

@@ -617,6 +617,14 @@ void web_plat_log(const char *fmt, ...)
     fflush(stdout);
 }
 
+void web_plat_net_tick(bool server_running) { (void)server_running; }
+void web_plat_net_stop(void) {}
+bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+{
+    (void)ssid; (void)ssid_len; (void)pass; (void)pass_len;
+    return false;
+}
+
 void web_plat_io_lock(void) {}
 void web_plat_io_unlock(void) {}
 

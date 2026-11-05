@@ -13,7 +13,7 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 8px}p{margin:0 0 1
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-top:16px}
 button,input{font:inherit;color:inherit}
 .btn{min-height:40px;padding:0 18px;border-radius:999px;border:1px solid var(--line);background:#222;cursor:pointer}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#00140f;font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent,#00140f);font-weight:600}
 .btn:disabled{opacity:.45;cursor:default}
 .pin{width:100%;font:600 28px ui-monospace,Menlo,monospace;letter-spacing:.4em;text-align:center;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--bg)}
 .err{color:var(--warn);min-height:22px;margin:8px 0}
@@ -29,7 +29,7 @@ small{color:var(--t2)}
 
   <section class="card" id="pair" hidden>
     <h2>Pair with the watch</h2>
-    <p>Enter the 6-digit PIN shown on the watch.</p>
+    <p>On the watch, open Settings › Web desktop and enter the PIN shown there.</p>
     <input class="pin" id="pin" inputmode="numeric" maxlength="6" autocomplete="one-time-code" aria-label="PIN">
     <div class="err" id="pairErr"></div>
     <button class="btn primary" id="pairBtn">Pair</button>
@@ -44,10 +44,12 @@ small{color:var(--t2)}
   <section class="card" id="install" hidden>
     <h2>Web desktop</h2>
     <p id="deskText">…</p>
-    <p><small>Choose the built desktop folder (<code>web_build.py --out</code>, or a release unpacked). It is copied to the card, checked, then swapped in. The old desktop stays until the new one is complete.</small></p>
+    <p><small>Choose the SD starter ZIP (<code>twatch-sd-&lt;version&gt;.zip</code>, published with the firmware), or a built desktop folder. It is copied to the card, checked, then swapped in. The old desktop stays until the new one is complete.</small></p>
     <div class="row">
+      <input type="file" id="zip" accept=".zip,application/zip" hidden>
       <input type="file" id="folder" webkitdirectory multiple hidden>
-      <button class="btn primary" id="pickBtn">Choose folder…</button>
+      <button class="btn primary" id="pickBtn">Choose ZIP…</button>
+      <button class="btn" id="folderBtn">Folder…</button>
       <a href="/" id="openDesk" hidden>Open the desktop</a>
     </div>
     <div class="meter" id="meter" hidden><i id="bar"></i></div>
@@ -66,7 +68,17 @@ async function call(method, path, body) {
 }
 const kb = (n) => n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + ' GB' : n >= 1 << 20 ? (n / (1 << 20)).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB';
 
+function applyTheme(t) {
+  if (!t || !/^#[0-9a-f]{6}$/i.test(t.accent || '')) return;
+  const n = parseInt(t.accent.slice(1), 16);
+  const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  document.documentElement.style.setProperty('--accent', t.accent);
+  document.documentElement.style.setProperty('--on-accent', (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) ? '#0b0b0b' : '#ffffff');
+  if (/^#[0-9a-f]{6}$/i.test(t.card || '')) document.documentElement.style.setProperty('--card', t.card);
+}
 async function start() {
+  call('GET', '/api/device').then((d) => applyTheme(d.theme)).catch(() => {});
   const a = await call('GET', '/api/auth').catch(() => ({ paired: false }));
   $('pair').hidden = a.paired;
   $('sd').hidden = $('install').hidden = !a.paired;
@@ -77,7 +89,7 @@ async function start() {
 async function pair() {
   $('pairErr').textContent = '';
   try { await call('POST', '/api/auth/pair', { pin: $('pin').value.trim() }); start(); }
-  catch (e) { $('pairErr').textContent = e.code === 'bad_pin' ? 'Wrong PIN.' : e.code === 'locked' ? 'Too many tries, wait 30 s.' : e.message; $('pin').select(); }
+  catch (e) { $('pairErr').textContent = e.code === 'bad_pin' ? 'Wrong PIN.' : e.code === 'locked' ? 'Too many tries, wait 30 s.' : e.code === 'pairing_closed' ? 'Pairing is closed. Open Settings › Web desktop on the watch.' : e.message; $('pin').select(); }
 }
 $('pairBtn').onclick = pair;
 $('pin').onkeydown = (e) => { if (e.key === 'Enter') pair(); };
@@ -91,7 +103,7 @@ async function showSd() {
     : !s.present ? 'No card. Insert a FAT32 card up to 32 GB.'
     : !s.mounted ? (s.error ? 'The watch could not read the card. Use a FAT32 card up to 32 GB.' : 'Inserted, not mounted.')
     : `${s.card || ''} ${s.fs || ''} · ${kb(s.free)} free of ${kb(s.total)}`;
-  $('pickBtn').disabled = !sdOk;
+  $('pickBtn').disabled = $('folderBtn').disabled = !sdOk;
 }
 $('mountBtn').onclick = async () => { try { await call('POST', '/api/sd/mount'); } catch (e) { alert(e.message); } showSd(); showDesk(); };
 
@@ -150,7 +162,76 @@ async function installDesktop(files) {
 }
 window.installDesktop = installDesktop;
 
-$('pickBtn').onclick = () => $('folder').click();
+// ---- ZIP: read with the browser's own DecompressionStream, no library.
+async function unzip(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('This is not a ZIP file.');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const td = new TextDecoder();
+  const out = [];
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('The ZIP file is damaged.');
+    const flags = dv.getUint16(p + 8, true), method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const off = dv.getUint32(p + 42, true);
+    const name = td.decode(buf.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (flags & 1) throw new Error('Encrypted ZIP files are not supported.');
+    const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    out.push({ name, method, raw: buf.subarray(start, start + csize) });
+  }
+  return out;
+}
+function inflate(e) {
+  if (e.method === 0) return Promise.resolve(new Blob([e.raw]));
+  if (e.method === 8) return new Response(new Blob([e.raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob();
+  return Promise.reject(new Error(`${e.name}: unsupported compression.`));
+}
+
+// The SD starter ZIP (web/ + data/), or a ZIP of just the desktop; also one Finder wrapped in a folder.
+async function installZip(blob) {
+  const entries = (await unzip(blob)).filter((e) => !e.name.startsWith('__MACOSX/') && !e.name.split('/').some((s) => s.startsWith('.')));
+  const m = entries.find((e) => /(^|\/)web\/manifest\.json$/.test(e.name)) || entries.find((e) => /(^|\/)manifest\.json$/.test(e.name));
+  if (!m) throw new Error('No web desktop in this ZIP. Choose twatch-sd-<version>.zip.');
+  const root = m.name.slice(0, -'manifest.json'.length);
+  const files = [];
+  $('instText').textContent = 'Unpacking…';
+  for (const e of entries) {
+    if (e.name.startsWith(root) && !e.name.endsWith('/')) files.push({ path: e.name.slice(root.length), file: await inflate(e) });
+  }
+  // The card's own folders (data/…) when the ZIP is a whole card.
+  if (root.endsWith('web/')) {
+    const card = root.slice(0, -4);
+    for (const e of entries) {
+      if (e.name.endsWith('/') && e.name.startsWith(card + 'data/')) {
+        await call('POST', '/api/files/mkdir', { path: '/sd/' + e.name.slice(card.length, -1) }).catch(() => {});
+      }
+    }
+  }
+  return installDesktop(files);
+}
+window.installZip = installZip;
+
+$('folderBtn').onclick = () => $('folder').click();
+$('zip').onchange = async () => {
+  const f = $('zip').files[0];
+  $('zip').value = '';
+  if (!f) return;
+  $('pickBtn').disabled = $('folderBtn').disabled = true;
+  $('instErr').textContent = '';
+  try { await installZip(f); }
+  catch (e) { $('instErr').textContent = e.message; }
+  finally { $('pickBtn').disabled = $('folderBtn').disabled = !sdOk; }
+};
+
+$('pickBtn').onclick = () => $('zip').click();
 $('folder').onchange = async () => {
   const picked = [...$('folder').files];
   $('folder').value = '';
@@ -158,10 +239,10 @@ $('folder').onchange = async () => {
   // Paths relative to the chosen folder: drop its own name.
   const files = picked.map((f) => ({ path: f.webkitRelativePath.split('/').slice(1).join('/') || f.name, file: f }))
     .filter((f) => !f.path.split('/').some((s) => s.startsWith('.')));
-  $('pickBtn').disabled = true;
+  $('pickBtn').disabled = $('folderBtn').disabled = true;
   try { await installDesktop(files); }
   catch (e) { $('instErr').textContent = e.message; }
-  finally { $('pickBtn').disabled = !sdOk; }
+  finally { $('pickBtn').disabled = $('folderBtn').disabled = !sdOk; }
 };
 
 start();

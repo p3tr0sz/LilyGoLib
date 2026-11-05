@@ -11,6 +11,7 @@
  */
 #include "ui_define.h"
 #include "ui_watch_shell.h"
+#include "web_server.h"
 
 #if FACTORY_WATCH_UI
 
@@ -334,6 +335,14 @@ void watch_shell_poll(void)
         app_idle_poll();
         return;
     }
+#if FACTORY_WEB
+    /* A browser desktop is connected: the screen may go dark, but light sleep would
+     * stop Wi-Fi under it, so the face goes dark like an open app instead. */
+    if (web_server_keep_awake() || app_dark) {
+        app_idle_poll();
+        return;
+    }
+#endif
 
     /* Display timeout setting: 0 keeps the screen on. */
     uint32_t timeout = hw_get_disp_timeout_ms();

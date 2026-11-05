@@ -20,6 +20,7 @@
 #include <LilyGoLib_Version.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <memory>
 #include <set>
 #include <mutex>
@@ -447,6 +448,80 @@ void web_plat_log(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
     Serial.println(line);
+}
+
+/* ---------------------------------------------------------------- the watch's own access point */
+
+#define WEB_AP_AFTER_MS     20000       /* no known network joined for this long: start the AP */
+
+static bool s_ap_on = false;
+static uint32_t s_sta_lost_since = 0;
+static char s_ap_ssid[33];
+static char s_ap_pass[24];
+
+/* "T-Watch-AB12" from the MAC, and a password made once and kept on the flash. */
+static void ap_credentials(void)
+{
+    if (s_ap_ssid[0]) return;
+    uint8_t mac[6] = {0};
+    WiFi.macAddress(mac);
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "T-Watch-%02X%02X", mac[4], mac[5]);
+    FILE *f = fopen("/ffat/.web/ap.txt", "rb");
+    if (f) {
+        size_t n = fread(s_ap_pass, 1, sizeof(s_ap_pass) - 1, f);
+        s_ap_pass[n] = 0;
+        fclose(f);
+        s_ap_pass[strcspn(s_ap_pass, "\r\n")] = 0;
+    }
+    if (strlen(s_ap_pass) < 8) {
+        static const char A[] = "abcdefghjkmnpqrstuvwxyz23456789";   /* no 0/o, 1/l/i */
+        uint8_t r[10];
+        esp_fill_random(r, sizeof(r));
+        for (int i = 0; i < 10; i++) s_ap_pass[i] = A[r[i] % (sizeof(A) - 1)];
+        s_ap_pass[10] = 0;
+        mkdir("/ffat/.web", 0775);
+        f = fopen("/ffat/.web/ap.txt", "wb");
+        if (f) {
+            fputs(s_ap_pass, f);
+            fclose(f);
+        }
+    }
+}
+
+void web_plat_net_tick(bool server_running)
+{
+    if (!server_running) return;
+    uint32_t now = millis();
+    if (WiFi.isConnected()) {
+        s_sta_lost_since = 0;
+        /* Back on a known network: drop the access point once nobody uses it. */
+        if (s_ap_on && WiFi.softAPgetStationNum() == 0) web_plat_net_stop();
+        return;
+    }
+    if (!s_sta_lost_since) s_sta_lost_since = now ? now : 1;
+    if (s_ap_on || now - s_sta_lost_since < WEB_AP_AFTER_MS) return;
+    ap_credentials();
+    WiFi.mode(WIFI_AP_STA);
+    if (WiFi.softAP(s_ap_ssid, s_ap_pass)) {
+        s_ap_on = true;
+        web_plat_log("[web] no Wi-Fi joined: access point %s on %s", s_ap_ssid, WiFi.softAPIP().toString().c_str());
+    }
+}
+
+void web_plat_net_stop(void)
+{
+    if (!s_ap_on) return;
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    s_ap_on = false;
+}
+
+bool web_plat_ap_info(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+{
+    if (!s_ap_on) return false;
+    snprintf(ssid, ssid_len, "%s", s_ap_ssid);
+    snprintf(pass, pass_len, "%s", s_ap_pass);
+    return true;
 }
 
 void web_plat_io_lock(void)

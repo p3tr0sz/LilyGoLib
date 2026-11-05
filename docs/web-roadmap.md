@@ -77,7 +77,7 @@ The SD card is a first-class part of the system, not an optional extra:
 | P0 | API design (`web-api.md`), mock watch, API test, desktop load probe | days | Done (`c40370f`) |
 | P1 | Firmware API core: server, mDNS (`watch.local`), PIN pairing, `caps`, `device`, `sd`, `files`, `events`, card detection, safe writes, static files from the SD and the built-in rescue page | 2 weeks | Done in the simulator (`4571697`): `web_api_test.mjs` 50/50 (flash 47/47). The watch build compiles the web code but stops at the unrelated `demo_ce.h` NFC issue, so it is not yet run on the watch. Left: `not_fat32` detection (a card that fails to mount is reported as `mount_failed`) |
 | P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | Done in the simulator: `web_ui_test.mjs` 29/29 on the mock and the simulator, starting from an empty card |
-| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known (its name and password need the watch screen) | 1 week | |
+| P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known; SD starter ZIP; desktop follows the watch theme; the watch installs the desktop by itself (card ZIP, then download) | 1–2 weeks | Done in the simulator except the last item: `web_api_test.mjs` 66/66, `web_ui_test.mjs` 39/39 on the mock and the simulator; the watch build compiles it. The access point runs only on the watch, so it is untested until the watch build links. Self-install: designed below, not built |
 | P4 | Tool apps wave 1 (table above) | 3–4 weeks | |
 | P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
@@ -107,9 +107,42 @@ How the simulator runs the real web code:
 - **Test hooks only in the simulator.** `/api/_dev/pin` and `/api/_dev/sd` are compiled only without `ARDUINO`; the watch never has them. The PIN is also printed to the console.
 - **Fake hardware.** GNSS, LoRa, IR and NFC answer with fixed fake data in the simulator, as the desktop build already does for audio and network radio.
 
+## How the watch side works (P3)
+
+- **Settings › Web desktop** (`ui_web.cpp`): the on/off switch (saved on the flash; off by default on the watch, on in the simulator), then the PIN, a QR code of the address, the address and IP, whether a desktop is connected, how many browsers are paired, and *Forget browsers* (hold to confirm). Opening the page opens pairing with a new PIN; leaving it closes pairing.
+- **No light sleep under a desktop.** On the watch face, screen-off means light sleep, which stops Wi-Fi. While a desktop is connected (or a request came in the last minute) the face goes dark like an open app instead: backlight off, CPU and Wi-Fi on, the next touch lights it. `web_server_keep_awake()` in `ui_watch_shell.cpp`.
+- **Idle off.** With no desktop, no request and the Web page closed for `web_idle_off_s` (default 10 min), the server turns itself off; it starts again at the next boot if it is switched on.
+- **The watch's own network.** If the watch has not joined a known Wi-Fi network 20 s after the server starts, it also starts an access point `T-Watch-XXXX` with a password made once and kept on the flash. The Web page then shows the network, the password, and a QR code that joins it; the desktop is at `http://192.168.4.1/`. The access point stops when the watch is back on a known network and nobody uses it.
+- **Screen capture** uses LVGL's snapshot (`LV_USE_SNAPSHOT`, now on in `src/lv_conf.h` and the simulator's `platformio.ini`) into buffers kept between frames, not LVGL's heap. **Input** goes through a second pointer device created before the GUI (`web_server_init()`), because pages attach swipe-back to the pointer devices that exist when they are built.
+
+## Getting the desktop onto the card (P3)
+
+One file carries everything: **`twatch-sd-<version>.zip`**, built by `web_build.py --zip` and published with each firmware release. It holds `web/` (the desktop, with its `.gz` twins and manifest), the empty `data/` folders and a README. The same sources always make the same ZIP.
+
+| Way | Who | State |
+|---|---|---|
+| Unpack the ZIP to the card's root on a computer | anyone with a card reader | Done |
+| `/rescue` › Choose ZIP… : the browser unpacks it (its own `DecompressionStream`, no library) and installs it through the file API, creating the `data/` folders. Also takes a ZIP that Finder wrapped in a folder, and a plain built folder | no card reader | Done, tested |
+| `web_build.py --install <card>` | developers | Done |
+| **The watch installs it by itself** (below) | everyone, nothing to do | Designed |
+
+**The watch installs it by itself.** When a card is mounted and the server is on, the watch checks, in order:
+
+1. `/sd/web/manifest.json` has `api` 1 and a version at least the one this firmware was built with: nothing to do.
+2. A `twatch-sd-*.zip` is in the card's root: the watch unpacks it into `/sd/web.new` (inflate: the ESP32-S3 ROM's miniz `tinfl` on the watch, zlib in the simulator), checks every file against the manifest, swaps it in and creates `data/`. The ZIP stays on the card, so it can be installed again.
+3. No ZIP and the watch is on a network with internet: it downloads the release ZIP (HTTPS, `HTTPClient` with the certificate bundle) to `/sd/twatch-sd-<version>.zip.part`, renames it when complete, then does step 2. A cut download resumes with a `Range` request.
+
+It runs in its own task, never on the UI thread, and reports through `GET /api/desktop` (`installed`, `wanted`, `zip_on_card`, `state`: `idle` / `downloading` / `unpacking` / `error`, `progress`) and a `desktop` event; `POST /api/desktop/install {source: "card" | "download"}` starts it by hand. The rescue page shows the state and a *Download and install* button; the watch's Web page shows a line of state.
+
+**How it is tested.** The same steps run in the simulator, where the card is a folder:
+
+- *ZIP on the card:* a test copies `twatch-sd-*.zip` to `/sd` through the file API, removes and reinserts the card (`/api/_dev/sd`), and waits for `/` to serve the desktop and for `/sd/data/` to exist. Variants: a damaged ZIP (bad CRC) leaves the old desktop and reports `error`; a ZIP with an older version is ignored.
+- *Download:* the mock serves the ZIP at `/dl/twatch-sd-<version>.zip`, and the simulator is pointed at it (`TWATCH_SIM_DESKTOP_URL`, plain HTTP; the watch uses HTTPS). Variants: the connection drops halfway (the mock closes it), then the next try resumes; the server answers 404; there is no network.
+- *On the watch,* once its build links: the same test with `--url http://<watch>`, plus one real download from the release page.
+
 ## Where the code goes
 
-- Firmware: `examples/factory/web_server.cpp/.h`, `web_auth.cpp`, `web_fs.cpp`, `web_events.cpp`, `web_static.cpp`, `web_tools.cpp`, generated `web_assets.h`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
+- Firmware: `examples/factory/web_server.h`, `web_internal.h`, `web_core.cpp` (routes, pairing, events, static), `web_fs.cpp`, `web_json.cpp`, `web_screen.cpp`, `web_transport_esp.cpp` (watch), `web_transport_posix.cpp` (simulator), generated `web_rescue.h`, and the watch page `ui_web.cpp`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
 - Watch UI: a "Web" page in Settings (P3).
 - Desktop: `examples/factory/web/` (`js/shell.js`, `js/api.js`, `js/ui.js`, `css/desktop.css`, `apps/<id>/app.js`).
 - Rescue page: `examples/factory/web-rescue/index.html` → generated `examples/factory/web_rescue.h`.

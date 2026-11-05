@@ -111,13 +111,16 @@ const go = async (hash = '') => {
 };
 
 const hadDesktop = (await call('GET', '/api/files/content?path=%2Fsd%2Fweb%2Fmanifest.json')).ok;
+const hadData = (await call('GET', '/api/files?path=%2Fsd%2Fdata')).ok;
 try {
   console.log(`web desktop UI test: ${BASE}`);
 
   // ---- rescue page: install a freshly built desktop through it
   console.log('rescue');
   const buildDir = mkdtempSync(join(tmpdir(), 'web-build-'));
-  execFileSync('python3', [join(dirname(fileURLToPath(import.meta.url)), 'web_build.py'), '--out', join(buildDir, 'web')]);
+  const tool = join(dirname(fileURLToPath(import.meta.url)), 'web_build.py');
+  execFileSync('python3', [tool, '--out', join(buildDir, 'web')]);
+  execFileSync('python3', [tool, '--zip', join(buildDir, 'zip')]);
   const files = [];
   const walk = (d, rel) => {
     for (const n of readdirSync(d)) {
@@ -127,18 +130,42 @@ try {
   };
   walk(join(buildDir, 'web'), '');
   const built = JSON.parse(readFileSync(join(buildDir, 'web', 'manifest.json'), 'utf8'));
+  const zipName = readdirSync(join(buildDir, 'zip'))[0];
+  const zipB64 = readFileSync(join(buildDir, 'zip', zipName)).toString('base64');
+  // The same ZIP as Finder makes it: everything inside a folder, plus __MACOSX junk.
+  const wrapped = join(buildDir, 'wrapped.zip');
+  execFileSync('python3', ['-c', `
+import zipfile, sys
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) as b:
+    for i in a.infolist():
+        b.writestr('twatch-sd/' + i.filename, a.read(i))
+    b.writestr('__MACOSX/twatch-sd/._README.txt', b'junk')
+`, join(buildDir, 'zip', zipName), wrapped]);
+  const wrappedB64 = readFileSync(wrapped).toString('base64');
   rmSync(buildDir, { recursive: true, force: true });
+  const blob = (b64) => `new Blob([Uint8Array.from(atob(${JSON.stringify(b64)}), (c) => c.charCodeAt(0))])`;
+
   await go('rescue');
   check('rescue page asks for the PIN', await waitFor('!document.getElementById("pair").hidden'));
   await js(`document.getElementById('pin').value = ${JSON.stringify(pin)}; document.getElementById('pairBtn').click();`);
   check('rescue page pairs and shows the installer', await waitFor('!document.getElementById("install").hidden && !document.getElementById("pickBtn").disabled'));
-  const installed = await js(`
+
+  let installed = await js(`return await window.installZip(${blob(zipB64)});`);
+  check(`install from the SD starter ZIP (${zipName})`, installed === built.version, installed);
+  const onCard = await (await call('GET', '/api/files/content?path=%2Fsd%2Fweb%2Fmanifest.json')).json().catch(() => null);
+  check('desktop is on the card with every file listed', onCard && Object.keys(onCard.files || {}).length === Object.keys(built.files).length, onCard);
+  const dataDirs = (await (await call('GET', '/api/files?path=%2Fsd%2Fdata')).json().catch(() => ({}))).entries?.map((e) => e.name) || [];
+  check('the ZIP made the data folders', ['gnss', 'ir', 'lora', 'nfc', 'recordings'].every((d) => dataDirs.includes(d)), dataDirs);
+  installed = await js(`return await window.installZip(${blob(wrappedB64)});`);
+  check('install from a ZIP wrapped in a folder (Finder)', installed === built.version, installed);
+  installed = await js(`
     const files = ${JSON.stringify(files)}.map((f) => ({ path: f.path,
       file: new Blob([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))]) }));
     return await window.installDesktop(files);`);
-  check('installer reports the version', installed === built.version, installed);
-  const onCard = await (await call('GET', '/api/files/content?path=%2Fsd%2Fweb%2Fmanifest.json')).json().catch(() => null);
-  check('desktop is on the card with every file listed', onCard && Object.keys(onCard.files || {}).length === Object.keys(built.files).length, onCard);
+  check('update over an installed desktop from a folder', installed === built.version, installed);
+  const notZip = await js(`try { await window.installZip(new Blob(['hello'])); return 'no error'; } catch (e) { return e.message; }`);
+  check('a file that is not a ZIP is refused clearly', /not a ZIP/.test(notZip), notZip);
   const left = await call('GET', '/api/files?path=%2Fsd%2Fweb.new');
   check('no web.new left behind', left.status === 404, left.status);
   // Log this browser out again, so the desktop's own pairing is tested next.
@@ -215,6 +242,62 @@ try {
   check('storage section shows the card', await waitFor('document.querySelector(".settings").textContent.includes("Safe to remove")'));
   await shot('5-settings');
 
+  // ---- theme: changing the watch's colours recolours the desktop live
+  console.log('theme');
+  const accentNow = () => js(`return getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().toLowerCase();`);
+  await call('POST', '/api/_dev/theme', { preset: 1 });           // Ocean
+  check('desktop follows the watch theme (Ocean)', await waitFor(`getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().toLowerCase() === '#0088ff'`, 5000), await accentNow());
+  // Every watch preset: the desktop takes its accent, and text on the accent stays readable (4.5:1).
+  const contrastOk = await js(`
+    const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+    const L = (hex) => { const n = parseInt(hex.slice(1), 16); return 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255); };
+    const bad = [];
+    for (let p = 0; p < 8; p++) {
+      await fetch('/api/_dev/theme', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ preset: p }) });
+      const want = (await (await fetch('/api/device')).json()).theme.accent;
+      const end = Date.now() + 4000;
+      let acc = '';
+      while (Date.now() < end) {
+        acc = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().toLowerCase();
+        if (acc === want) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const on = getComputedStyle(document.documentElement).getPropertyValue('--on-accent').trim();
+      const [a, b] = [L(acc), L(on)].sort((x, y) => y - x);
+      const ratio = (a + 0.05) / (b + 0.05);
+      if (acc !== want || ratio < 4.5) bad.push({ p, want, acc, on, ratio: ratio.toFixed(1) });
+    }
+    return bad;`);
+  check('desktop follows all 8 watch presets, text on the accent 4.5:1 or more', contrastOk.length === 0, contrastOk);
+  await call('POST', '/api/_dev/theme', { preset: 7 });           // Mono, for the screenshot
+  await waitFor(`getComputedStyle(document.documentElement).getPropertyValue('--accent').trim().toLowerCase() === '#ffffff'`, 4000);
+  await shot('7b-theme-mono');
+  await call('POST', '/api/_dev/theme', { preset: 0 });
+
+  // ---- screen: the live picture, and taps / swipes on it reach the watch
+  console.log('screen');
+  await S('Emulation.clearDeviceMetricsOverride');
+  await go('#app=screen');
+  check('Screen shows frames', await waitFor('+document.querySelector(".screen-canvas")?.dataset.frames >= 1', 6000));
+  check('the picture is not blank', await js(`
+    const c = document.querySelector('.screen-canvas');
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let lit = 0; for (let i = 0; i < d.length; i += 4 * 97) if (d[i] + d[i + 1] + d[i + 2] > 60) lit++;
+    return lit > 20;`));
+  const fire = (type, fx, fy) => `(() => { const c = document.querySelector('.screen-canvas'); const r = c.getBoundingClientRect();
+    c.dispatchEvent(new PointerEvent('${type}', { bubbles: true, pointerId: 7, clientX: r.left + r.width * ${fx}, clientY: r.top + r.height * ${fy} })); })();`;
+  await js(fire('pointerdown', 0.5, 0.5) + fire('pointerup', 0.5, 0.5));
+  await sleep(500);
+  let last = await (await call('GET', '/api/_dev/input')).json();
+  check('a click on the picture taps the watch there', last.type === 'tap' && Math.abs(last.x - 251) <= 3 && Math.abs(last.y - 205) <= 3, last);
+  await js(fire('pointerdown', 0.5, 0.95) + fire('pointerup', 0.5, 0.3));
+  await sleep(500);
+  last = await (await call('GET', '/api/_dev/input')).json();
+  check('a drag on the picture swipes', last.type === 'swipe' && last.y2 < last.y, last);
+  // Swipe right to undo whatever the swipe opened, so the watch is left as found.
+  await call('POST', '/api/input', { type: 'swipe', x: 40, y: 200, x2: 450, y2: 200 });
+  await shot('8-screen');
+
   // ---- phone
   console.log('phone layout');
   await S('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
@@ -233,8 +316,11 @@ try {
   console.log(`  FAIL  ${e.message}`);
 } finally {
   await call('DELETE', '/api/files?path=%2Fsd%2Fui-test&recursive=1').catch(() => {});
+  // Leave the card as it was: remove only what the test put there.
   if (!hadDesktop) await call('DELETE', '/api/files?path=%2Fsd%2Fweb&recursive=1').catch(() => {});
+  if (!hadData) await call('DELETE', '/api/files?path=%2Fsd%2Fdata&recursive=1').catch(() => {});
   await call('PATCH', '/api/settings', { brightness: 60 }).catch(() => {});
+  await call('POST', '/api/_dev/theme', { preset: 0 }).catch(() => {});
   await call('POST', '/api/auth/logout', {}).catch(() => {});
   ws.close();
   chrome.kill();

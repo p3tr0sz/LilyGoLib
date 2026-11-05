@@ -1060,6 +1060,9 @@ static const sys_section_t sys_sections[] = {
 #if !defined(EXCLUDE_CLOCK_TOOLS)
     {"Date & time", LV_SYMBOL_EDIT,     {}, ui_clock_settings_build},
 #endif
+#if FACTORY_WEB
+    {"Web desktop", LV_SYMBOL_WIFI,    {}, ui_web_settings_build},
+#endif
     {"Keyboard", LV_SYMBOL_KEYBOARD,    {}, ui_keyboard_settings_build},
     {"Vibration", LV_SYMBOL_BELL,       {}, watch_haptics_build},
     {"Display", LV_SYMBOL_IMAGE,        {{UI_SYS_BUILD_DISPLAY_CARD, UI_SYS_BUILD_ROTARY}}},

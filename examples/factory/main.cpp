@@ -116,10 +116,13 @@ extern "C" int main(void)
     LILYGO_LOG_PRINTF("hello lvgl\n");
     //****************** */
     hw_init();
+#if FACTORY_WEB
+    web_server_init();
+#endif
     setupGui();
 #if FACTORY_WEB
     SDL_AddEventWatch(sdl_sd_key_watch, NULL);
-    web_server_start();
+    if (web_server_enabled()) web_server_start();     /* on by default in the simulator */
 #endif
 
 

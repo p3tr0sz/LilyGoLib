@@ -46,21 +46,22 @@ console.log('public');
 let r = await call('GET', '/api/caps');
 check('GET /api/caps', r.status === 200 && r.json?.api === 1 && Array.isArray(r.json.caps) && typeof r.json.board === 'string', r.json);
 const caps = r.json?.caps || [];
-for (const c of ['files', 'sd', 'settings', 'time']) check(`caps has ${c}`, caps.includes(c), caps);
+for (const c of ['files', 'sd', 'settings', 'time', 'screen', 'input', 'display']) check(`caps has ${c}`, caps.includes(c), caps);
 r = await call('GET', '/api/device');
 check('GET /api/device unpaired: small view', r.status === 200 && r.json?.battery && !r.json.net && !r.json.mem, r.json);
+check('device reports the watch theme', /^#[0-9a-f]{6}$/.test(r.json?.theme?.accent || '') && typeof r.json.theme.name === 'string', r.json?.theme);
 r = await call('GET', '/api/auth');
 check('GET /api/auth unpaired', r.status === 200 && r.json?.paired === false && r.json.method === 'pin', r.json);
 for (const [m, p] of [['GET', '/api/settings'], ['GET', `/api/files?path=${q(ROOT)}`], ['GET', '/api/sd']]) {
   r = await call(m, p);
   check(`${m} ${p.split('?')[0]} needs pairing`, r.status === 401 && r.json?.error === 'unpaired', r.status);
 }
-r = await call('POST', '/api/auth/pair', { pin: 'xxxxxx' });
+// ---- pair (on the watch, Settings > Web desktop must be open: it shows the PIN and opens pairing)
+const DEV = args.includes('--dev-pin');
+if (!PIN && DEV) PIN = (await call('GET', '/api/_dev/pin')).json?.pin;
+if (!PIN) { console.log('no PIN: pass --pin <pin> (from the watch) or --dev-pin (mock, simulator)'); process.exit(2); }
+r = await call('POST', '/api/auth/pair', { pin: PIN === '000000' ? '111111' : '000000' });
 check('wrong PIN refused', r.status === 401 && r.json?.error === 'bad_pin', r.json);
-
-// ---- pair ----
-if (!PIN && args.includes('--dev-pin')) PIN = (await call('GET', '/api/_dev/pin')).json?.pin;
-if (!PIN) { console.log('no PIN: pass --pin <pin> (from the watch) or --dev-pin (mock)'); process.exit(2); }
 r = await call('POST', '/api/auth/pair', { pin: PIN });
 const setCookie = r.headers.get('set-cookie') || '';
 check('POST /api/auth/pair', r.status === 200 && r.json?.ok === true && /session=/.test(setCookie), r.json);
@@ -73,10 +74,13 @@ check('GET /api/auth paired', r.json?.paired === true, r.json);
 r = await call('GET', '/api/device');
 check('GET /api/device paired: full view', r.status === 200 && r.json?.net && r.json.time && r.json.mem && r.json.sd, r.json);
 const now = Math.floor(Date.now() / 1000);
-r = await call('POST', '/api/time', { epoch: now, tz: 'Europe/Warsaw', offset_min: 60 });
+// The offset of this machine, as the desktop sends it (the simulator's clock follows the host).
+const hostOffset = -new Date().getTimezoneOffset();
+const hostTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+r = await call('POST', '/api/time', { epoch: now, tz: hostTz, offset_min: hostOffset });
 check('POST /api/time', r.status === 200, r.json);
 r = await call('GET', '/api/device');
-check('time set', Math.abs((r.json?.time?.epoch || 0) - now) <= 5 && r.json.time.synced === true && r.json.time.tz === 'Europe/Warsaw' && r.json.time.offset_min === 60, r.json?.time);
+check('time set', Math.abs((r.json?.time?.epoch || 0) - now) <= 5 && r.json.time.synced === true && r.json.time.tz === hostTz && r.json.time.offset_min === hostOffset, r.json?.time);
 r = await call('GET', '/api/settings');
 const before = r.json;
 check('GET /api/settings', r.status === 200 && typeof before?.brightness === 'number', before);
@@ -151,6 +155,37 @@ const ops = msgs.filter((m) => m.t === 'files.changed').map((m) => m.d.op);
 check('files.changed events', ['write', 'mkdir', 'move', 'delete'].every((o) => ops.includes(o)), ops);
 check('events seq increases', msgs.slice(1).every((m, i) => m.seq > msgs[i].seq), msgs.map((m) => m.seq));
 
+// ---- screen, input, display
+console.log('screen');
+const decodeRle = (buf) => { let n = 0; for (let i = 0; i + 3 < buf.length; i += 4) n += buf.readUInt16LE(i); return n; };
+let sr = await fetch(`${BASE}/api/screen`, { headers: { cookie } });
+let sw = +sr.headers.get('x-width'), sh = +sr.headers.get('x-height');
+let sbuf = Buffer.from(await sr.arrayBuffer());
+const etag1 = sr.headers.get('etag');
+check('GET /api/screen (rle565)', sr.status === 200 && sw > 0 && sh > 0 && decodeRle(sbuf) === sw * sh, { status: sr.status, sw, sh, px: decodeRle(sbuf) });
+sr = await fetch(`${BASE}/api/screen`, { headers: { cookie, 'if-none-match': etag1 } });
+check('screen ETag: 304, or a new frame with a new ETag', sr.status === 304 || (sr.status === 200 && sr.headers.get('etag') !== etag1), sr.status);
+sr = await fetch(`${BASE}/api/screen?format=rgb565`, { headers: { cookie } });
+sbuf = Buffer.from(await sr.arrayBuffer());
+check('GET /api/screen?format=rgb565', sr.status === 200 && sbuf.length === sw * sh * 2, sbuf.length);
+r = await call('GET', '/api/screen?format=png');
+check('unknown screen format: 400', r.status === 400, r.status);
+r = await call('POST', '/api/input', { type: 'tap', x: sw + 5, y: 10 });
+check('tap outside the screen: 400', r.status === 400, r.status);
+r = await call('POST', '/api/input', { type: 'pinch' });
+check('unknown input type: 400', r.status === 400, r.status);
+r = await call('POST', '/api/input', { type: 'button', name: 'wake' });
+check('POST /api/input button wake', r.status === 200, r.json);
+if (DEV) {
+  r = await call('POST', '/api/input', { type: 'tap', x: 3, y: 4 });
+  const last = (await call('GET', '/api/_dev/input')).json;
+  check('POST /api/input tap reaches the watch', r.status === 200 && last?.type === 'tap' && last.x === 3 && last.y === 4, last);
+}
+r = await call('POST', '/api/display', { brightness: 'x' });
+check('display: bad brightness 400', r.status === 400, r.status);
+r = await call('POST', '/api/display', { on: true });
+check('POST /api/display on', r.status === 200, r.json);
+
 // ---- one desktop at a time ----
 const ws2 = new WebSocket(wsUrl, { headers: { cookie } });
 await new Promise((done) => { ws2.onopen = done; ws2.onerror = done; setTimeout(done, 3000); });
@@ -169,6 +204,16 @@ if (args.includes('--dev-pin') && ROOT === '/sd') {
   await call('POST', '/api/_dev/sd', { present: true });
   r = await call('GET', '/api/sd');
   check('card back', r.json?.mounted === true, r.json);
+}
+
+// ---- pairing window (simulator and mock: the hook stands in for leaving the watch's Web page)
+if (DEV) {
+  console.log('pairing window');
+  await call('POST', '/api/_dev/pairing', { open: false });
+  r = await call('POST', '/api/auth/pair', { pin: PIN });
+  check('pairing closed: 403 pairing_closed', r.status === 403 && r.json?.error === 'pairing_closed', r.json);
+  const again = (await call('GET', '/api/_dev/pin')).json?.pin;
+  check('reopening pairing makes a new PIN', again && again !== PIN, { before: PIN, after: again });
 }
 
 r = await call('POST', '/api/auth/logout', {});

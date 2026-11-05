@@ -7,6 +7,9 @@ Content-Encoding: gzip) and a manifest.json listing every file with its size and
     python3 web_build.py --out <dir>          build into <dir> (replaced)
     python3 web_build.py --install <sd-root>  build into <sd-root>/web.new, then swap it in as <sd-root>/web
                                               (the old desktop stays until the new one is complete)
+    python3 web_build.py --zip <dir>          the starter SD-card ZIP, <dir>/twatch-sd-<version>.zip: web/ (the desktop),
+                                              the empty data/ folders and a README. Unpack it to the card root, or
+                                              choose it on the watch's /rescue page
     python3 web_build.py --rescue             regenerate ../web_rescue.h, the rescue page built into the firmware
                                               (from ../web-rescue/index.html); commit the header with the page
 
@@ -19,6 +22,8 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, '..', 'web'))
@@ -64,6 +69,57 @@ def build(out):
     return manifest, total, gz_total
 
 
+DATA_DIRS = ['data', 'data/ir', 'data/gnss', 'data/nfc', 'data/recordings', 'data/lora']
+README = """T-Watch Ultra - SD card starter, desktop {version} (web API {api})
+
+Two ways to use this ZIP:
+
+1. With a card reader: unpack it to the root of a FAT32 card (up to 32 GB), so that the
+   card has web/ and data/ at the top. Put the card in the watch.
+2. Without one: on the watch, open Settings > Web desktop and turn it on. In a browser,
+   open the address shown there, followed by /rescue (for example http://watch.local/rescue).
+   Pair with the PIN, then choose this ZIP under "Web desktop".
+
+web/   the web desktop the watch serves to your browser
+data/  your files and what the watch's tools save (IR codes, GNSS tracks, NFC dumps,
+       recordings, LoRa logs)
+"""
+# A fixed date inside the ZIP, so the same sources make the same ZIP.
+ZIP_DATE = (2026, 1, 1, 0, 0, 0)
+
+
+def make_zip(out_dir):
+    with tempfile.TemporaryDirectory() as tmp:
+        web = os.path.join(tmp, 'web')
+        manifest, total, gz_total = build(web)
+        name = f"twatch-sd-{manifest.get('version', '0')}.zip"
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, name)
+
+        def add(zf, arcname, data):
+            info = zipfile.ZipInfo(arcname, ZIP_DATE)
+            info.compress_type = zipfile.ZIP_STORED if arcname.endswith('.gz') or arcname.endswith('/') else zipfile.ZIP_DEFLATED
+            info.external_attr = (0o40755 << 16) | 0x10 if arcname.endswith('/') else 0o644 << 16
+            zf.writestr(info, data)
+
+        with zipfile.ZipFile(path, 'w') as zf:
+            add(zf, 'README.txt', README.format(version=manifest.get('version'), api=manifest.get('api')))
+            for d in DATA_DIRS:
+                add(zf, d + '/', b'')
+            add(zf, 'web/', b'')
+            for root, dirs, names in os.walk(web):
+                dirs.sort()
+                rel_root = os.path.relpath(root, tmp).replace(os.sep, '/')
+                for d in dirs:
+                    add(zf, f'{rel_root}/{d}/', b'')
+                for n in sorted(names):
+                    with open(os.path.join(root, n), 'rb') as f:
+                        add(zf, f'{rel_root}/{n}', f.read())
+    size = os.path.getsize(path)
+    print(f"SD starter {manifest.get('version')} (API {manifest.get('api')}): {size / 1024:.0f} KB -> {path}")
+    return path
+
+
 def rescue_header():
     with open(RESCUE_SRC, 'rb') as f:
         data = f.read()
@@ -95,12 +151,16 @@ def main():
     g = p.add_mutually_exclusive_group()
     g.add_argument('--out', help='build into this folder')
     g.add_argument('--install', metavar='SD_ROOT', help='build and install as <SD_ROOT>/web')
+    g.add_argument('--zip', metavar='DIR', help='write the starter SD-card ZIP into DIR')
     p.add_argument('--rescue', action='store_true', help='regenerate web_rescue.h')
     a = p.parse_args()
-    if not (a.out or a.install or a.rescue):
-        p.error('give --out, --install or --rescue')
+    if not (a.out or a.install or a.zip or a.rescue):
+        p.error('give --out, --install, --zip or --rescue')
     if a.rescue:
         rescue_header()
+    if a.zip:
+        make_zip(a.zip)
+        return
     if not (a.out or a.install):
         return
 

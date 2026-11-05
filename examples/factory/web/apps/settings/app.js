@@ -150,6 +150,8 @@ export function mount(el, ctx) {
     if (!d) return;
     const kv = (k, v) => row(k, null, h('span', { class: 's-value mono' }, v));
     device.replaceChildren(h('h3', {}, 'Watch'),
+      row('Colours', 'The desktop follows the watch theme (Settings › Display on the watch)',
+        h('span', { class: 's-value' }, h('span', { style: { display: 'inline-block', width: '12px', height: '12px', borderRadius: '50%', background: 'var(--accent)', marginRight: '8px' } }), d.theme?.name || '')),
       kv('Board', d.board || ''),
       kv('Firmware', d.fw || ''),
       kv('Up for', d.uptime_s !== undefined ? fmtDuration(d.uptime_s) : ''),
@@ -189,6 +191,7 @@ export function mount(el, ctx) {
     }),
     events.on('sd.changed', () => renderStorage()),
     events.on('battery', () => renderDevice()),
+    events.on('theme', () => renderDevice()),
   ];
   load();
   return { unmount() { offs.forEach((f) => f()); clearInterval(clockTimer); } };

@@ -5,16 +5,38 @@ import { h, icon, toast } from './ui.js';
 // Apps the desktop knows. An app is shown only when the watch has every capability it needs.
 const APPS = [
   { id: 'files', title: 'Files', icon: 'folder', caps: ['files'], load: () => import('../apps/files/app.js') },
+  { id: 'screen', title: 'Screen', icon: 'screen', caps: ['screen'], load: () => import('../apps/screen/app.js') },
   { id: 'settings', title: 'Settings', icon: 'settings', caps: ['settings'], load: () => import('../apps/settings/app.js') },
 ];
 
 const root = document.getElementById('app');
+
+// ---------------------------------------------------------------- theme: the desktop follows the watch's colours
+
+const THEME_KEY = 'twatch.theme';
+export function applyTheme(t) {
+  if (!t || !/^#[0-9a-f]{6}$/i.test(t.accent || '')) return;
+  const css = document.documentElement.style;
+  css.setProperty('--accent', t.accent);
+  if (/^#[0-9a-f]{6}$/i.test(t.accent_dim || '')) css.setProperty('--accent-dim', t.accent_dim);
+  if (/^#[0-9a-f]{6}$/i.test(t.card || '')) css.setProperty('--card', t.card);
+  if (/^#[0-9a-f]{6}$/i.test(t.track || '')) css.setProperty('--line', t.track);
+  // Text on the accent: black or white, whichever contrasts more (WCAG relative luminance).
+  const n = parseInt(t.accent.slice(1), 16);
+  const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  css.setProperty('--on-accent', (L + 0.05) / 0.05 >= 1.05 / (L + 0.05) ? '#0b0b0b' : '#ffffff');
+  document.documentElement.dataset.theme = t.name || '';
+  try { localStorage.setItem(THEME_KEY, JSON.stringify(t)); } catch {}
+}
+try { applyTheme(JSON.parse(localStorage.getItem(THEME_KEY) || 'null')); } catch {}
 const state = { caps: [], device: null, deviceAt: 0, windows: new Map(), z: 10 };
 
 // ---------------------------------------------------------------- boot
 
 async function boot() {
   try {
+    api.device().then((d) => applyTheme(d.theme)).catch(() => {});
     const caps = await api.caps();
     state.caps = caps.caps || [];
     const auth = await api.auth();
@@ -90,7 +112,8 @@ function showPairing(message) {
         tick();
         lockTimer = setInterval(tick, 1000);
       } else {
-        err.textContent = e.code === 'bad_pin' ? 'Wrong PIN. Check the watch screen.' : e.message;
+        err.textContent = e.code === 'bad_pin' ? 'Wrong PIN. Check the watch screen.'
+          : e.code === 'pairing_closed' ? 'Pairing is closed. Open Settings › Web desktop on the watch.' : e.message;
       }
       update();
     }
@@ -100,7 +123,7 @@ function showPairing(message) {
   root.replaceChildren(h('div', { class: 'pair' }, h('div', { class: 'pair-card' },
     h('img', { src: 'icons/watch.svg', alt: '' }),
     h('h1', {}, 'Pair with your watch'),
-    h('p', {}, 'Enter the 6-digit PIN shown on the watch.'),
+    h('p', {}, 'On the watch, open Settings › Web desktop and enter the PIN shown there.'),
     h('div', { class: 'pin' }, boxes),
     err,
     go)));
@@ -139,6 +162,7 @@ function startDesktop() {
   events.on('sd.changed', (d) => { if (state.device) { state.device.sd = { present: d.present, mounted: d.mounted }; renderBar(); } });
   events.on('net', (d) => { if (state.device) { state.device.net = { ...state.device.net, ...d }; renderBar(); } });
   events.on('hello', () => refreshDevice());
+  events.on('theme', (t) => { applyTheme(t); if (state.device) state.device.theme = t; });
   setInterval(renderClock, 1000);
   setInterval(refreshDevice, 60000);
 
@@ -154,6 +178,7 @@ async function refreshDevice() {
   try {
     state.device = await api.device();
     state.deviceAt = Date.now();
+    applyTheme(state.device.theme);
     renderBar();
   } catch (e) {
     if (!(e instanceof ApiError) || e.status !== 401) console.warn(e);

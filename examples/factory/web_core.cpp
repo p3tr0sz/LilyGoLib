@@ -7,6 +7,8 @@
 
 #if FACTORY_WEB
 
+#include "ui_define.h"          /* the watch's theme: ui_active_accent, ui_theme_presets */
+
 #include <lvgl.h>
 #include <string.h>
 #include <stdio.h>
@@ -18,6 +20,7 @@
 #include <condition_variable>
 #include <vector>
 #include <memory>
+#include <atomic>
 
 #define WEB_PORT_DEVICE         80
 #define WEB_PORT_SIMULATOR      8080
@@ -27,7 +30,7 @@
 #define WEB_PIN_LOCK_MS         30000
 #define WEB_STATIC_CHUNK        8192
 
-static const char *const WEB_CAPS[] = { "files", "files.flash", "sd", "settings", "time" };
+static const char *const WEB_CAPS[] = { "files", "files.flash", "sd", "settings", "time", "screen", "input", "display" };
 
 /* ---------------------------------------------------------------- state */
 
@@ -54,6 +57,27 @@ static web_dev_info_t s_dev;
 static web_sd_info_t s_sd;
 static bool s_sd_user_unmounted = false;
 static bool s_have_snapshot = false;
+
+/* The watch theme the desktop follows: accent, accent_dim, card, track (0xRRGGBB). */
+struct web_theme_t { uint32_t accent, dim, card, track; };
+static web_theme_t s_theme = { 0x00D4AA, 0x009977, 0x1A1A1A, 0x333333 };
+
+static std::string theme_json(const web_theme_t &t)
+{
+    const char *name = "";
+    for (size_t i = 0; i < UI_THEME_PRESET_COUNT; i++) {
+        if (ui_theme_presets[i].accent == t.accent && ui_theme_presets[i].card_bg == t.card) name = ui_theme_presets[i].name;
+    }
+    char b[160];
+    snprintf(b, sizeof(b), "{\"accent\":\"#%06x\",\"accent_dim\":\"#%06x\",\"card\":\"#%06x\",\"track\":\"#%06x\",\"name\":",
+             (unsigned)t.accent, (unsigned)t.dim, (unsigned)t.card, (unsigned)t.track);
+    std::string j = b;
+    web_json_str(j, name);
+    return j + "}";
+}
+
+static bool s_pairing_open = false;
+static std::atomic<uint32_t> s_last_request_ms { 0 };
 
 static lv_timer_t *s_ui_timer = NULL;
 static lv_timer_t *s_monitor_timer = NULL;
@@ -121,6 +145,17 @@ static std::string sd_json(const web_sd_info_t &sd)
     if (sd.error) web_json_str(j, sd.error); else j += "null";
     j += "}";
     return j;
+}
+
+/* Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm). */
+static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
 }
 
 static int64_t clock_epoch(void)
@@ -359,6 +394,10 @@ static void handle_pair(web_req_t *r)
     uint32_t now = now_ms();
     {
         std::lock_guard<std::recursive_mutex> lk(s_lock);
+        if (!s_pairing_open) {
+            web_resp_error(r, 403, "pairing_closed", "Open Settings > Web desktop on the watch to see the PIN");
+            return;
+        }
         if (s_locked_until && (int32_t)(s_locked_until - now) > 0) {
             char extra[48];
             snprintf(extra, sizeof(extra), "\"retry_ms\":%u", (unsigned)(s_locked_until - now));
@@ -462,6 +501,12 @@ static void handle_device(web_req_t *r)
     snprintf(b, sizeof(b), ",\"battery\":{\"percent\":%d,\"charging\":%s,\"mv\":%d}",
              d.percent, d.charging ? "true" : "false", d.mv);
     j += b;
+    web_theme_t theme;
+    {
+        std::lock_guard<std::recursive_mutex> lk(s_lock);
+        theme = s_theme;
+    }
+    j += ",\"theme\":" + theme_json(theme);
     if (!paired) {
         j += ",\"sd\":{\"present\":";
         j += sd.present ? "true" : "false";
@@ -486,17 +531,20 @@ static void handle_device(web_req_t *r)
     web_json_str(j, d.ip);
     snprintf(b, sizeof(b), ",\"rssi\":%d,\"host\":\"watch.local\"}", d.rssi);
     j += b;
-    int64_t epoch = clock_epoch();
     struct tm t;
     hw_get_date_time(t);
+    struct tm tl = t;
+    tl.tm_isdst = -1;
+    int64_t epoch = (int64_t)mktime(&tl);
+    /* The offset the watch really shows: its local time read as UTC, minus the epoch. */
+    int offset = (int)((days_from_civil(t.tm_year + 1900, t.tm_mon + 1, t.tm_mday) * 86400LL +
+                        t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec - epoch) / 60);
     bool synced;
     char tz[48];
-    int offset;
     {
         std::lock_guard<std::recursive_mutex> lk(s_lock);
         synced = s_time_set || t.tm_year + 1900 >= 2025;
         snprintf(tz, sizeof(tz), "%s", s_tz);
-        offset = s_offset_min;
     }
     snprintf(b, sizeof(b), ",\"time\":{\"epoch\":%lld,\"offset_min\":%d,\"synced\":%s,\"tz\":",
              (long long)epoch, offset, synced ? "true" : "false");
@@ -724,6 +772,25 @@ void web_api_ws_closed(int conn)
 static void monitor_timer_cb(lv_timer_t *t)
 {
     LV_UNUSED(t);
+    web_plat_net_tick(s_running);
+
+    /* Turn the server off after the idle time with no desktop and no request. */
+    if (t && s_running) {
+        uint32_t idle_s;
+        int seat;
+        {
+            std::lock_guard<std::recursive_mutex> lk(s_lock);
+            idle_s = s_idle_off_s;
+            seat = s_seat;
+        }
+        if (idle_s && seat < 0 && !s_pairing_open &&
+                lv_tick_diff(now_ms(), s_last_request_ms.load()) > idle_s * 1000UL) {
+            web_plat_log("[web] no browser for %u s: server off", (unsigned)idle_s);
+            web_server_stop();
+            return;
+        }
+    }
+
     web_dev_info_t d;
     web_plat_dev_info(&d);
     web_sd_info_t sd;
@@ -743,6 +810,15 @@ static void monitor_timer_cb(lv_timer_t *t)
         web_plat_sd_unmount();
         web_plat_sd_info(&sd, false);
     }
+
+    web_theme_t theme = { ui_active_accent, ui_active_accent_dim, ui_active_card_bg, ui_active_track };
+    bool theme_changed;
+    {
+        std::lock_guard<std::recursive_mutex> lk(s_lock);
+        theme_changed = memcmp(&theme, &s_theme, sizeof(theme)) != 0;
+        s_theme = theme;
+    }
+    if (theme_changed && s_have_snapshot) web_events_publish("theme", theme_json(theme).c_str());
 
     bool battery_changed, sd_changed, net_changed, first;
     {
@@ -919,6 +995,7 @@ static bool is(const web_req_t *r, const char *method, const char *path)
 
 void web_api_handle(web_req_t *r)
 {
+    s_last_request_ms = now_ms();
     if (strncmp(r->path, "/api/", 5) != 0) {
         if (strcmp(r->method, "GET") && strcmp(r->method, "HEAD")) {
             web_resp_error(r, 405, "bad_request", "GET");
@@ -939,9 +1016,36 @@ void web_api_handle(web_req_t *r)
 #ifndef ARDUINO
     /* Simulator-only test hooks (docs/web-roadmap.md, Testing). Never built for the watch. */
     if (is(r, "GET", "/api/_dev/pin")) {
+        /* Stands in for looking at the watch: opens the pairing window like the Web page does. */
+        web_ui_run([] { if (!s_pairing_open) web_server_set_pairing(true); });
         std::string j = "{\"pin\":";
         web_json_str(j, s_pin);
         web_resp_json(r, 200, j + "}");
+        return;
+    }
+    if (is(r, "POST", "/api/_dev/pairing")) {
+        std::string body;
+        bool open = true;
+        web_read_body(r, body, 256);
+        web_json_get_bool(body, "open", &open);
+        web_ui_run([&] { web_server_set_pairing(open); });
+        web_resp_ok(r);
+        return;
+    }
+    if (is(r, "POST", "/api/_dev/theme")) {
+        std::string body;
+        double preset = 0;
+        web_read_body(r, body, 256);
+        if (!web_json_get_num(body, "preset", &preset) || preset < 0 || preset >= UI_THEME_PRESET_COUNT) {
+            web_resp_error(r, 400, "bad_request", "preset");
+            return;
+        }
+        web_ui_run([&] { ui_apply_theme_preset((uint8_t)preset); });
+        web_resp_ok(r);
+        return;
+    }
+    if (is(r, "GET", "/api/_dev/input")) {
+        web_resp_json(r, 200, web_screen_last_input());
         return;
     }
     if (is(r, "POST", "/api/_dev/sd")) {
@@ -995,6 +1099,7 @@ void web_api_handle(web_req_t *r)
     if (is(r, "POST", "/api/sd/mount")) return handle_sd_mount(r, true);
     if (is(r, "POST", "/api/sd/unmount")) return handle_sd_mount(r, false);
     if (!strcmp(r->path, "/api/files") || !strncmp(r->path, "/api/files/", 11)) return web_fs_handle(r);
+    if (web_screen_handle(r)) return;
     web_resp_error(r, 404, "not_found");
 }
 
@@ -1012,13 +1117,16 @@ bool web_server_start(void)
     uint16_t port = WEB_PORT_DEVICE;
 #else
     uint16_t port = WEB_PORT_SIMULATOR;
+    const char *port_env = getenv("TWATCH_SIM_WEB_PORT");     /* run a second simulator next to the first */
+    if (port_env && atoi(port_env) > 0) port = (uint16_t)atoi(port_env);
 #endif
     if (!web_transport_start(port)) {
         web_plat_log("[web] server did not start on port %u", (unsigned)port);
         return false;
     }
     s_running = true;
-    web_plat_log("[web] server on port %u, pairing PIN %s", (unsigned)port, s_pin);
+    s_last_request_ms = now_ms();
+    web_plat_log("[web] server on port %u", (unsigned)port);
     return true;
 }
 
@@ -1026,6 +1134,8 @@ void web_server_stop(void)
 {
     if (!s_running) return;
     web_transport_stop();
+    web_plat_net_stop();
+    s_pairing_open = false;
     if (s_monitor_timer) {
         lv_timer_delete(s_monitor_timer);
         s_monitor_timer = NULL;
@@ -1046,6 +1156,76 @@ bool web_server_running(void)
 const char *web_server_pin(void)
 {
     return s_pin;
+}
+
+/* ---------------------------------------------------------------- on/off, pairing window, status */
+
+bool web_server_enabled(void)
+{
+    FILE *f = fopen(state_path("enabled").c_str(), "rb");
+    if (!f) {
+#ifdef ARDUINO
+        return false;               /* Off until the user turns it on: Wi-Fi costs battery */
+#else
+        return true;                /* The simulator serves from the start, for the tests */
+#endif
+    }
+    int c = fgetc(f);
+    fclose(f);
+    return c == '1';
+}
+
+void web_server_set_enabled(bool on)
+{
+    save_file_atomic(state_path("enabled"), on ? "1" : "0");
+    if (on) web_server_start();
+    else web_server_stop();
+}
+
+void web_server_set_pairing(bool open)
+{
+    std::lock_guard<std::recursive_mutex> lk(s_lock);
+    if (open && !s_pairing_open) {
+        new_pin();
+        s_misses = 0;
+        s_locked_until = 0;
+    }
+    if (open && !s_pairing_open) web_plat_log("[web] pairing open, PIN %s", s_pin);
+    s_pairing_open = open;
+    if (open) s_last_request_ms = now_ms();     /* the page counts as activity */
+}
+
+bool web_server_keep_awake(void)
+{
+    if (!s_running) return false;
+    std::lock_guard<std::recursive_mutex> lk(s_lock);
+    return s_seat >= 0 || lv_tick_diff(now_ms(), s_last_request_ms.load()) < 60000;
+}
+
+void web_server_status(web_status_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    std::lock_guard<std::recursive_mutex> lk(s_lock);
+    out->running = s_running;
+    out->desktop_connected = s_seat >= 0;
+    out->pairing_open = s_pairing_open;
+    snprintf(out->pin, sizeof(out->pin), "%s", s_pin);
+    snprintf(out->ip, sizeof(out->ip), "%s", s_dev.ip);
+    snprintf(out->host, sizeof(out->host), "watch.local");
+    out->ap_active = web_plat_ap_info(out->ap_ssid, sizeof(out->ap_ssid), out->ap_pass, sizeof(out->ap_pass));
+    out->sessions = (unsigned)s_sessions.size();
+}
+
+void web_server_forget_browsers(void)
+{
+    int seat;
+    {
+        std::lock_guard<std::recursive_mutex> lk(s_lock);
+        s_sessions.clear();
+        seat = s_seat;
+    }
+    save_state();
+    if (seat >= 0) web_transport_ws_close(seat);
 }
 
 #endif /* FACTORY_WEB */
