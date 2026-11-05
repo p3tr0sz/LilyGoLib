@@ -13,11 +13,18 @@
 //               POST /api/_dev/pairing {open:bool}  open or close pairing
 //               POST /api/_dev/sd {present:bool}     insert or remove the SD card
 //               GET  /api/_dev/input                the last /api/input body
+//               POST /api/_dev/theme {preset}        switch the watch's colour preset
+//               POST /api/_dev/app {name}            act as if that app were open on the watch ("" for none)
+//               POST /api/_dev/lora {text|data_b64, rssi?, snr?}  a LoRa packet arrives (when listen is on)
+//               POST /api/_dev/nfc {uid?, type?, text?}           a tag is held to the reader (while it scans)
 //     --dl <dir>  also act as the release server for the simulator's desktop download: serves
 //                 <dir>/<file> at /dl/<file> (no pairing, Range supported). With --dev:
 //               POST /api/_dev/dl {cut_after?: bytes, status?: code}  the next /dl request is cut off
 //                                                      after that many bytes, or answers that status
 //               GET  /api/_dev/dl-log                  the /dl requests so far: {file, range, status, sent}
+// Fake hardware for the P4 tools: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and
+// BLE devices, a LoRa station that answers each packet with "ack: <text>", an NFC tag a second after a scan
+// starts, a recording of a tone (a real WAV, written at real-time pace) and playback that lasts as long as the file.
 // Needs Node 18+.
 
 import { createServer } from 'node:http';
@@ -46,7 +53,8 @@ const BOOT = Date.now();
 const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
-const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display'];
+const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
+  'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -354,6 +362,357 @@ async function dlRoute(req, res, path) {
   res.end(data);
 }
 
+// ---- P4 tools (docs/web-api.md, Tools) ----
+const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const isNum = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
+const uptimeMs = () => Date.now() - BOOT;
+
+// The log ring the Monitor app tails.
+const logs = [];
+let logN = 0;
+function log(text) {
+  logs.push({ n: ++logN, ms: uptimeMs(), text });
+  if (logs.length > 200) logs.shift();
+}
+
+// The app open on the watch (POST /api/_dev/app): the watch UI wins, the tool answers 503 busy.
+let watchApp = '';
+const BUSY = { lora: ['LoRa', 'Walkie', 'Sub-G', 'LoRaWAN'], nfc: ['NFC', 'NFC Card', 'PN532'],
+  audio: ['Recorder', 'Player', 'Net Radio', 'Walkie'], ble: ['BLE Scan', 'BLE HID'] };
+function busy(res, tool) {
+  if (!BUSY[tool].includes(watchApp)) return false;
+  fail(res, 503, 'busy', `${watchApp} is open on the watch`, { app: watchApp });
+  return true;
+}
+
+function monitor() {
+  const t = uptimeMs() / 1000;
+  return {
+    uptime_s: Math.floor(t), cpu_mhz: 240, app: watchApp,
+    battery: { ...battery, ma: battery.charging ? 320 : Math.round(-85 - 20 * Math.sin(t / 7)), temp_c: 27.5, vbus_mv: battery.charging ? 5020 : 0 },
+    mem: { heap_free: 182000 + Math.round(6000 * Math.sin(t / 5)), heap_min: 150000, heap_total: 320000,
+      psram_free: 6100000 - Math.round(40000 * (1 + Math.sin(t / 11))), psram_total: 8388608 },
+  };
+}
+
+// Notifications shown on the watch.
+let notes = [];
+let noteSeq = 0;
+function notifyRoute(b) {
+  if (!b || typeof b !== 'object') return 'bad JSON';
+  if (typeof b.title !== 'string' || !b.title || Buffer.byteLength(b.title) > 64) return 'title: 1-64 bytes';
+  if (b.body !== undefined && (typeof b.body !== 'string' || Buffer.byteLength(b.body) > 512)) return 'body: up to 512 bytes';
+  if (b.level !== undefined && !['info', 'warn', 'alert'].includes(b.level)) return 'level: info, warn or alert';
+  if (b.vibrate !== undefined && typeof b.vibrate !== 'boolean') return 'vibrate: true or false';
+  if (b.id !== undefined && (typeof b.id !== 'string' || !b.id || Buffer.byteLength(b.id) > 32)) return 'id: 1-32 bytes';
+  const n = { id: b.id || `n${++noteSeq}`, title: b.title, body: b.body || '', level: b.level || 'info', ts: nowEpoch() };
+  notes = [n, ...notes.filter((x) => x.id !== n.id)].slice(0, 20);
+  publish('notify', n);
+  log(`[notify] ${n.level}: ${n.title}${b.vibrate === false ? '' : ' (vibrate)'}`);
+  return n;
+}
+
+// IMU: turning slowly, tilting a little; steps go up.
+function sensors() {
+  const t = uptimeMs() / 1000;
+  const roll = 10 * Math.sin(t / 3), pitch = 5 * Math.cos(t / 4), heading = (t * 6) % 360;
+  const r = (v, k = 10) => Math.round(v * k) / k, g = 9.81, rad = Math.PI / 180;
+  return {
+    imu: { roll: r(roll), pitch: r(pitch), heading: r(heading),
+      accel: { x: r(-g * Math.sin(pitch * rad), 100), y: r(g * Math.sin(roll * rad), 100), z: r(g * Math.cos(roll * rad) * Math.cos(pitch * rad), 100) } },
+    steps: 1234 + Math.floor(t / 2), seq: Math.floor(t * 10),
+  };
+}
+
+// GNSS: a fix walking slowly around one spot. gnss.fix once a second while the desktop polls.
+let gnssPolled = 0;
+const SATS = [['GPS', 3], ['GPS', 8], ['GPS', 12], ['GPS', 17], ['GPS', 22], ['Galileo', 5], ['Galileo', 11], ['BeiDou', 24],
+  ['GLONASS', 7], ['GPS', 30], ['SBAS', 123]];
+function gnss() {
+  const t = uptimeMs() / 1000;
+  const satellites = SATS.map(([sys, prn], i) => ({
+    sys, prn, el: 15 + ((i * 37) % 70), az: Math.round((i * 33 + t / 20) % 360), cn0: 22 + ((i * 7) % 24), used: i < 9 }));
+  return {
+    model: 'MIA-M10Q', fix: true, lat: +(52.2297 + 0.0004 * Math.sin(t / 60)).toFixed(6), lon: +(21.0122 + 0.0006 * Math.cos(t / 60)).toFixed(6),
+    alt: 112.4, speed_kmh: 1.8, sats: satellites.filter((s) => s.used).length, time: nowEpoch(), ttff_ms: 31000, antenna: 'ok', satellites,
+  };
+}
+setInterval(() => {
+  if (Date.now() - gnssPolled > 10000) return;
+  const g = gnss();
+  publish('gnss.fix', { fix: g.fix, lat: g.lat, lon: g.lon, alt: g.alt, speed_kmh: g.speed_kmh, sats: g.sats, time: g.time });
+}, 1000).unref();
+
+// LoRa: a station on the air answers each packet with "ack: <text>" while listen is on.
+let lora = { freq: 868.0, bw: 125, sf: 12, cr: 5, power: 13, sync_word: 205, listen: false };
+const BWS = [7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250, 500];
+let loraLog = [];
+let loraN = 0;
+function loraPacket(dir, data, rssi = null, snr = null) {
+  const p = { n: ++loraN, dir, ts: nowEpoch(), rssi, snr, len: data.length, data_b64: data.toString('base64') };
+  loraLog.push(p);
+  if (loraLog.length > 50) loraLog.shift();
+  if (dir === 'rx') publish('lora.rx', p);
+  return p;
+}
+function loraPatch(b) {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return 'bad JSON';
+  const next = { ...lora };
+  for (const k of Object.keys(lora)) if (k in b) next[k] = b[k];
+  if (!isNum(next.freq, 150, 960)) return 'freq: 150-960 MHz';
+  if (!BWS.some((w) => Math.abs(w - next.bw) < 0.01)) return `bw: one of ${BWS.join(', ')}`;
+  if (!isInt(next.sf, 5, 12)) return 'sf: 5-12';
+  if (!isInt(next.cr, 5, 8)) return 'cr: 5-8';
+  if (!isInt(next.power, -9, 22)) return 'power: -9 to 22 dBm';
+  if (!isInt(next.sync_word, 0, 255)) return 'sync_word: 0-255';
+  if (typeof next.listen !== 'boolean') return 'listen: true or false';
+  next.bw = BWS.find((w) => Math.abs(w - next.bw) < 0.01);
+  lora = next;
+  log(`[lora] ${lora.freq} MHz BW ${lora.bw} SF${lora.sf} CR4/${lora.cr} ${lora.power} dBm sync 0x${lora.sync_word.toString(16)}${lora.listen ? ', listening' : ''}`);
+  return null;
+}
+function packetData(b) {
+  if (!b || typeof b !== 'object') return null;
+  if (typeof b.text === 'string') return Buffer.from(b.text, 'utf8');
+  if (typeof b.data_b64 === 'string' && /^[A-Za-z0-9+/]*={0,2}$/.test(b.data_b64)) return Buffer.from(b.data_b64, 'base64');
+  return null;
+}
+
+// NFC: a scan finds a tag after a second.
+const nfc = { scanning: false, until: 0, last: null, timers: [] };
+function nfcTag(uid = '04:A2:3B:1C:5D:80', type = 'NTAG215', text) {
+  const tag = { uid, type, ts: nowEpoch(), ndef: text !== undefined ? [{ kind: 'text', value: text }]
+    : [{ kind: 'uri', value: 'https://www.lilygo.cc' }, { kind: 'text', value: 'Hello from the mock watch' }] };
+  nfc.last = tag;
+  publish('nfc.tag', tag);
+  log(`[nfc] tag ${uid} ${type}`);
+}
+function nfcStop() {
+  nfc.timers.forEach(clearTimeout);
+  nfc.timers = [];
+  if (!nfc.scanning) return;
+  nfc.scanning = false;
+  publish('nfc.state', { scanning: false });
+  log('[nfc] reader off');
+}
+
+// Recorder: a 440 Hz tone with a changing level, written to the card at real-time pace.
+const RATE = 16000;
+const rec = { state: 'idle', path: null, abs: null, fd: null, start: 0, elapsed_ms: 0, max_s: 60, level: 0, bytes: 0, timer: null, phase: 0 };
+function wavHeader(dataBytes, rate = RATE) {
+  const b = Buffer.alloc(44);
+  b.write('RIFF', 0); b.writeUInt32LE(36 + dataBytes, 4); b.write('WAVE', 8); b.write('fmt ', 12);
+  b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(rate, 24);
+  b.writeUInt32LE(rate * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(dataBytes, 40);
+  return b;
+}
+const recState = () => ({ state: rec.state, path: rec.path, elapsed_ms: rec.elapsed_ms, max_s: rec.max_s, level: rec.state === 'recording' ? rec.level : 0 });
+async function recChunk() {
+  if (rec.state !== 'recording') return;
+  const due = Math.min(Date.now() - rec.start, rec.max_s * 1000);
+  const want = Math.floor(due * RATE / 1000) * 2;
+  if (want > rec.bytes) {
+    const n = (want - rec.bytes) / 2, pcm = Buffer.alloc(n * 2);
+    const amp = 0.25 + 0.2 * Math.sin(due / 700);
+    for (let i = 0; i < n; i++) { pcm.writeInt16LE(Math.round(32767 * amp * Math.sin(rec.phase)), i * 2); rec.phase += 2 * Math.PI * 440 / RATE; }
+    rec.level = Math.round(amp * 200);
+    await rec.fd.write(pcm, 0, pcm.length, 44 + rec.bytes);
+    rec.bytes += pcm.length;
+  }
+  rec.elapsed_ms = due;
+  if (due >= rec.max_s * 1000) return recStop();
+  publish('recorder', recState());
+}
+async function recStop() {
+  if (rec.state !== 'recording') return null;
+  clearInterval(rec.timer);
+  rec.state = 'stopping';
+  await rec.fd.write(wavHeader(rec.bytes), 0, 44, 0);
+  await rec.fd.close();
+  rec.fd = null;
+  rec.state = 'idle';
+  rec.elapsed_ms = Math.round(rec.bytes / 2 / RATE * 1000);
+  publish('recorder', recState());
+  publish('files.changed', { op: 'write', path: rec.path });
+  log(`[recorder] saved ${rec.path} (${rec.elapsed_ms} ms)`);
+  return { path: rec.path, duration_ms: rec.elapsed_ms, size: rec.bytes + 44 };
+}
+function stamp() {
+  const d = new Date((nowEpoch() + clock.offset_min * 60) * 1000).toISOString();
+  return `${d.slice(0, 10).replace(/-/g, '')}-${d.slice(11, 19).replace(/:/g, '')}`;
+}
+
+// Player: "plays" for as long as the file lasts.
+const audio = { playing: false, path: null, volume: 70, timer: null };
+const audioState = () => ({ playing: audio.playing, path: audio.path, volume: audio.volume });
+function audioStop() {
+  clearTimeout(audio.timer);
+  if (!audio.playing) return;
+  audio.playing = false;
+  publish('audio', audioState());
+}
+
+// What a watch app opening takes from the desktop.
+function watchAppOpened() {
+  if (BUSY.nfc.includes(watchApp)) nfcStop();
+  if (BUSY.audio.includes(watchApp)) { recStop(); audioStop(); }
+}
+
+const WIFI = [['Home Network', 'a4:2b:b0:11:22:33', -48, 6, 'wpa2'], ['Home Network 5G', 'a4:2b:b0:11:22:34', -57, 36, 'wpa2/wpa3'],
+  ['Cafe Guest', '00:1d:7e:40:aa:01', -71, 11, 'open'], ['Office', 'f0:9f:c2:10:20:30', -76, 1, 'wpa2-ent'],
+  ['', 'f0:9f:c2:10:20:31', -80, 1, 'wpa2'], ["Neighbour's very long network name", '3c:84:6a:99:88:77', -86, 13, 'wpa3']];
+const BLE = [['Mi Smart Band 8', 'c8:47:8c:01:02:03', -55, true, '5701a1b2', ['fee0']], ['', '6e:12:aa:bb:cc:dd', -78, false, '4c001005', []],
+  ['T-Watch S3', 'dc:54:75:aa:bb:01', -62, true, '', ['1812', '180f']], ['JBL Flip 6', '30:c0:1b:22:33:44', -69, true, '', ['fe2c']],
+  ['Thermo', 'a4:c1:38:55:66:77', -88, false, '', ['181a']]];
+
+const wifiScan = { state: { scanning: false, ts: null, networks: [] } };
+const bleScan = { state: { scanning: false, ts: null, devices: [] } };
+
+async function toolsRoute(req, res, url, path) {
+  const m = req.method;
+  if (path === '/api/monitor' && m === 'GET') return json(res, 200, monitor());
+  if (path === '/api/logs' && m === 'GET') {
+    const after = Number(url.searchParams.get('after') || 0);
+    return json(res, 200, { lines: logs.filter((l) => l.n > after), next: logN });
+  }
+  if (path === '/api/notify' && m === 'GET') return json(res, 200, { items: notes });
+  if (path === '/api/notify' && m === 'POST') {
+    const n = notifyRoute(await readJSON(req));
+    return typeof n === 'string' ? fail(res, 400, 'bad_request', n) : ok(res, { id: n.id });
+  }
+  if (path === '/api/sensors' && m === 'GET') return json(res, 200, sensors());
+  if (path === '/api/gnss' && m === 'GET') { gnssPolled = Date.now(); return json(res, 200, gnss()); }
+
+  if (path.startsWith('/api/lora/')) {
+    if (busy(res, 'lora')) return;
+    if (path === '/api/lora/config' && m === 'GET') return json(res, 200, lora);
+    if (path === '/api/lora/config' && m === 'PATCH') {
+      const e = loraPatch(await readJSON(req));
+      return e ? fail(res, 400, 'bad_request', e) : json(res, 200, lora);
+    }
+    if (path === '/api/lora/send' && m === 'POST') {
+      const data = packetData(await readJSON(req));
+      if (!data || data.length < 1 || data.length > 255) return fail(res, 400, 'bad_request', 'text or data_b64, 1-255 bytes');
+      loraPacket('tx', data);
+      if (lora.listen) {
+        setTimeout(() => { if (lora.listen && !BUSY.lora.includes(watchApp)) loraPacket('rx', Buffer.concat([Buffer.from('ack: '), data]).subarray(0, 255), -61, 9.5); }, 1000);
+      }
+      return ok(res, { len: data.length });
+    }
+    if (path === '/api/lora/log' && m === 'GET') return json(res, 200, { packets: loraLog });
+    return fail(res, 404, 'not_found');
+  }
+
+  if (path === '/api/nfc' && m === 'GET') return json(res, 200, { scanning: nfc.scanning, last: nfc.last });
+  if (path === '/api/nfc/scan' && m === 'POST') {
+    if (busy(res, 'nfc')) return;
+    const b = await readJSON(req);
+    if (!b || typeof b !== 'object') return fail(res, 400, 'bad_request', 'bad JSON');
+    const secs = b.seconds === undefined ? 20 : b.seconds;
+    if (!isInt(secs, 1, 60)) return fail(res, 400, 'bad_request', 'seconds: 1-60');
+    nfcStop();
+    nfc.scanning = true;
+    nfc.until = Date.now() + secs * 1000;
+    publish('nfc.state', { scanning: true });
+    log(`[nfc] reader on for ${secs} s`);
+    nfc.timers.push(setTimeout(() => { if (nfc.scanning) nfcTag(); }, 1000), setTimeout(nfcStop, secs * 1000));
+    return ok(res);
+  }
+  if (path === '/api/nfc/stop' && m === 'POST') { if (busy(res, 'nfc')) return; nfcStop(); return ok(res); }
+
+  if (path === '/api/recorder' && m === 'GET') return json(res, 200, recState());
+  if (path === '/api/recorder/start' && m === 'POST') {
+    if (busy(res, 'audio')) return;
+    const b = await readJSON(req);
+    if (!b || typeof b !== 'object') return fail(res, 400, 'bad_request', 'bad JSON');
+    if (rec.state !== 'idle') return fail(res, 409, 'conflict', 'already recording');
+    const max = b.max_s === undefined ? 60 : b.max_s;
+    if (!isInt(max, 1, 600)) return fail(res, 400, 'bad_request', 'max_s: 1-600');
+    const p = b.path === undefined ? `/sd/data/recordings/rec-${stamp()}.wav` : b.path;
+    if (typeof p !== 'string' || !/\.wav$/i.test(p)) return fail(res, 400, 'bad_request', 'path must end in .wav');
+    const r = resolvePath(p); if (r.error) return pathError(res, r.error);
+    await fsp.mkdir(dirname(r.abs), { recursive: true });
+    Object.assign(rec, { state: 'recording', path: p, abs: r.abs, start: Date.now(), elapsed_ms: 0, max_s: max, level: 0, bytes: 0, phase: 0 });
+    rec.fd = await fsp.open(r.abs, 'w');
+    await rec.fd.write(wavHeader(0), 0, 44, 0);
+    rec.timer = setInterval(() => recChunk().catch(() => {}), 250);
+    publish('recorder', recState());
+    log(`[recorder] recording ${p}`);
+    return ok(res, { path: p });
+  }
+  if (path === '/api/recorder/stop' && m === 'POST') {
+    if (rec.state !== 'recording') return fail(res, 409, 'conflict', 'not recording');
+    await recChunk();
+    const done = await recStop();
+    return done ? ok(res, done) : fail(res, 409, 'conflict', 'not recording');
+  }
+
+  if (path === '/api/audio' && m === 'GET') return json(res, 200, audioState());
+  if (path === '/api/audio' && m === 'PATCH') {
+    const b = await readJSON(req);
+    if (!b || !isNum(b.volume, 0, 100)) return fail(res, 400, 'bad_request', 'volume: 0-100');
+    audio.volume = Math.round(b.volume);
+    publish('audio', audioState());
+    return json(res, 200, audioState());
+  }
+  if (path === '/api/audio/play' && m === 'POST') {
+    if (busy(res, 'audio')) return;
+    const b = await readJSON(req);
+    const r = resolvePath(b && b.path); if (r.error) return pathError(res, r.error);
+    let st; try { st = await fsp.stat(r.abs); if (!st.isFile()) throw 0; } catch { return fail(res, 404, 'not_found'); }
+    const ext = extname(r.abs).toLowerCase();
+    if (ext !== '.wav' && ext !== '.mp3') return fail(res, 400, 'bad_request', 'WAV or MP3 only');
+    let ms = 3000;
+    if (ext === '.wav') {
+      try {
+        const fh = await fsp.open(r.abs); const hd = Buffer.alloc(44); await fh.read(hd, 0, 44, 0); await fh.close();
+        const rate = hd.readUInt32LE(28);
+        if (rate > 0) ms = Math.max(200, Math.round((st.size - 44) / rate * 1000));
+      } catch {}
+    }
+    audioStop();
+    Object.assign(audio, { playing: true, path: b.path });
+    audio.timer = setTimeout(audioStop, ms);
+    publish('audio', audioState());
+    log(`[audio] playing ${b.path}`);
+    return ok(res);
+  }
+  if (path === '/api/audio/stop' && m === 'POST') { audioStop(); return ok(res); }
+
+  if (path === '/api/wifi/scan' && m === 'GET') return json(res, 200, wifiScan.state);
+  if (path === '/api/wifi/scan' && m === 'POST') {
+    if (!wifiScan.state.scanning) {
+      wifiScan.state.scanning = true;
+      log('[wifi] scan');
+      setTimeout(() => {
+        const networks = WIFI.map(([ssid, bssid, rssi, channel, auth]) => ({ ssid, bssid, rssi: rssi + Math.round(Math.random() * 4 - 2), channel, auth }));
+        wifiScan.state = { scanning: false, ts: nowEpoch(), networks: networks.sort((x, y) => y.rssi - x.rssi) };
+        publish('wifi.scan', wifiScan.state);
+      }, 1000);
+    }
+    return json(res, 202, { ok: true });
+  }
+  if (path === '/api/ble/scan' && m === 'GET') return json(res, 200, bleScan.state);
+  if (path === '/api/ble/scan' && m === 'POST') {
+    if (busy(res, 'ble')) return;
+    const b = await readJSON(req);
+    if (!b || typeof b !== 'object') return fail(res, 400, 'bad_request', 'bad JSON');
+    const secs = b.seconds === undefined ? 5 : b.seconds;
+    if (!isInt(secs, 1, 15)) return fail(res, 400, 'bad_request', 'seconds: 1-15');
+    if (!bleScan.state.scanning) {
+      bleScan.state.scanning = true;
+      log(`[ble] scan ${secs} s`);
+      setTimeout(() => {
+        const devices = BLE.map(([name, addr, rssi, connectable, mfr, services]) => ({ addr, name, rssi: rssi + Math.round(Math.random() * 4 - 2), connectable, mfr, services }));
+        bleScan.state = { scanning: false, ts: nowEpoch(), devices: devices.sort((x, y) => y.rssi - x.rssi) };
+        publish('ble.scan', bleScan.state);
+      }, Math.min(secs * 1000, 1000));
+    }
+    return json(res, 202, { ok: true });
+  }
+  return null;
+}
+
 // ---- router ----
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://watch.local');
@@ -377,6 +736,7 @@ const server = createServer(async (req, res) => {
         misses = 0;
         const t = randomBytes(24).toString('hex');
         sessions.add(t);
+        log('[web] a browser paired');
         return json(res, 200, { ok: true },
           { 'set-cookie': `session=${t}; Path=/; Max-Age=7776000; HttpOnly; SameSite=Strict` });
       }
@@ -403,6 +763,26 @@ const server = createServer(async (req, res) => {
       theme = PRESETS[b.preset];
       publish('theme', theme);
       return ok(res);
+    }
+    if (DEV && path === '/api/_dev/app' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      if (typeof b.name !== 'string') return fail(res, 400, 'bad_request', 'name');
+      watchApp = b.name;
+      watchAppOpened();
+      return ok(res);
+    }
+    if (DEV && path === '/api/_dev/lora' && req.method === 'POST') {
+      const b = await readJSON(req);
+      const data = packetData(b);
+      if (!data || data.length < 1 || data.length > 255) return fail(res, 400, 'bad_request', 'text or data_b64, 1-255 bytes');
+      const heard = lora.listen && !BUSY.lora.includes(watchApp);
+      if (heard) loraPacket('rx', data, Number.isFinite(b.rssi) ? b.rssi : -70, Number.isFinite(b.snr) ? b.snr : 7.25);
+      return ok(res, { received: heard });
+    }
+    if (DEV && path === '/api/_dev/nfc' && req.method === 'POST') {
+      const b = (await readJSON(req)) || {};
+      if (nfc.scanning) nfcTag(b.uid || undefined, b.type || undefined, b.text);
+      return ok(res, { read: nfc.scanning });
     }
     if (DEV && path === '/api/_dev/sd' && req.method === 'POST') {
       const b = (await readJSON(req)) || {};
@@ -441,6 +821,7 @@ const server = createServer(async (req, res) => {
       if (next.web_idle_off_s < 0 || next.web_idle_off_s > 86400) return fail(res, 400, 'bad_request', 'web_idle_off_s 0-86400');
       settings = next;
       publish('settings.changed', settings);
+      log(`[settings] ${JSON.stringify(settings)}`);
       return json(res, 200, settings);
     }
     if (path === '/api/system/reboot' && req.method === 'POST') return ok(res);
@@ -453,6 +834,7 @@ const server = createServer(async (req, res) => {
     if (path === '/api/files' || path.startsWith('/api/files/')) return filesRoute(req, res, url, path);
     if (path === '/api/screen' && req.method === 'GET') return screenRoute(req, res, url);
     if (path === '/api/input' && req.method === 'POST') return inputRoute(req, res);
+    if (await toolsRoute(req, res, url, path) !== null || res.headersSent || res.writableEnded) return;
     if (path === '/api/display' && req.method === 'POST') {
       const b = await readJSON(req);
       if (!b || typeof b !== 'object') return fail(res, 400, 'bad_request', 'bad JSON');
@@ -488,6 +870,7 @@ setInterval(() => {
 }, 60000).unref();
 
 server.listen(PORT, () => {
+  log(`[web] server on port ${PORT}`);
   console.log(`mock T-Watch Ultra (web API v1): http://localhost:${PORT}`);
   console.log(`storage: ${ROOT}   desktop: ${existsSync(WEB) ? WEB : '(rescue page)'}`);
   console.log(`pairing PIN: ${PIN}${DEV ? '  (also at /api/_dev/pin)' : ''}`);

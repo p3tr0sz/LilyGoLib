@@ -2,12 +2,23 @@
 import { api, events, onUnpaired, ApiError } from './api.js';
 import { h, icon, toast } from './ui.js';
 
-// Apps the desktop knows. An app is shown only when the watch has every capability it needs.
+// Apps the desktop knows. An app is shown only when the watch has every capability in `caps`
+// and at least one in `capsAny`.
 const APPS = [
   { id: 'files', title: 'Files', icon: 'folder', caps: ['files'], load: () => import('../apps/files/app.js') },
   { id: 'screen', title: 'Screen', icon: 'screen', caps: ['screen'], load: () => import('../apps/screen/app.js') },
+  { id: 'notify', title: 'Notify', icon: 'bell', caps: ['notify'], load: () => import('../apps/notify/app.js') },
+  { id: 'monitor', title: 'Monitor', icon: 'monitor', caps: ['monitor'], load: () => import('../apps/monitor/app.js') },
+  { id: 'sensors', title: 'Sensors', icon: 'sensors', caps: ['sensors.imu'], load: () => import('../apps/sensors/app.js') },
+  { id: 'gnss', title: 'GNSS', icon: 'gnss', caps: ['gnss'], load: () => import('../apps/gnss/app.js') },
+  { id: 'lora', title: 'LoRa', icon: 'lora', caps: ['lora'], load: () => import('../apps/lora/app.js') },
+  { id: 'nfc', title: 'NFC', icon: 'nfc', caps: ['nfc'], load: () => import('../apps/nfc/app.js') },
+  { id: 'recorder', title: 'Recorder', icon: 'mic', caps: ['recorder'], load: () => import('../apps/recorder/app.js') },
+  { id: 'scanners', title: 'Scanners', icon: 'radar', capsAny: ['wifi.scan', 'ble.scan'], load: () => import('../apps/scanners/app.js') },
   { id: 'settings', title: 'Settings', icon: 'settings', caps: ['settings'], load: () => import('../apps/settings/app.js') },
 ];
+const allowed = (app) => (app.caps || []).every((c) => state.caps.includes(c)) &&
+  (!app.capsAny || app.capsAny.some((c) => state.caps.includes(c)));
 
 const root = document.getElementById('app');
 
@@ -148,7 +159,7 @@ function startDesktop() {
   barEls = { linkDot, sdStat, netStat, batStat, clock, desk };
 
   for (const app of APPS) {
-    if (!app.caps.every((c) => state.caps.includes(c))) continue;
+    if (!allowed(app)) continue;
     launcher.append(h('button', { class: 'tile', onclick: () => openApp(app.id) },
       h('span', { class: 'tile-icon' }, icon(app.icon)), h('span', {}, app.title)));
   }
@@ -245,7 +256,7 @@ function setHash(id) {
 
 export async function openApp(id) {
   const app = APPS.find((a) => a.id === id);
-  if (!app || !app.caps.every((c) => state.caps.includes(c))) return;
+  if (!app || !allowed(app)) return;
   if (state.windows.has(id)) { state.windows.get(id).focus(); return; }
 
   const title = h('span', { class: 't-text' }, app.title);

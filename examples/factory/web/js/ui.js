@@ -45,6 +45,21 @@ const P = {
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/>',
   power: '<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>',
+  monitor: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  sensors: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  gnss: '<path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  lora: '<path d="M12 12v9M8 21h8"/><circle cx="12" cy="10" r="2"/><path d="M7.8 5.8a6 6 0 0 0 0 8.4M16.2 5.8a6 6 0 0 1 0 8.4M4.9 2.9a10 10 0 0 0 0 14.2M19.1 2.9a10 10 0 0 1 0 14.2"/>',
+  nfc: '<path d="M6 8.3a6 6 0 0 1 0 7.4M9.5 6a10 10 0 0 1 0 12M13 4a14 14 0 0 1 0 16"/><rect x="16" y="3" width="5" height="18" rx="1.5"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>',
+  radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 12l6-6"/><circle cx="12" cy="12" r="1"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+  play: '<path d="M7 4l13 8-13 8z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  record: '<circle cx="12" cy="12" r="7"/>',
+  send: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
+  save: '<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
+  bluetooth: '<path d="M7 7l10 10-5 5V2l5 5L7 17"/>',
+  link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
 };
 
 export function icon(name) {
@@ -74,6 +89,24 @@ export function fmtDuration(s) {
   s = Math.floor(s);
   const d = Math.floor(s / 86400), hr = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d} d ${hr} h` : hr ? `${hr} h ${m} min` : `${m} min`;
+}
+
+// What to tell the person when a tool route fails. A 503 busy names the app open on the watch.
+export function errorText(e, what = 'this') {
+  if (e?.code === 'busy') return e.data?.app ? `Close ${e.data.app} on the watch to use ${what} here.` : `The watch is using ${what}. Try again in a moment.`;
+  if (e?.code === 'sd_missing') return 'No SD card in the watch.';
+  if (e?.code === 'offline') return 'The watch is not answering.';
+  return e?.message || String(e);
+}
+
+// A notice in place of an app's content (busy, missing card...), with an optional action.
+export function notice(text, action, onAction) {
+  return h('div', { class: 'empty notice' }, h('p', {}, text), action ? h('button', { class: 'btn', onclick: onAction }, action) : null);
+}
+
+export function fmtTime(epochS) {
+  if (!epochS) return '';
+  return new Date(epochS * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 // ---------------------------------------------------------------- toasts

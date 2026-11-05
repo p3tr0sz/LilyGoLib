@@ -112,6 +112,7 @@ const go = async (hash = '') => {
 
 const hadDesktop = (await call('GET', '/api/files/content?path=%2Fsd%2Fweb%2Fmanifest.json')).ok;
 const hadData = (await call('GET', '/api/files?path=%2Fsd%2Fdata')).ok;
+const made = [];          // files the P4 checks leave on the card, removed at the end
 try {
   console.log(`web desktop UI test: ${BASE}`);
 
@@ -302,6 +303,154 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await call('POST', '/api/input', { type: 'swipe', x: 40, y: 200, x2: 450, y2: 200 });
   await shot('8-screen');
 
+
+  // ---- tools (P4): each app against the fake hardware
+  const capsNow = (await (await fetch(`${BASE}/api/caps`)).json()).caps;
+  const has = (c) => capsNow.includes(c);
+  const listNames = async (dir) => ((await (await call('GET', `/api/files?path=${encodeURIComponent(dir)}`)).json().catch(() => ({}))).entries || []).map((e) => e.name);
+  await call('POST', '/api/_dev/app', { name: '' });
+
+  if (has('notify')) {
+    console.log('notify');
+    await go('#app=notify');
+    check('Notify opens', await waitFor('document.querySelector(".win [name=title]")'));
+    await js(`$type(document.querySelector('.win [name=title]'), 'Hello from the UI test');
+      $type(document.querySelector('.win [name=body]'), 'Two lines\\nof text');
+      document.querySelector('.win [data-level=warn]').click();
+      $t('.win .btn', 'Send to watch').click();`);
+    check('a sent notification shows in the history', await waitFor('[...document.querySelectorAll(".win .note b")].some((b) => b.textContent === "Hello from the UI test")'));
+    const ns = (await (await call('GET', '/api/notify')).json()).items || [];
+    check('the watch has it, as a warning', ns[0]?.title === 'Hello from the UI test' && ns[0].level === 'warn', ns[0]);
+    await shot('9-notify');
+  }
+
+  if (has('monitor')) {
+    console.log('monitor');
+    await go('#app=monitor');
+    check('Monitor samples the watch', await waitFor('+document.querySelector(".monitor")?.dataset.samples >= 2', 6000));
+    check('Monitor shows the battery and the open app', await js(`return /\\d+%/.test(document.querySelector('.monitor .stats').textContent) && document.querySelector('.monitor .stats').textContent.includes('Open on the watch');`));
+    check('Monitor tails the watch log', await waitFor('document.querySelector(".logbox")?.textContent.includes("[")'));
+    check('Monitor draws its graphs', await js(`
+      const c = document.querySelector('.monitor canvas.chart'); const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let lit = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] && d[i + 1] > 120) lit++; return lit > 20;`));
+    await shot('10-monitor');
+  }
+
+  if (has('sensors.imu')) {
+    console.log('sensors');
+    await go('#app=sensors');
+    check('Sensors reads the IMU', await waitFor('+document.querySelector(".sensors")?.dataset.reads >= 1', 4000));
+    const s1 = await js(`return document.querySelector('.sensors').dataset.seq;`);
+    check('Sensors updates live', await waitFor(`document.querySelector('.sensors').dataset.seq !== ${JSON.stringify(s1)}`, 4000));
+    check('heading shown in degrees', await js(`return /\\d+\\.\\d°/.test(document.querySelector('.sensors .stats').textContent);`));
+    await shot('11-sensors');
+  }
+
+  if (has('gnss')) {
+    console.log('gnss');
+    const hadTracks = (await call('GET', '/api/files?path=%2Fsd%2Ftracks')).ok;
+    await call('PUT', '/api/files/content?path=%2Fsd%2Ftracks%2Fui-test.gpx', `<?xml version="1.0"?><gpx version="1.1" creator="test"><trk><trkseg>
+      <trkpt lat="52.2290" lon="21.0110"/><trkpt lat="52.2295" lon="21.0120"/><trkpt lat="52.2301" lon="21.0131"/></trkseg></trk></gpx>`, true);
+    made.push(hadTracks ? '/sd/tracks/ui-test.gpx' : '/sd/tracks');
+    await go('#app=gnss');
+    check('GNSS shows a fix', await waitFor('document.querySelector(".gnss")?.dataset.fix === "1" && /52\\.2\\d+/.test(document.querySelector(".gnss .stats").textContent)', 5000));
+    check('sky plot has satellites', await waitFor('+document.querySelector(".gnss canvas.dial")?.dataset.sats > 0'));
+    check('map draws the position', await waitFor('+document.querySelector(".gnss canvas.map")?.dataset.points >= 1'));
+    await waitFor('[...document.querySelectorAll(".gnss select option")].some((o) => o.value.endsWith("ui-test.gpx"))');
+    await js(`const sel = document.querySelector('.gnss select'); sel.value = '/sd/tracks/ui-test.gpx'; sel.dispatchEvent(new Event('change'));`);
+    check('a GPX track from the card is drawn', await waitFor('+document.querySelector(".gnss canvas.map")?.dataset.gpxPoints === 3'));
+    await shot('12-gnss');
+  }
+
+  if (has('lora')) {
+    console.log('lora');
+    await call('PATCH', '/api/lora/config', { listen: false });
+    await go('#app=lora');
+    check('LoRa opens', await waitFor('document.querySelector(".lora .composer input")'));
+    await js(`$t('.lora .btn', 'Not listening').click();`);
+    check('Listening turns receive on', await waitFor('$t(".lora .btn", "Listening")'));
+    await js(`$type(document.querySelector('.lora .composer input'), 'ping from the UI test'); $t('.lora .btn', 'Send').click();`);
+    check('the sent message shows', await waitFor('[...document.querySelectorAll(".bubble.tx")].some((b) => b.textContent.includes("ping from the UI test"))'));
+    check('the reply arrives', await waitFor('[...document.querySelectorAll(".bubble.rx")].some((b) => b.textContent.includes("ack: ping from the UI test"))', 5000));
+    await js(`document.querySelector('.lora [data-tab=radio]').click();`);
+    await waitFor('document.querySelector(".lora [name=sf]")');
+    await js(`const sf = document.querySelector('.lora [name=sf]'); sf.value = '9'; $t('.lora .btn', 'Apply').click();`);
+    await sleep(500);
+    const lc = await (await call('GET', '/api/lora/config')).json();
+    check('radio settings apply to the watch', lc.sf === 9 && lc.listen === true, lc);
+    const loraBefore = await listNames('/sd/data/lora');
+    await js(`$t('.lora .btn', 'Save log').click();`);
+    await sleep(600);
+    const saved = (await listNames('/sd/data/lora')).filter((n) => !loraBefore.includes(n));
+    check('Save log writes the log to the card', saved.length === 1 && /^log-.*\.json$/.test(saved[0]), saved);
+    saved.forEach((n) => made.push(`/sd/data/lora/${n}`));
+    await shot('13-lora');
+    await call('POST', '/api/_dev/app', { name: 'LoRa' });
+    await go('#app=lora');
+    check('LoRa open on the watch: the desktop says so', await waitFor('document.querySelector(".win .notice")?.textContent.includes("Close LoRa on the watch")'));
+    await call('POST', '/api/_dev/app', { name: '' });
+    await js(`$t('.win .notice .btn', 'Try again').click();`);
+    check('and works again once it is closed', await waitFor('document.querySelector(".lora .composer input")'));
+    await call('PATCH', '/api/lora/config', { sf: 12, listen: false });
+  }
+
+  if (has('nfc')) {
+    console.log('nfc');
+    await go('#app=nfc');
+    check('NFC opens', await waitFor('$t(".win .btn", "Scan")'));
+    await js(`$t('.win .btn', 'Scan').click();`);
+    check('scanning counts down', await waitFor('/Hold a tag to the watch… \\d+ s/.test(document.querySelector(".win .toolbar").textContent)'));
+    check('a tag held to the watch shows', await waitFor('document.querySelector(".uid")?.textContent.length > 4', 5000));
+    const uid = await js(`return document.querySelector('.uid').textContent;`);
+    check('its NDEF records are listed', await js(`return document.querySelectorAll('.nfc-tag tbody tr').length >= 1;`));
+    await js(`$t('.nfc-tag .btn', 'Save').click();`);
+    const file = `${uid.replace(/[^0-9a-f]/gi, '').toUpperCase()}.json`;
+    await sleep(500);
+    const nfcSaved = await (await call('GET', `/api/files/content?path=${encodeURIComponent('/sd/data/nfc/' + file)}`)).json().catch(() => null);
+    check('Save keeps the tag on the card', nfcSaved?.uid === uid, nfcSaved);
+    made.push(`/sd/data/nfc/${file}`);
+    await js(`$t('.win .btn', 'Stop').click();`);
+    check('Stop turns the reader off', await waitFor('$t(".win .btn", "Scan")'));
+    await shot('14-nfc');
+  }
+
+  if (has('recorder')) {
+    console.log('recorder');
+    const recBefore = await listNames('/sd/data/recordings');
+    await go('#app=recorder');
+    check('Recorder opens', await waitFor('document.querySelector(".rec-btn")'));
+    await js(`document.querySelector('.rec-btn').click();`);
+    check('recording runs, with a level', await waitFor('document.querySelector(".rec-btn.on") && parseFloat(document.querySelector(".rec-head .bar-meter i").style.width) > 0', 4000));
+    await sleep(1200);
+    await js(`document.querySelector('.rec-btn').click();`);
+    check('stop: the recording is listed', await waitFor(`[...document.querySelectorAll('.rec-row')].some((r) => !${JSON.stringify(recBefore)}.includes(r.dataset.name))`, 4000));
+    const newRec = (await listNames('/sd/data/recordings')).filter((n) => !recBefore.includes(n));
+    newRec.forEach((n) => made.push(`/sd/data/recordings/${n}`));
+    const ent = ((await (await call('GET', '/api/files?path=%2Fsd%2Fdata%2Frecordings')).json()).entries || []).find((e) => e.name === newRec[0]);
+    check('it is a WAV with sound in it', newRec.length === 1 && ent?.size > 16000, ent);
+    if (has('audio.play')) {
+      await js(`document.querySelector('.rec-row[data-name="${newRec[0]}"] .btn').click();`);
+      check('Play on watch plays it on the speaker', await waitFor('document.querySelector(".audio-state")?.textContent.startsWith("Playing")', 3000));
+      const au = await (await call('GET', '/api/audio')).json();
+      check('the watch reports it playing', au.playing && au.path.endsWith(newRec[0]), au);
+      await call('POST', '/api/audio/stop', {});
+    }
+    await shot('15-recorder');
+  }
+
+  if (has('wifi.scan') || has('ble.scan')) {
+    console.log('scanners');
+    await go('#app=scanners');
+    if (has('wifi.scan')) check('Wi-Fi networks are listed', await waitFor('document.querySelectorAll(".wifi-list .scan-row").length >= 3', 6000));
+    if (has('ble.scan')) {
+      await js(`document.querySelector('.scanners [data-tab=ble]')?.click();`);
+      check('Bluetooth devices are listed', await waitFor('document.querySelectorAll(".ble-list .scan-row").length >= 3', 6000));
+      const rssi = await js(`return [...document.querySelectorAll('.ble-list .scan-row .sig')].map((s) => parseInt(s.textContent.match(/-\\d+/)[0]));`);
+      check('strongest first', rssi.every((v, i) => !i || v <= rssi[i - 1]), rssi);
+    }
+    await shot('16-scanners');
+  }
+
   // ---- phone
   console.log('phone layout');
   await S('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
@@ -313,6 +462,12 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await js(`document.querySelector('.win .back').click();`);
   check('back returns to the launcher', await waitFor('!document.querySelector(".win") && document.querySelector(".tile")'));
   await shot('7-phone-launcher');
+  if (has('lora')) {
+    await go('#app=lora');
+    await waitFor('document.querySelector(".lora .composer input")');
+    check('a tool app fits the phone (LoRa)', await js('return document.documentElement.scrollWidth <= 390 && document.querySelector(".lora .composer").getBoundingClientRect().right <= 390;'));
+    await shot('17-phone-lora');
+  }
 
   check('no JavaScript errors', errors.length === 0, errors);
 } catch (e) {
@@ -320,6 +475,8 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   console.log(`  FAIL  ${e.message}`);
 } finally {
   await call('DELETE', '/api/files?path=%2Fsd%2Fui-test&recursive=1').catch(() => {});
+  for (const p of made) await call('DELETE', `/api/files?path=${encodeURIComponent(p)}&recursive=1`).catch(() => {});
+  await call('POST', '/api/_dev/app', { name: '' }).catch(() => {});
   // Leave the card as it was: remove only what the test put there.
   if (!hadDesktop) await call('DELETE', '/api/files?path=%2Fsd%2Fweb&recursive=1').catch(() => {});
   if (!hadData) await call('DELETE', '/api/files?path=%2Fsd%2Fdata&recursive=1').catch(() => {});

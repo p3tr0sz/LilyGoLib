@@ -274,3 +274,71 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   .toolbar .btn:has(.lbl) { width: 38px; padding: 0; }
   .screen-canvas { inset: 8px; max-width: calc(100% - 16px); max-height: calc(100% - 16px); }
 }
+
+/* ---------------------------------------------------------------- tool apps (P4) */
+
+.tool { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.tool h3 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2); font-weight: 600; }
+.panel { background: var(--bg); border: 1px solid #222; border-radius: var(--radius-s); padding: 12px; min-width: 0; }
+.grid2 { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.stats { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.stat-box { background: var(--bg); border: 1px solid #222; border-radius: var(--radius-s); padding: 10px 12px; min-width: 0; }
+.stat-box small { display: block; color: var(--text-2); font-size: 12px; }
+.stat-box b { display: block; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+canvas.chart { display: block; width: 100%; height: 110px; }
+canvas.dial { display: block; width: 100%; max-width: 260px; aspect-ratio: 1; margin: 0 auto; }
+canvas.map { display: block; width: 100%; height: 300px; border-radius: 6px; background: #050505; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.logbox { margin: 0; height: 200px; overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: #cfcfcf; }
+.notice p { margin: 0 0 14px; color: var(--text); }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--card-hi); color: var(--text-2); }
+.tag.ok { background: color-mix(in srgb, var(--accent) 22%, var(--bg)); color: var(--accent); }
+.tag.warn { background: color-mix(in srgb, var(--warn) 22%, var(--bg)); color: var(--warn); }
+.tag.alert { background: color-mix(in srgb, var(--danger) 25%, var(--bg)); color: var(--danger); }
+.form { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); align-items: end; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+.form label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); min-height: 40px; }
+.check input { width: 18px; height: 18px; accent-color: var(--accent); }
+textarea.field { min-height: 80px; resize: vertical; }
+
+/* tables (scanners, recordings) */
+.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tbl th { text-align: left; font-weight: 500; font-size: 12px; color: var(--text-2); padding: 6px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--card); }
+.tbl td { padding: 8px; border-bottom: 1px solid #222; vertical-align: middle; }
+.tbl td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl .sub { display: block; color: var(--text-2); font: 12px var(--mono); }
+.sig { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.sig .bar-meter { width: 60px; }
+
+/* messenger (LoRa) */
+.chat { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.bubble { max-width: 78%; padding: 8px 12px; border-radius: 14px; background: var(--card-hi); align-self: flex-start; word-break: break-word; }
+.bubble.tx { align-self: flex-end; background: color-mix(in srgb, var(--accent) 25%, var(--bg)); }
+.bubble small { display: block; color: var(--text-2); font-size: 11px; margin-top: 2px; }
+.composer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.composer .field { flex: 1; }
+
+/* recorder */
+.rec-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.rec-btn { width: 64px; height: 64px; border-radius: 50%; border: 2px solid var(--line); background: var(--card); color: var(--danger); display: grid; place-items: center; cursor: pointer; }
+.rec-btn svg { width: 30px; height: 30px; fill: currentColor; }
+.rec-btn.on { color: var(--text); background: var(--danger); border-color: var(--danger); }
+.rec-time { font: 600 28px var(--mono); font-variant-numeric: tabular-nums; }
+.rec-head .bar-meter { flex: 1; min-width: 120px; height: 10px; }
+.rec-row audio { height: 34px; width: 100%; min-width: 180px; }
+
+/* notifications */
+.note { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #222; }
+.note b { display: block; }
+.note p { margin: 2px 0 0; color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.note .when { margin-left: auto; color: var(--text-2); font-size: 12px; white-space: nowrap; }
+
+/* nfc */
+.uid { font: 600 22px var(--mono); word-break: break-all; }
+
+@media (max-width: 720px) {
+  .tool { padding: 10px; }
+  .tbl .hide-sm { display: none; }
+  .bubble { max-width: 90%; }
+}
