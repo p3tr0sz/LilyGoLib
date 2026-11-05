@@ -38,7 +38,8 @@ typedef struct {
 
 /* Each module defines its tools; web_tools.cpp lists those this board has. */
 extern const web_tool_t web_tool_monitor, web_tool_notify, web_tool_sensors, web_tool_gnss, web_tool_lora,
-       web_tool_nfc, web_tool_recorder, web_tool_audio, web_tool_wifi_scan, web_tool_ble_scan;
+       web_tool_nfc, web_tool_recorder, web_tool_audio, web_tool_wifi_scan, web_tool_ble_scan,
+       web_tool_link, web_tool_hid, web_tool_net, web_tool_ota;
 
 /* ---------------------------------------------------------------- shared helpers (web_tools.cpp) */
 
@@ -158,9 +159,78 @@ typedef struct {
 } web_hw_ble_t;
 bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out);
 
+/* ---------------------------------------------------------------- P5 hardware (web_tools_hw2.cpp) */
+
+/* Link: ESP-NOW file transfer between watches. The whole transfer lives in the hardware layer
+ * (a real ESP-NOW protocol on the watch, a fake in the simulator); the tool shows it and starts it. */
+typedef struct {
+    char mac[18];                       /* "aa:bb:cc:dd:ee:ff" */
+    char name[32];
+    int rssi;
+    long long last_seen;                /* epoch seconds */
+} web_hw_peer_t;
+typedef struct {
+    bool active;
+    bool tx;                            /* true sending, false receiving */
+    char peer[18];
+    char name[64];
+    uint32_t size, done;
+    const char *state;                  /* "sending", "receiving", "done", "error" */
+    const char *error;                  /* NULL or a code */
+} web_hw_link_transfer_t;
+bool web_hw_link_set_enabled(bool on);
+bool web_hw_link_enabled(void);
+void web_hw_link_self(char *mac, size_t mac_len, char *name, size_t name_len);
+int  web_hw_link_peers(web_hw_peer_t *out, int max);
+/* Start sending host_path (named name) to to_mac. 0 ok, 404 no peer, 409 busy, 503 SD gone, 500 other. */
+int  web_hw_link_send(const char *host_path, const char *name, const char *to_mac);
+void web_hw_link_cancel(void);
+bool web_hw_link_transfer(web_hw_link_transfer_t *out);     /* false when none; fills the current one */
+void web_hw_link_poll(void);                                /* UI thread tick: move the transfer along */
+
+/* USB HID keyboard (DuckyScript runs in the tool; these type the keys). Modifier bits below. */
+#define WEB_HID_CTRL    1
+#define WEB_HID_SHIFT   2
+#define WEB_HID_ALT     4
+#define WEB_HID_GUI     8
+bool web_hw_hid_available(void);
+bool web_hw_hid_text(const char *s);                        /* type a line of text */
+bool web_hw_hid_key(const char *name, int modifiers);       /* tap a named key ("ENTER","r","F5") with modifiers */
+void web_hw_hid_release(void);
+
+/* Wi-Fi tools: the watch's own connection, DNS, TCP reach. */
+typedef struct {
+    bool connected;
+    char ssid[33], ip[16], gateway[16], netmask[16], dns[16], mac[18];
+    int rssi, channel;
+} web_hw_net_t;
+void web_hw_net_info(web_hw_net_t *out);
+/* DNS resolve: 1 ok (ip, ms), 0 failed (ms), -1 offline. */
+int web_hw_net_resolve(const char *host, char *ip, size_t ip_len, int *ms);
+/* TCP connect test: 1 open, 0 refused/timeout (ms), -1 offline. */
+int web_hw_net_tcp(const char *host, int port, int *ms);
+
+/* Firmware update into the spare OTA slot. */
+typedef struct {
+    const char *slot, *other_slot;      /* "app0" / "app1" */
+    const char *state;                  /* "idle", "writing", "ready", "error" */
+    const char *error;
+    uint32_t done, total;
+    bool can_rollback;
+} web_hw_ota_t;
+void web_hw_ota_status(web_hw_ota_t *out);
+bool web_hw_ota_begin(long long total);                     /* open the spare slot; false too large / no room */
+bool web_hw_ota_write(const uint8_t *data, size_t len);     /* stream */
+int  web_hw_ota_end(void);                                  /* finish + verify: 0 ok, else set state error */
+bool web_hw_ota_commit(void);                               /* boot the new slot, reboot after ~1 s */
+bool web_hw_ota_rollback(void);                             /* boot the other slot, reboot */
+
 #ifndef ARDUINO
-/* Simulator test hook: a LoRa packet arrives (/api/_dev/lora). */
-void web_hw_sim_lora_inject(const std::string &data, int rssi, int snr);
+/* Simulator test hooks. */
+void web_hw_sim_lora_inject(const std::string &data, int rssi, int snr);    /* /api/_dev/lora */
+void web_hw_sim_link_peer(const char *name);                                /* /api/_dev/link {peer} */
+void web_hw_sim_link_rx(const char *name, uint32_t size);                   /* /api/_dev/link {rx} */
+void web_hw_sim_hid_available(bool on);                                     /* /api/_dev/hid */
 #endif
 
 #endif /* FACTORY_WEB */

@@ -40,6 +40,10 @@ static const web_tool_t *const TOOLS[] = {
 #endif
     &web_tool_wifi_scan,
     &web_tool_ble_scan,
+    &web_tool_link,
+    &web_tool_hid,
+    &web_tool_net,
+    &web_tool_ota,
 };
 
 static lv_timer_t *s_timer = NULL;
