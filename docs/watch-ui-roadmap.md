@@ -224,6 +224,7 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 
 **Keyboard page field** (`ui_open_text_page()`):
 - **Passwords:** LVGL showed each new letter for 1.5 s and then swapped it for a much narrower dot, so the text and cursor jumped back after every key. The field now shows dots at once (`lv_textarea_set_password_show_time(edit, 0)`), 8 px apart so they can be counted. The key just pressed already shows the letter; "Show password" on the WiFi page shows the text.
+- **Show password:** a password field has a round eye button between the field and ✓. A tap switches between dots and the text (crossed-out eye while it's shown). It always opens hidden. Added 2026-11-05: a slip is easy on a small screen.
 - **Long text:** LVGL animated the scroll to the cursor on every key, so text past the right edge slid back and forth. `kb_snap_scroll()` jumps there instead, after each key and when the page opens.
 
 **Scan lists** (`ui_create_card_signal_row()` in `ui_watch_pages.cpp`): a found network or device is a normal card row: the icon in the signal's colour, the name in the body font over a grey detail line, and the signal ("-58 dBm") on the right in the same colour. Same height, edges and divider as other rows; a long name ends in dots. The lists sit in the page's scroll instead of a 218 px box that scrolled inside it.

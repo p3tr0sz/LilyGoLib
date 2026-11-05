@@ -473,6 +473,7 @@ typedef struct {
     lv_obj_t *target;       /* The app's field */
     lv_obj_t *edit;         /* The copy on the page */
     lv_obj_t *keys;         /* The button matrix */
+    lv_obj_t *eye_icon;     /* Password fields: the show/hide toggle's icon */
     kb_view_t view;
     bool numeric;
     const char *map[KB_MAP_MAX];
@@ -644,6 +645,22 @@ static void kb_event_cb(lv_event_t *e)
     kb_snap_scroll(st->edit);
 }
 
+/* Dots (spaced so they can be counted) or the text itself. */
+static void kb_set_password_shown(text_page_t *st, bool shown)
+{
+    lv_textarea_set_password_mode(st->edit, !shown);
+    lv_obj_set_style_text_letter_space(st->edit, shown ? 0 : 8, 0);
+    if (st->eye_icon) lv_label_set_text(st->eye_icon, shown ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
+    kb_snap_scroll(st->edit);
+}
+
+static void kb_eye_cb(lv_event_t *e)
+{
+    text_page_t *st = (text_page_t *)lv_event_get_user_data(e);
+    kb_set_password_shown(st, lv_textarea_get_password_mode(st->edit));
+    hw_feedback();
+}
+
 void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
 {
     if (!ta) return;
@@ -712,6 +729,32 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_add_state(edit, LV_STATE_FOCUSED);   /* Shows the cursor */
     lv_obj_remove_flag(edit, LV_OBJ_FLAG_CLICKABLE);
     lv_group_remove_obj(edit);
+
+    if (password) {
+        /* Show or hide the password: a slip is easy on a small screen. The
+         * page always opens hidden (watch-ux-guidelines.md 9.5). */
+        lv_obj_t *eye = lv_button_create(field_row);
+        lv_obj_set_size(eye, KB_OK_SIZE, KB_OK_SIZE);
+        lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(eye, 0, 0);
+        lv_obj_set_style_shadow_width(eye, 0, 0);
+        lv_obj_set_style_pad_all(eye, 0, 0);
+        lv_obj_set_style_bg_color(eye, UI_COLOR_CARD_BG, 0);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(eye, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+        /* A tap leaves no focus ring (touch only). */
+        lv_obj_set_style_outline_width(eye, 0, LV_STATE_FOCUSED);
+        lv_obj_set_style_outline_width(eye, 0, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_border_width(eye, 0, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_width(eye, 0, LV_STATE_FOCUS_KEY);
+        lv_group_remove_obj(eye);
+        state->eye_icon = lv_label_create(eye);
+        lv_label_set_text(state->eye_icon, LV_SYMBOL_EYE_OPEN);
+        lv_obj_set_style_text_font(state->eye_icon, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(state->eye_icon, UI_COLOR_TEXT_PRIMARY, 0);
+        lv_obj_center(state->eye_icon);
+        lv_obj_add_event_cb(eye, kb_eye_cb, LV_EVENT_CLICKED, state);
+    }
 
     lv_obj_t *ok = lv_button_create(field_row);
     lv_obj_add_style(ok, &ui_styles.accent_btn, 0);
