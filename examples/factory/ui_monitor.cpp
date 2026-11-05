@@ -360,7 +360,12 @@ static void monitor_create_overview(lv_obj_t *parent, const power_monitor_snapsh
     overview_percent_label = lv_label_create(top);
     lv_label_set_text(overview_percent_label, "--");
     lv_obj_set_style_text_color(overview_percent_label, UI_COLOR_TEXT_PRIMARY, 0);
+#if FACTORY_WATCH_UI
+    /* The number that matters is big (watch-ux-guidelines.md 4.3). */
+    lv_obj_set_style_text_font(overview_percent_label, &lv_font_montserrat_48, 0);
+#else
     lv_obj_set_style_text_font(overview_percent_label, is_screen_small() ? &lv_font_montserrat_20 : &lv_font_montserrat_24, 0);
+#endif
 
     lv_obj_t *state_box = lv_obj_create(top);
     lv_obj_set_size(state_box, LV_PCT(55), LV_SIZE_CONTENT);
@@ -383,6 +388,12 @@ static void monitor_create_overview(lv_obj_t *parent, const power_monitor_snapsh
     lv_obj_set_style_text_font(overview_source_label, UI_FONT_CAPTION, 0);
     lv_label_set_long_mode(overview_source_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(overview_source_label, LV_PCT(100));
+#if FACTORY_WATCH_UI
+    /* The chip names are in the Status card; here they wrapped onto two lines. */
+    lv_obj_add_flag(overview_source_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_text_font(overview_state_label, UI_FONT_BODY, 0);
+    lv_obj_set_style_text_color(overview_state_label, UI_COLOR_TEXT_PRIMARY, 0);
+#endif
 
     overview_bar = lv_bar_create(card);
     lv_obj_set_size(overview_bar, LV_PCT(100), 8);
@@ -406,75 +417,77 @@ void ui_monitor_enter(lv_obj_t *parent)
     monitor_create_overview(page_container, snapshot);
 
     lv_obj_t *card = ui_create_card(page_container, "Status");
+#if !FACTORY_WATCH_UI      /* The watch shows the state next to the big percentage */
     monitor_add_row(card, ROW_STATE, LV_SYMBOL_POWER, "State", "--");
-    monitor_add_row(card, ROW_PMIC, LV_SYMBOL_SETTINGS, "PMIC", "--");
-    monitor_add_row(card, ROW_GAUGE, LV_SYMBOL_BATTERY_FULL, "Gauge", "--");
+#endif
+    monitor_add_row(card, ROW_PMIC, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Power chip" : "PMIC", "--");
+    monitor_add_row(card, ROW_GAUGE, LV_SYMBOL_BATTERY_FULL, FACTORY_WATCH_UI ? "Battery chip" : "Gauge", "--");
     monitor_add_row(card, ROW_USB_PRESENT, LV_SYMBOL_USB, "USB", "--");
     monitor_add_row(card, ROW_BATTERY_PRESENT, LV_SYMBOL_BATTERY_FULL, "Battery", "--");
     if (snapshot.otg_supported) {
-        monitor_add_row(card, ROW_OTG, LV_SYMBOL_POWER, "OTG", "--");
+        monitor_add_row(card, ROW_OTG, LV_SYMBOL_POWER, FACTORY_WATCH_UI ? "USB power out" : "OTG", "--");
     }
 
     if (has_rail_metrics(snapshot)) {
         card = ui_create_card(page_container, "Rails");
         if (metric_valid(snapshot.vbus_mv)) {
-            monitor_add_row(card, ROW_VBUS_MV, LV_SYMBOL_USB, "VBUS", "--");
+            monitor_add_row(card, ROW_VBUS_MV, LV_SYMBOL_USB, FACTORY_WATCH_UI ? "USB volts" : "VBUS", "--");
         }
         if (metric_valid(snapshot.vbus_ma)) {
-            monitor_add_row(card, ROW_VBUS_MA, LV_SYMBOL_USB, "VBUS Current", "--");
+            monitor_add_row(card, ROW_VBUS_MA, LV_SYMBOL_USB, FACTORY_WATCH_UI ? "USB current" : "VBUS Current", "--");
         }
         if (metric_valid(snapshot.sys_mv)) {
             monitor_add_row(card, ROW_SYS_MV, LV_SYMBOL_POWER, "System", "--");
         }
         if (metric_valid(snapshot.battery_mv)) {
-            monitor_add_row(card, ROW_BATTERY_MV, LV_SYMBOL_BATTERY_FULL, "Battery V", "--");
+            monitor_add_row(card, ROW_BATTERY_MV, LV_SYMBOL_BATTERY_FULL, FACTORY_WATCH_UI ? "Battery volts" : "Battery V", "--");
         }
         if (metric_valid(snapshot.battery_ma)) {
-            monitor_add_row(card, ROW_BATTERY_MA, LV_SYMBOL_BATTERY_FULL, "Battery I", "--");
+            monitor_add_row(card, ROW_BATTERY_MA, LV_SYMBOL_BATTERY_FULL, FACTORY_WATCH_UI ? "Battery current" : "Battery I", "--");
         }
     }
 
     if (has_fuel_metrics(snapshot)) {
         card = ui_create_card(page_container, "Fuel");
         if (metric_valid(snapshot.battery_percent)) {
-            monitor_add_row(card, ROW_BATTERY_PERCENT, LV_SYMBOL_BATTERY_FULL, "SOC", "--");
+            monitor_add_row(card, ROW_BATTERY_PERCENT, LV_SYMBOL_BATTERY_FULL, FACTORY_WATCH_UI ? "Charge" : "SOC", "--");
         }
         if (metric_valid(snapshot.instantaneous_power_w)) {
             monitor_add_row(card, ROW_POWER_W, LV_SYMBOL_POWER, "Power", "--");
         }
         if (metric_valid(snapshot.average_power_mw)) {
-            monitor_add_row(card, ROW_AVG_POWER_MW, LV_SYMBOL_POWER, "Avg Power", "--");
+            monitor_add_row(card, ROW_AVG_POWER_MW, LV_SYMBOL_POWER, FACTORY_WATCH_UI ? "Average power" : "Avg Power", "--");
         }
         if (metric_valid(snapshot.time_to_empty_min)) {
-            monitor_add_row(card, ROW_TIME_EMPTY, LV_SYMBOL_REFRESH, "To Empty", "--");
+            monitor_add_row(card, ROW_TIME_EMPTY, LV_SYMBOL_REFRESH, FACTORY_WATCH_UI ? "Time to empty" : "To Empty", "--");
         }
         if (metric_valid(snapshot.time_to_full_min)) {
-            monitor_add_row(card, ROW_TIME_FULL, LV_SYMBOL_REFRESH, "To Full", "--");
+            monitor_add_row(card, ROW_TIME_FULL, LV_SYMBOL_REFRESH, FACTORY_WATCH_UI ? "Time to full" : "To Full", "--");
         }
         if (metric_valid(snapshot.remaining_capacity_mah)) {
             monitor_add_row(card, ROW_REMAINING_CAPACITY, LV_SYMBOL_BATTERY_FULL, "Remaining", "--");
         }
         if (metric_valid(snapshot.full_charge_capacity_mah)) {
-            monitor_add_row(card, ROW_FULL_CAPACITY, LV_SYMBOL_BATTERY_FULL, "Full Cap", "--");
+            monitor_add_row(card, ROW_FULL_CAPACITY, LV_SYMBOL_BATTERY_FULL, FACTORY_WATCH_UI ? "Full capacity" : "Full Cap", "--");
         }
         if (metric_valid(snapshot.design_capacity_mah)) {
-            monitor_add_row(card, ROW_DESIGN_CAPACITY, LV_SYMBOL_SETTINGS, "Design Cap", "--");
+            monitor_add_row(card, ROW_DESIGN_CAPACITY, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Design capacity" : "Design Cap", "--");
         }
         if (metric_valid(snapshot.standby_current_ma)) {
-            monitor_add_row(card, ROW_STANDBY_CURRENT, LV_SYMBOL_POWER, "Standby I", "--");
+            monitor_add_row(card, ROW_STANDBY_CURRENT, LV_SYMBOL_POWER, FACTORY_WATCH_UI ? "Standby current" : "Standby I", "--");
         }
         if (metric_valid(snapshot.max_load_current_ma)) {
-            monitor_add_row(card, ROW_MAX_LOAD_CURRENT, LV_SYMBOL_POWER, "Max Load I", "--");
+            monitor_add_row(card, ROW_MAX_LOAD_CURRENT, LV_SYMBOL_POWER, FACTORY_WATCH_UI ? "Max load" : "Max Load I", "--");
         }
     }
 
     if (has_health_metrics(snapshot)) {
         card = ui_create_card(page_container, "Health");
         if (metric_valid(snapshot.temperature_c)) {
-            monitor_add_row(card, ROW_TEMPERATURE, LV_SYMBOL_SETTINGS, "Temp", "--");
+            monitor_add_row(card, ROW_TEMPERATURE, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Temperature" : "Temp", "--");
         }
-        monitor_add_row(card, ROW_NTC, LV_SYMBOL_SETTINGS, "NTC", "--");
-        monitor_add_row(card, ROW_CHARGE_FAULT, LV_SYMBOL_WARNING, "Fault", "--");
+        monitor_add_row(card, ROW_NTC, LV_SYMBOL_SETTINGS, FACTORY_WATCH_UI ? "Battery sensor" : "NTC", "--");
+        monitor_add_row(card, ROW_CHARGE_FAULT, LV_SYMBOL_WARNING, FACTORY_WATCH_UI ? "Charge fault" : "Fault", "--");
     }
 
     monitor_update_rows(snapshot);

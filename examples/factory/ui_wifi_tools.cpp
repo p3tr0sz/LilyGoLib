@@ -49,10 +49,31 @@ static void set_result(const char *text, lv_color_t color)
     lv_obj_set_style_text_color(result_label, color, 0);
 }
 
+#if FACTORY_WATCH_UI
+/* Rows that only mean something while connected (watch-ux-guidelines.md 1.3). */
+static lv_obj_t *link_rows[5] = {NULL};
+
+static void show_link_rows(bool connected)
+{
+    for (lv_obj_t *row : link_rows) ui_card_row_set_hidden(row, !connected);
+}
+#endif
+
 static void refresh_info(void)
 {
 #ifdef ARDUINO
     bool connected = WiFi.isConnected();
+#if FACTORY_WATCH_UI
+    show_link_rows(connected);
+    /* The Network row names the network, or says there isn't one. */
+    lv_label_set_text(status_label, connected ? WiFi.SSID().c_str() : "Not connected");
+    lv_obj_set_style_text_color(status_label, connected ? UI_COLOR_TEXT_PRIMARY : UI_COLOR_WARNING, 0);
+    lv_label_set_text(ip_label, connected ? WiFi.localIP().toString().c_str() : "--");
+    lv_label_set_text(gateway_label, connected ? WiFi.gatewayIP().toString().c_str() : "--");
+    lv_label_set_text(dns_label, connected ? WiFi.dnsIP(0).toString().c_str() : "--");
+    if (connected) lv_label_set_text_fmt(rssi_label, "%d dBm", WiFi.RSSI());
+    return;
+#endif
     lv_label_set_text(status_label, connected ? "Connected" : "Disconnected");
     lv_obj_set_style_text_color(status_label, connected ? UI_COLOR_ACCENT : lv_color_hex(0xFF4444), 0);
 
@@ -67,8 +88,14 @@ static void refresh_info(void)
         lv_label_set_text(rssi_label, "--");
     }
 #else
+#if FACTORY_WATCH_UI
+    show_link_rows(false);
+    lv_label_set_text(status_label, "Not connected");
+    lv_obj_set_style_text_color(status_label, UI_COLOR_WARNING, 0);
+#else
     lv_label_set_text(status_label, "Unavailable");
     lv_obj_set_style_text_color(status_label, lv_color_hex(0xFF4444), 0);
+#endif
 #endif
 }
 
@@ -308,6 +335,9 @@ static void back_event_handler(lv_event_t *e)
     dns_label = NULL;
     mac_label = NULL;
     rssi_label = NULL;
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *&row : link_rows) row = NULL;
+#endif
     target_ta = NULL;
     port_dd = NULL;
 #if FACTORY_WATCH_UI
@@ -322,6 +352,16 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     page_container = ui_create_app_page(parent, "WiFi Tools", back_event_handler);
 
     lv_obj_t *card = ui_create_card(page_container, "Link");
+#if FACTORY_WATCH_UI
+    /* One line says the state; the details show only while connected. The MAC
+     * is in Settings > About. */
+    add_info_row(card, LV_SYMBOL_WIFI, "Network", "--", &status_label);
+    link_rows[0] = add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
+    link_rows[1] = add_info_row(card, LV_SYMBOL_HOME, "Router", "--", &gateway_label);
+    link_rows[2] = add_info_row(card, LV_SYMBOL_DIRECTORY, "DNS server", "--", &dns_label);
+    link_rows[3] = add_info_row(card, LV_SYMBOL_WIFI, "Signal", "--", &rssi_label);
+    link_rows[4] = ui_create_card_button(card, LV_SYMBOL_REFRESH, "Update", "Refresh", refresh_cb);
+#else
     add_info_row(card, LV_SYMBOL_WIFI, "Status", "--", &status_label);
     add_info_row(card, LV_SYMBOL_LIST, "SSID", "--", &ssid_label);
     add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
@@ -330,6 +370,7 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
     add_info_row(card, LV_SYMBOL_SETTINGS, "MAC", "--", &mac_label);
     add_info_row(card, LV_SYMBOL_WIFI, "RSSI", "--", &rssi_label);
     ui_create_card_button(card, LV_SYMBOL_REFRESH, "Update", "Refresh", refresh_cb);
+#endif
 
     card = ui_create_card(page_container, "Diagnostics");
 #if FACTORY_WATCH_UI
@@ -385,9 +426,9 @@ void ui_wifi_tools_enter(lv_obj_t *parent)
                           FACTORY_WATCH_UI ? "Test TCP port" : "Connect", tcp_cb);
 
     result_label = lv_label_create(card);
-    lv_label_set_text(result_label, "Ready.");
+    lv_label_set_text(result_label, FACTORY_WATCH_UI ? "" : "Ready.");
     lv_obj_set_style_text_color(result_label, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(result_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(result_label, UI_FONT_CAPTION, 0);
     lv_label_set_long_mode(result_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(result_label, LV_PCT(100));
 

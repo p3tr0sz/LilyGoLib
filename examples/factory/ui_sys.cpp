@@ -1035,6 +1035,25 @@ typedef struct {
     void (*build)(lv_obj_t *content);   /* Builds the page instead of the steps */
 } sys_section_t;
 
+static void haptics_switch_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target_obj(e);
+    hw_set_watch_haptics(lv_obj_has_state(sw, LV_STATE_CHECKED));
+    hw_haptic(HW_HAPTIC_TAP);   /* Says it's on; does nothing when turned off */
+}
+
+static void watch_haptics_build(lv_obj_t *content)
+{
+    lv_obj_t *card = ui_create_card(content, NULL);
+    ui_create_card_switch(card, LV_SYMBOL_BELL, "Vibration", hw_get_watch_haptics(), haptics_switch_cb);
+    lv_obj_t *note = lv_label_create(content);
+    lv_label_set_text(note, "Alarms and timers always vibrate");
+    lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(note, LV_PCT(100));
+    lv_obj_set_style_text_font(note, UI_FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(note, UI_COLOR_TEXT_SECONDARY, 0);
+}
+
 static const sys_section_t sys_sections[] = {
     {"Watch face",  LV_SYMBOL_HOME,     {}, watch_face_editor_build},
     {"Lock screen", LV_SYMBOL_EYE_CLOSE, {}, watch_lock_screen_build},
@@ -1042,6 +1061,7 @@ static const sys_section_t sys_sections[] = {
     {"Date & time", LV_SYMBOL_EDIT,     {}, ui_clock_settings_build},
 #endif
     {"Keyboard", LV_SYMBOL_KEYBOARD,    {}, ui_keyboard_settings_build},
+    {"Vibration", LV_SYMBOL_BELL,       {}, watch_haptics_build},
     {"Display", LV_SYMBOL_IMAGE,        {{UI_SYS_BUILD_DISPLAY_CARD, UI_SYS_BUILD_ROTARY}}},
     {"Input",   LV_SYMBOL_KEYBOARD,     {{UI_SYS_BUILD_ROTARY, UI_SYS_BUILD_AUDIO}}},
     {"Sound",   LV_SYMBOL_VOLUME_MAX,   {{UI_SYS_BUILD_AUDIO, UI_SYS_BUILD_POWER_CARD}}},

@@ -161,10 +161,12 @@ void setup()
 #endif
 
     LILYGO_LOG_PRINTLN("Start done. run main loop");
+    hw_ui_watchdog_start();
 }
 
 void loop()
 {
+    hw_ui_watchdog_feed();
     instanceLockTake();
     instance.loop();
 #if defined(USING_ST25R3916)

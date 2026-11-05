@@ -2559,7 +2559,21 @@ void ui_lora_hub_enter(lv_obj_t *parent)
     if (!(HW_RADIO_ONLINE & hw_get_device_online())) {
         lv_obj_t *card = ui_create_card(page_container, NULL);
         lv_obj_t *label = lv_label_create(card);
+#if FACTORY_WATCH_UI
+        /* Say what is wrong and what to do about it (watch-ux-guidelines.md 7.2). */
+        lv_label_set_text(label, "No LoRa radio found");
+        lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
+        lv_obj_t *hint = lv_label_create(card);
+        lv_label_set_text(hint, "Restart the watch to try again");
+        lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(hint, LV_PCT(100));
+        lv_obj_set_style_pad_top(hint, 8, 0);
+        lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
+#else
         lv_label_set_text(label, "Radio module not detected.");
+#endif
         lv_obj_set_style_text_color(label, UI_COLOR_TEXT_PRIMARY, 0);
         lv_obj_set_width(label, LV_PCT(100));
         lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);

@@ -336,11 +336,11 @@
 
 /*Add a custom handler when assert happens e.g. to restart the MCU*/
 #if defined(LVGL_VERSION_MAJOR) && LVGL_VERSION_MAJOR == 9 && LVGL_VERSION_MINOR >= 6
-#define LV_ASSERT_CUSTOM_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);   /*Halt by default*/
+#define LV_ASSERT_CUSTOM_INCLUDE "lilygo_lv_assert.h"
+#define LV_ASSERT_HANDLER lilygo_lv_assert_failed();   /*Halts unless the app defines its own*/
 #else
-#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
-#define LV_ASSERT_HANDLER while(1);   /*Halt by default*/
+#define LV_ASSERT_HANDLER_INCLUDE "lilygo_lv_assert.h"
+#define LV_ASSERT_HANDLER lilygo_lv_assert_failed();   /*Halts unless the app defines its own*/
 #endif
 
 /*-------------

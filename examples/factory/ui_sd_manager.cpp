@@ -47,10 +47,20 @@ static uint8_t file_count = 0;
 static uint8_t root_item_count = 0;
 static int8_t selected_index = -1;
 static bool viewer_scroll_mode = false;
+#if FACTORY_WATCH_UI
+/* Watch: files are card rows in this box (rebuilt with lv_obj_clean, which also
+ * drops their dividers); a tap on a file pushes its own page. */
+static lv_obj_t *file_list_cont = NULL;
+static lv_obj_t *file_page = NULL;
+static lv_obj_t *storage_rows[2] = {NULL};   /* Capacity, Used: only with a card */
+#endif
 
 static void build_file_list(void);
 static bool is_viewable_file(const char *path);
 static void view_btn_cb(lv_event_t *e);
+#if FACTORY_WATCH_UI
+static void show_file_page(sd_manager_item_t *item);
+#endif
 
 static void *sdm_alloc(size_t size)
 {
@@ -90,6 +100,13 @@ static void free_file_items(void)
 
 static void set_status(const char *text, lv_color_t color)
 {
+#if FACTORY_WATCH_UI
+    /* A result the person just caused is a toast; the card's state line stays. */
+    if (file_page || (text && (strncmp(text, "Deleted", 7) == 0 || strncmp(text, "Removed", 7) == 0))) {
+        ui_toast(text);
+        return;
+    }
+#endif
     if (!status_label) return;
     lv_label_set_text(status_label, text);
     lv_obj_set_style_text_color(status_label, color, 0);
@@ -279,9 +296,18 @@ static void update_card_info(void)
         if (used_label) lv_label_set_text(used_label, "--");
         if (item_count_label) lv_label_set_text(item_count_label, "0");
         if (path_label) lv_label_set_text(path_label, "--");
-        set_status("SD card is not available.", lv_color_hex(0xFF4444));
+#if FACTORY_WATCH_UI
+        /* The Files card already says to insert a card. */
+        for (lv_obj_t *r : storage_rows) ui_card_row_set_hidden(r, true);
+        if (status_label) lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+#endif
+        set_status(FACTORY_WATCH_UI ? "No SD card" : "SD card is not available.", lv_color_hex(0xFF4444));
         return;
     }
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *r : storage_rows) ui_card_row_set_hidden(r, false);
+    if (status_label) lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+#endif
 
     char buf[48];
     uint64_t total = SD.totalBytes();
@@ -301,12 +327,23 @@ static void update_card_info(void)
     if (path_label) lv_label_set_text(path_label, current_dir);
     set_status("Mounted.", UI_COLOR_ACCENT);
 #else
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *r : storage_rows) ui_card_row_set_hidden(r, true);
+    if (status_label) lv_obj_add_flag(status_label, LV_OBJ_FLAG_HIDDEN);
+#else
     set_status("Not available.", lv_color_hex(0xFF4444));
+#endif
 #endif
 }
 
 static void clear_file_rows(void)
 {
+#if FACTORY_WATCH_UI
+    if (file_list_cont) {
+        lv_obj_clean(file_list_cont);
+        memset(file_rows, 0, sizeof(file_rows));
+    }
+#endif
     for (uint8_t i = 0; i < SDM_MAX_ITEMS; ++i) {
         if (file_rows[i]) {
             lv_obj_delete(file_rows[i]);
@@ -320,10 +357,16 @@ static void clear_file_rows(void)
 static void add_empty_row(const char *text)
 {
     if (!file_list_card || SDM_MAX_ITEMS == 0) return;
+#if FACTORY_WATCH_UI
+    lv_obj_t *lbl = lv_label_create(file_list_cont ? file_list_cont : file_list_card);
+    lv_obj_set_style_pad_ver(lbl, 12, 0);
+    lv_obj_set_style_text_font(lbl, UI_FONT_BODY, 0);
+#else
     lv_obj_t *lbl = lv_label_create(file_list_card);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+#endif
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
     file_rows[0] = lbl;
     file_count = 1;
 }
@@ -381,10 +424,22 @@ static void activate_file_item(sd_manager_item_t *item, bool preview_file)
         return;
     }
 
+#if FACTORY_WATCH_UI
+    LV_UNUSED(preview_file);
+    show_file_page(item);
+#else
     if (preview_file && is_viewable_file(item->path)) {
         view_btn_cb(NULL);
     }
+#endif
 }
+
+#if FACTORY_WATCH_UI
+static void watch_file_row_cb(lv_event_t *e)
+{
+    activate_file_item((sd_manager_item_t *)lv_event_get_user_data(e), false);
+}
+#endif
 
 static void file_row_cb(lv_event_t *e)
 {
@@ -410,6 +465,20 @@ static void file_row_cb(lv_event_t *e)
 
 static void create_file_row(sd_manager_item_t *item, uint8_t index)
 {
+#if FACTORY_WATCH_UI
+    if (file_list_cont) {
+        char size_buf[24] = "";
+        if (!item->is_dir) format_size(size_buf, sizeof(size_buf), item->size);
+        file_rows[index] = ui_create_card_signal_row(
+                               file_list_cont,
+                               item->is_parent ? LV_SYMBOL_UP : (item->is_dir ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE),
+                               item->is_parent ? "Up" : display_name(item), NULL,
+                               item->is_dir ? NULL : size_buf,
+                               item->is_dir ? UI_COLOR_ACCENT : UI_COLOR_TEXT_SECONDARY,
+                               watch_file_row_cb, item);
+        return;
+    }
+#endif
     lv_obj_t *row = lv_obj_create(file_list_card);
     file_rows[index] = row;
 
@@ -473,7 +542,7 @@ static void build_file_list(void)
         return;
     }
     if (!ensure_sd()) {
-        add_empty_row("No SD card detected");
+        add_empty_row(FACTORY_WATCH_UI ? "Insert an SD card" : "No SD card detected");
         update_card_info();
         return;
     }
@@ -632,6 +701,23 @@ static void viewer_scroll_cb(lv_event_t *e)
 
 static void show_text_viewer(const char *path, const char *text, bool truncated)
 {
+#if FACTORY_WATCH_UI
+    /* A page of its own that scrolls with the finger; swipe right closes it. */
+    lv_obj_t *content = ui_push_page(file_page ? file_page : page_container, base_name(path));
+    lv_obj_t *text_body = lv_label_create(content);
+    lv_label_set_text(text_body, text ? text : "");
+    lv_label_set_long_mode(text_body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(text_body, LV_PCT(100));
+    lv_obj_set_style_text_color(text_body, UI_COLOR_TEXT_PRIMARY, 0);
+    lv_obj_set_style_text_font(text_body, UI_FONT_SMALL, 0);
+    if (truncated) {
+        lv_obj_t *hint = lv_label_create(content);
+        lv_label_set_text(hint, "First 4 KB shown");
+        lv_obj_set_style_text_color(hint, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(hint, UI_FONT_CAPTION, 0);
+    }
+    return;
+#endif
     close_viewer_cb(NULL);
 
     viewer_box = lv_obj_create(lv_screen_active());
@@ -771,6 +857,46 @@ static void delete_btn_cb(lv_event_t *e)
 #endif
 }
 
+#if FACTORY_WATCH_UI
+static void file_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    file_page = NULL;
+}
+
+static void file_page_delete_file_cb(lv_event_t *e)
+{
+    lv_obj_t *page = file_page;
+    delete_btn_cb(e);
+    if (page) ui_pop_page(page);
+}
+
+static void show_file_page(sd_manager_item_t *item)
+{
+    lv_obj_t *content = ui_push_page(file_list_card, "File");
+    file_page = content;
+    lv_obj_add_event_cb(content, file_page_delete_cb, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *card = ui_create_card(content, NULL);
+    lv_obj_t *name = lv_label_create(card);
+    lv_label_set_text(name, base_name(item->path));
+    lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(name, LV_PCT(100));
+    lv_obj_set_style_pad_ver(name, 12, 0);
+    lv_obj_set_style_text_color(name, UI_COLOR_TEXT_PRIMARY, 0);
+    char size_buf[24];
+    format_size(size_buf, sizeof(size_buf), item->size);
+    ui_create_card_info(card, LV_SYMBOL_SAVE, "Size", size_buf);
+
+    if (is_viewable_file(item->path)) {
+        ui_create_card_action(content, LV_SYMBOL_EYE_OPEN, "View", view_btn_cb);
+    }
+    lv_obj_t *del = ui_create_card_action(content, LV_SYMBOL_TRASH, "Delete file",
+                                          file_page_delete_file_cb);
+    ui_require_hold_hint(lv_obj_get_child(del, -1), "Hold to delete");
+}
+#endif
+
 static void clean_logs_cb(lv_event_t *e)
 {
     if (!ensure_sd()) {
@@ -836,6 +962,11 @@ static void back_event_handler(lv_event_t *e)
     view_btn = NULL;
     delete_btn = NULL;
     file_list_card = NULL;
+#if FACTORY_WATCH_UI
+    file_list_cont = NULL;
+    file_page = NULL;
+    for (lv_obj_t *&r : storage_rows) r = NULL;
+#endif
     selected_index = -1;
     menu_show();
 }
@@ -846,6 +977,28 @@ void ui_sd_manager_enter(lv_obj_t *parent)
     snprintf(current_dir, sizeof(current_dir), "/");
     page_container = ui_create_app_page(parent, "SD Manager", back_event_handler);
 
+#if FACTORY_WATCH_UI
+    /* The files are what people come for, so they come first (watch-ux-guidelines.md 1.1). */
+    file_list_card = ui_create_card(page_container, "Files");
+    file_list_cont = lv_obj_create(file_list_card);
+    lv_obj_remove_style_all(file_list_cont);
+    lv_obj_set_size(file_list_cont, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(file_list_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(file_list_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(file_list_cont, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *storage = ui_create_card(page_container, "Storage");
+    status_label = lv_label_create(storage);
+    lv_obj_set_style_text_font(status_label, UI_FONT_BODY, 0);
+    lv_obj_set_style_pad_ver(status_label, 12, 0);
+    storage_rows[0] = add_info_row(storage, LV_SYMBOL_SD_CARD, "Capacity", "--", &capacity_label);
+    storage_rows[1] = add_info_row(storage, LV_SYMBOL_SAVE, "Used", "--", &used_label);
+    ui_create_card_button(storage, LV_SYMBOL_REFRESH, "Refresh", "Refresh", refresh_btn_cb);
+    lv_obj_t *clean_row = ui_create_card_button(storage, LV_SYMBOL_TRASH, "Logs", "Clean logs", clean_logs_cb);
+    ui_require_hold_hint(lv_obj_get_child(clean_row, -1), "Hold to delete all logs");
+    build_file_list();
+    return;
+#endif
     lv_obj_t *card = ui_create_card(page_container, "Storage");
     status_label = lv_label_create(card);
     lv_label_set_text(status_label, "Checking...");

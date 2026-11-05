@@ -19,14 +19,14 @@
 #define PAGE_PUSH_MS            200
 #define PAGE_POP_MS             180
 #define PICKER_POP_DELAY_MS     200     /* Long enough to see the check mark move */
-#define LIST_ROW_H              72
+#define LIST_ROW_H              88
 #define LIST_ICON_DISC          52
 #define PICKER_OPTION_MAX_LEN   64
 #define LEVEL_STEP_BTN          96      /* Diameter of the − and + buttons */
 #define LEVEL_STEPS             20      /* −/+ presses from one end to the other */
 #define HOLD_CONFIRM_MS         800
 #define TOAST_MS                1400
-#define ACTION_PILL_H           64
+#define ACTION_PILL_H           82
 
 static void page_set_x(void *obj, int32_t x)
 {
@@ -86,7 +86,7 @@ lv_obj_t *ui_push_page(lv_obj_t *from, const char *title)
     int32_t width = lv_display_get_horizontal_resolution(NULL);
     lv_obj_set_x(root, width);
     page_slide(root, width, 0, PAGE_PUSH_MS, 0, NULL);
-    hw_feedback();
+    /* No buzz: the slide shows it, and taps buzz sparingly (8.2). */
     return content;
 }
 
@@ -118,7 +118,7 @@ static lv_obj_t *list_row_label(lv_obj_t *row, const char *text)
 {
     lv_obj_t *label = lv_label_create(row);
     lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(label, UI_FONT_BODY, 0);
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_PRIMARY, 0);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_flex_grow(label, 1);
@@ -293,7 +293,7 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
 
     lv_obj_t *text = lv_label_create(btn);
     lv_label_set_text(text, label ? label : "");
-    lv_obj_set_style_text_font(text, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(text, UI_FONT_BODY, 0);
     lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
     lv_obj_set_style_max_width(text, LV_PCT(100), 0);
     lv_obj_center(text);
@@ -306,7 +306,10 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
     lv_group_remove_obj(btn);
     /* Pills sit between other rows; the divider under them is noise. */
     lv_obj_t *divider = lv_obj_get_child(card, -1);
-    if (divider) lv_obj_add_flag(divider, LV_OBJ_FLAG_HIDDEN);
+    if (divider) {
+        lv_obj_add_flag(divider, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(divider, LV_OBJ_FLAG_USER_3);   /* Stays hidden when a row follows */
+    }
     return row;
 }
 
@@ -577,6 +580,22 @@ static void kb_show(text_page_t *st, kb_view_t view, int group)
     kb_style_keys(st, view == KB_LETTERS ? (uint32_t)(2 * st->letter_count) : UINT32_MAX);
 }
 
+/* LVGL animates the field's scroll to the cursor on every key, so long text
+ * slid back and forth while typing. Jump there instead. */
+static void kb_snap_scroll(lv_obj_t *edit)
+{
+    lv_anim_delete(edit, NULL);
+    lv_obj_t *label = lv_textarea_get_label(edit);
+    lv_obj_update_layout(edit);
+    lv_point_t pos;
+    lv_label_get_letter_pos(label, lv_textarea_get_cursor_pos(edit), &pos);
+    /* As LVGL does: keep a letter's height free right of the cursor. */
+    int32_t room = lv_font_get_line_height(lv_obj_get_style_text_font(edit, LV_PART_MAIN));
+    int32_t w = lv_obj_get_content_width(edit);
+    lv_obj_scroll_to_x(edit, pos.x + room > w ? pos.x + room - w : 0, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(edit, 0, LV_ANIM_OFF);
+}
+
 static void kb_commit(text_page_t *st)
 {
     lv_obj_t *content = lv_obj_get_parent(st->keys);
@@ -622,6 +641,7 @@ static void kb_event_cb(lv_event_t *e)
         /* A letter is one pick; digits and symbols often come in runs. */
         if (st->view == KB_LETTERS) kb_show(st, KB_GROUPS, 0);
     }
+    kb_snap_scroll(st->edit);
 }
 
 void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
@@ -652,7 +672,15 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_t *edit = lv_textarea_create(field_row);
     state->edit = edit;
     lv_textarea_set_one_line(edit, true);
-    lv_textarea_set_password_mode(edit, lv_textarea_get_password_mode(ta));
+    const bool password = lv_textarea_get_password_mode(ta);
+    lv_textarea_set_password_mode(edit, password);
+    if (password) {
+        /* LVGL shows a new letter for 1.5 s, then swaps it for a much narrower
+         * dot, so the text and cursor jumped back after every key. Dots at once
+         * (the key just pressed shows the letter), spaced so they can be counted. */
+        lv_textarea_set_password_show_time(edit, 0);
+        lv_obj_set_style_text_letter_space(edit, 8, 0);
+    }
     uint32_t max_len = lv_textarea_get_max_length(ta);
     if (max_len) lv_textarea_set_max_length(edit, max_len);
     const char *accepted = lv_textarea_get_accepted_chars(ta);
@@ -726,6 +754,7 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_add_flag(kb, UI_FLAG_SWIPE_BACK_OK);
     lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_VALUE_CHANGED, state);
     kb_show(state, state->numeric ? KB_NUMPAD : KB_GROUPS, 0);
+    kb_snap_scroll(edit);
 }
 
 static void text_value_update(lv_obj_t *value, lv_obj_t *ta)
@@ -866,6 +895,59 @@ void ui_wheel_number_options(char *out, size_t out_size, int count, int first)
     for (int i = first; i < first + count && len + 4 <= out_size; ++i) {
         len += (size_t)lv_snprintf(out + len, out_size - len, "%s%02d", i == first ? "" : "\n", i);
     }
+}
+
+lv_obj_t *ui_create_card_signal_row(lv_obj_t *card, const char *icon, const char *title,
+                                    const char *detail, const char *value, lv_color_t color,
+                                    lv_event_cb_t cb, void *user_data)
+{
+    lv_obj_t *row = ui_create_card_item(card, icon, NULL, NULL);
+    if (icon) lv_obj_set_style_text_color(lv_obj_get_child(row, 0), color, 0);
+
+    lv_obj_t *col = lv_obj_create(row);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, 1, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 2, 0);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);   /* Taps go to the row */
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *name = lv_label_create(col);
+    lv_label_set_text(name, title ? title : "");
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    /* One line each: a fixed height makes LVGL end a long name in dots. */
+    const int32_t name_h = lv_font_get_line_height(lv_obj_get_style_text_font(row, LV_PART_MAIN));
+    lv_obj_set_size(name, LV_PCT(100), name_h);
+    lv_obj_set_style_text_color(name, UI_COLOR_TEXT_PRIMARY, 0);
+
+    if (detail && detail[0]) {
+        lv_obj_t *sub = lv_label_create(col);
+        lv_label_set_text(sub, detail);
+        lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+        lv_obj_set_size(sub, LV_PCT(100), lv_font_get_line_height(UI_FONT_CAPTION));
+        lv_obj_set_style_text_font(sub, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_text_color(sub, UI_COLOR_TEXT_SECONDARY, 0);
+    }
+
+    if (value) {
+        lv_obj_t *val = lv_label_create(row);
+        lv_label_set_text(val, value);
+        lv_obj_set_style_text_color(val, color, 0);
+    }
+
+    /* Two lines in the row's usual height. */
+    int32_t content_h = name_h;
+    if (detail && detail[0]) content_h += 2 + lv_font_get_line_height(UI_FONT_CAPTION);
+    int32_t pad = LV_MAX(8, (UI_ROW_MIN_H - content_h) / 2);
+    lv_obj_set_style_pad_ver(row, pad, 0);
+
+    lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(row, 12, 0);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    if (cb) lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, user_data);
+    return row;
 }
 
 lv_obj_t *ui_create_card_icon_action(lv_obj_t *card, const char *symbol, lv_event_cb_t cb)
@@ -1108,6 +1190,7 @@ void ui_toast(const char *text)
 typedef struct {
     lv_obj_t *obj;
     lv_obj_t *fill;
+    const char *hint;   /* Shown on a short tap; static text */
     bool allow_click;
 } hold_state_t;
 
@@ -1128,7 +1211,7 @@ static void hold_confirmed_cb(lv_anim_t *a)
     hold_state_t *state = (hold_state_t *)lv_anim_get_user_data(a);
     lv_obj_t *obj = state->obj;
 
-    hw_feedback();
+    hw_haptic(HW_HAPTIC_SUCCESS);
     state->allow_click = true;
     lv_obj_send_event(obj, LV_EVENT_CLICKED, NULL);
     /* The action may have deleted the control, and its state with it. */
@@ -1183,7 +1266,7 @@ static void hold_event_cb(lv_event_t *e)
     case LV_EVENT_RELEASED: {
         bool was_holding = state->fill && lv_obj_get_width(state->fill) < lv_obj_get_width(obj);
         hold_fill_remove(state);
-        if (was_holding) ui_toast("Hold to confirm");
+        if (was_holding) ui_toast(state->hint ? state->hint : "Hold to confirm");
         break;
     }
     case LV_EVENT_PRESS_LOST:
@@ -1199,10 +1282,16 @@ static void hold_event_cb(lv_event_t *e)
 
 void ui_require_hold(lv_obj_t *obj)
 {
+    ui_require_hold_hint(obj, NULL);
+}
+
+void ui_require_hold_hint(lv_obj_t *obj, const char *hint)
+{
     if (!obj) return;
     hold_state_t *state = (hold_state_t *)lv_malloc_zeroed(sizeof(hold_state_t));
     if (!state) return;
     state->obj = obj;
+    state->hint = hint;
     lv_obj_add_event_cb(obj, hold_event_cb,
                         (lv_event_code_t)(LV_EVENT_CLICKED | LV_EVENT_PREPROCESS), state);
     lv_obj_add_event_cb(obj, hold_event_cb, LV_EVENT_PRESSED, state);
@@ -1223,6 +1312,12 @@ lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *ti
 void ui_require_hold(lv_obj_t *obj)
 {
     LV_UNUSED(obj);
+}
+
+void ui_require_hold_hint(lv_obj_t *obj, const char *hint)
+{
+    LV_UNUSED(obj);
+    LV_UNUSED(hint);
 }
 
 #endif /* FACTORY_WATCH_UI */

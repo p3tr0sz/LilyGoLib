@@ -402,7 +402,7 @@ static void ring_buzz_cb(lv_timer_t *t)
         ring_close();
         return;
     }
-    hw_feedback();
+    hw_haptic(HW_HAPTIC_ALERT);
     lv_display_trigger_activity(NULL);  /* Keep the screen on while ringing */
 }
 
@@ -622,7 +622,7 @@ static void sw_main_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     stopwatch_toggle();
-    hw_feedback();
+    hw_haptic(sw.running ? HW_HAPTIC_START : HW_HAPTIC_STOP);
     sw_ui_update();
 }
 
@@ -702,7 +702,7 @@ static void tmr_custom_start(uint32_t seconds)
 {
     if (!is_timer_preset(seconds)) hw_add_watch_timer_recent(seconds);
     timer_start(seconds * 1000U);
-    hw_feedback();
+    hw_haptic(HW_HAPTIC_START);
 }
 
 static void tmr_recent_cb(lv_event_t *e)
@@ -803,7 +803,7 @@ static void tmr_preset_cb(lv_event_t *e)
 {
     uint32_t minutes = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
     timer_start(minutes * 60000U);
-    hw_feedback();
+    hw_haptic(HW_HAPTIC_START);
     tmr_ui_show();
 }
 
@@ -811,7 +811,7 @@ static void tmr_pause_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     timer_toggle_pause();
-    hw_feedback();
+    hw_haptic(tmr.state == TIMER_RUNNING ? HW_HAPTIC_START : HW_HAPTIC_STOP);
     tmr_ui_show();
 }
 
@@ -819,7 +819,7 @@ static void tmr_cancel_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     tmr.state = TIMER_IDLE;
-    hw_feedback();
+    hw_haptic(HW_HAPTIC_STOP);
     tmr_ui_show();
 }
 

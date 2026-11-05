@@ -75,7 +75,12 @@ static const ui_theme_preset_t ui_theme_presets[] = {
     { 0x00D4AA, 0x009977, 0x1A1A1A, 0x333333, "Mint"     },  /* 0: Current default */
     { 0x0088FF, 0x0066CC, 0x1A1A2E, 0x333344, "Ocean"    },  /* 1: Blue */
     { 0xFF6B35, 0xCC5522, 0x2A1A1A, 0x443333, "Sunset"   },  /* 2: Orange */
+#if FACTORY_WATCH_UI
+    /* A step lighter on the watch: 0xAA55FF on this card is 4.4 : 1, under 4.5. */
+    { 0xB577FF, 0x8833CC, 0x1E1A2A, 0x3A3344, "Violet"   },  /* 3: Purple */
+#else
     { 0xAA55FF, 0x8833CC, 0x1E1A2A, 0x3A3344, "Violet"   },  /* 3: Purple */
+#endif
     { 0xFF3366, 0xCC2255, 0x2A1A20, 0x443338, "Cherry"   },  /* 4: Pink/Red */
     { 0x88CC00, 0x669900, 0x1A2A1A, 0x334433, "Lime"     },  /* 5: Green */
     { 0xFFB800, 0xCC9200, 0x2A2A1A, 0x444433, "Amber"    },  /* 6: Gold */
@@ -98,7 +103,12 @@ extern uint32_t ui_active_track;
 #define UI_COLOR_ACCENT_FOCUS_OUTLINE lv_color_white()
 #define UI_COLOR_WARNING      lv_color_hex(0xFF6B35)
 #define UI_COLOR_TEXT_PRIMARY  lv_color_white()
+#if FACTORY_WATCH_UI
+/* At least 5.5 : 1 on every preset's card (0x888888 was 4.0 on Mono). */
+#define UI_COLOR_TEXT_SECONDARY lv_color_hex(0xA0A0A0)
+#else
 #define UI_COLOR_TEXT_SECONDARY lv_color_hex(0x888888)
+#endif
 #define UI_COLOR_DIVIDER      lv_color_hex(0x333333)
 #define UI_COLOR_TRACK        lv_color_hex(ui_active_track)
 #define UI_COLOR_KNOB         lv_color_white()
@@ -109,17 +119,18 @@ extern uint32_t ui_active_track;
  * Each holds only those glyphs and falls back to LVGL's built-in font, so plain
  * text is unchanged. Other boards keep the built-ins. */
 #if FACTORY_WATCH_UI
-LV_FONT_DECLARE(font_latin_10)
-#define lv_font_montserrat_10 font_latin_10
-LV_FONT_DECLARE(font_latin_12)
-#define lv_font_montserrat_12 font_latin_12
-LV_FONT_DECLARE(font_latin_14)
-#define lv_font_montserrat_14 font_latin_14
-LV_FONT_DECLARE(font_latin_16)
-#define lv_font_montserrat_16 font_latin_16
-LV_FONT_DECLARE(font_latin_18)
-#define lv_font_montserrat_18 font_latin_18
+/* Nothing that has to be read is under 22 px (watch-ux-guidelines.md 4.1,
+ * Apple's 12 pt minimum), so the sizes apps chose for small screens map to the
+ * smallest readable ones: 10 to 16 -> 22, 18 -> 24. 20 px stays for the few
+ * places that ask for it directly (header clock). */
 LV_FONT_DECLARE(font_latin_20)
+LV_FONT_DECLARE(font_latin_22)
+LV_FONT_DECLARE(font_latin_24)
+#define lv_font_montserrat_10 font_latin_22
+#define lv_font_montserrat_12 font_latin_22
+#define lv_font_montserrat_14 font_latin_22
+#define lv_font_montserrat_16 font_latin_22
+#define lv_font_montserrat_18 font_latin_24
 #define lv_font_montserrat_20 font_latin_20
 LV_FONT_DECLARE(font_latin_22)
 #define lv_font_montserrat_22 font_latin_22
@@ -137,16 +148,19 @@ LV_FONT_DECLARE(font_latin_48)
  * The watch shell's screen is ~315 ppi, so it uses larger type and touch
  * targets. On other boards each font token is the size it replaces. */
 #if FACTORY_WATCH_UI
-#define UI_FONT_TINY          (&lv_font_montserrat_16)   /* was 10 px */
-#define UI_FONT_CAPTION       (&lv_font_montserrat_16)   /* was 12 px */
-#define UI_FONT_SMALL         (&lv_font_montserrat_18)   /* was 14 px */
-#define UI_ROW_MIN_H          76
+/* watch-ux-guidelines.md 4.1: nothing that has to be read under 22 px (Apple's
+ * 12 pt minimum); body text as close to 32 px (17 pt) as rows allow. */
+#define UI_FONT_TINY          (&lv_font_montserrat_22)   /* was 10 px */
+#define UI_FONT_CAPTION       (&lv_font_montserrat_22)   /* was 12 px */
+#define UI_FONT_SMALL         (&lv_font_montserrat_24)   /* was 14 px */
+#define UI_ROW_MIN_H          88   /* 3.1: 82 px (44 pt) is the comfortable target */
 #define UI_APP_NAV_H          44
 /* One side margin for every watch screen (app list, app pages, sheets): the
  * Ultra's display has rounded corners, so content stays this far from the edge. */
 #define UI_SCREEN_MARGIN      24
 #define UI_APP_PAD_HOR        UI_SCREEN_MARGIN
 #define UI_CARD_PAD_HOR       16   /* Card edge to its caption, icons, values and dividers */
+#define UI_ROW_ICON_W         30   /* A card row's icon column */
 #else
 #define UI_FONT_TINY          (&lv_font_montserrat_10)
 #define UI_FONT_CAPTION       (&lv_font_montserrat_12)
@@ -156,7 +170,11 @@ LV_FONT_DECLARE(font_latin_48)
 #define UI_APP_PAD_HOR        8
 #define UI_CARD_PAD_HOR       12
 #endif
+#if FACTORY_WATCH_UI
+#define UI_FONT_BODY          (&lv_font_montserrat_28)
+#else
 #define UI_FONT_BODY          (MAIN_FONT)
+#endif
 
 /* ── Shared styles ── */
 typedef struct {
@@ -285,6 +303,8 @@ lv_obj_t *ui_create_card_picker(lv_obj_t *card, const char *icon, const char *ti
                                  const char *options, uint8_t sel, lv_event_cb_t cb);
 lv_obj_t *ui_create_card_button(lv_obj_t *card, const char *icon, const char *title,
                                  const char *btn_text, lv_event_cb_t cb);
+/* Hides or shows a card row together with the divider under it. */
+void ui_card_row_set_hidden(lv_obj_t *row, bool hidden);
 lv_obj_t *ui_create_card_info(lv_obj_t *card, const char *icon, const char *title,
                                const char *value);
 lv_obj_t *ui_create_status_bar(lv_obj_t *parent);
@@ -324,6 +344,12 @@ lv_obj_t *ui_create_card_action(lv_obj_t *card, const char *icon, const char *la
 /* An action pill that shows only an icon (LV_SYMBOL_OK, …), for verbs the icon
  * already says, such as confirming the wheels on a "Set" page. */
 lv_obj_t *ui_create_card_icon_action(lv_obj_t *card, const char *symbol, lv_event_cb_t cb);
+/* A found network or device: the icon in the signal's colour, the name over a grey
+ * detail line, and the signal ("-52 dBm") on the right. A card row like the others
+ * (same height, edges and divider); a tap anywhere on it runs cb with user_data. */
+lv_obj_t *ui_create_card_signal_row(lv_obj_t *card, const char *icon, const char *title,
+                                    const char *detail, const char *value, lv_color_t color,
+                                    lv_event_cb_t cb, void *user_data);
 /* A short message at the bottom of the screen that goes away by itself. */
 void ui_toast(const char *text);
 /* Scroll wheels for picking numbers: ui_push_wheel_page() pushes a page with an
@@ -339,6 +365,8 @@ void ui_wheel_number_options(char *out, size_t out_size, int count, int first);
  * handlers run only after it is held for about a second; a tap shows "Hold to
  * confirm". Does nothing on other boards. */
 void ui_require_hold(lv_obj_t *obj);
+/* The same, with the toast saying what the hold will do ("Hold to restart"). */
+void ui_require_hold_hint(lv_obj_t *obj, const char *hint);
 
 bool is_screen_small(void);
 void ui_set_font_size_pref(uint8_t pref);

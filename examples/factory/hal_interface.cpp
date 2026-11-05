@@ -53,10 +53,11 @@ typedef struct {
     uint8_t watch_alarms[WATCH_ALARM_COUNT][4];         // flags, hour, minute, days
     uint8_t watch_timer_recent[WATCH_TIMER_RECENT_COUNT][3]; // seconds (little endian), newest first
     uint8_t watch_keyboard_accents;                     // Language index; 0 = none
+    uint8_t watch_haptics_off;                          // 0 = vibration on (old saves)
     // Keep the blob size stable when adding small persisted settings later.
-    uint8_t reserved[12];
+    uint8_t reserved[11];
 } app_settings_storage_t;
-static_assert(offsetof(app_settings_storage_t, reserved) + 12 ==
+static_assert(offsetof(app_settings_storage_t, reserved) + 11 ==
               offsetof(app_settings_storage_t, watch_lock_mode) + 59,
               "Watch settings must fit in the old spare bytes");
 
@@ -163,6 +164,8 @@ typedef struct {
 #include <cbuf.h>
 #include <Preferences.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
+#include <esp_timer.h>
 #include "driver/rtc_io.h"
 #include <FFat.h>
 
@@ -2357,6 +2360,63 @@ void hw_set_watch_lock_mode(uint8_t mode)
 #endif
 }
 
+/* The app list order is too big for the settings blob's spare bytes, so it has
+ * its own Preferences namespace. The simulator keeps it in a file next to the
+ * program's working directory, so a reorder survives a restart there too. */
+static uint32_t app_order[WATCH_APP_ORDER_MAX];
+static uint8_t app_order_count = 0;
+static bool app_order_loaded = false;
+#ifndef ARDUINO
+static const char *APP_ORDER_FILE = "watch_app_order.bin";
+#endif
+
+uint8_t hw_get_watch_app_order(uint32_t *out, uint8_t max)
+{
+    if (!app_order_loaded) {
+        app_order_loaded = true;
+        size_t bytes = 0;
+#ifdef ARDUINO
+        Preferences order_prefs;
+        if (order_prefs.begin("app_order", true)) {
+            bytes = order_prefs.getBytes("order", app_order, sizeof(app_order));
+            order_prefs.end();
+        }
+#else
+        FILE *f = fopen(APP_ORDER_FILE, "rb");
+        if (f) {
+            bytes = fread(app_order, 1, sizeof(app_order), f);
+            fclose(f);
+        }
+#endif
+        app_order_count = (uint8_t)(bytes / sizeof(uint32_t));
+    }
+    uint8_t n = app_order_count < max ? app_order_count : max;
+    memcpy(out, app_order, n * sizeof(uint32_t));
+    return n;
+}
+
+void hw_set_watch_app_order(const uint32_t *hashes, uint8_t count)
+{
+    if (count > WATCH_APP_ORDER_MAX) count = WATCH_APP_ORDER_MAX;
+    app_order_loaded = true;
+    if (count == app_order_count && memcmp(app_order, hashes, count * sizeof(uint32_t)) == 0) return;
+    memcpy(app_order, hashes, count * sizeof(uint32_t));
+    app_order_count = count;
+#ifdef ARDUINO
+    Preferences order_prefs;
+    if (order_prefs.begin("app_order", false)) {
+        order_prefs.putBytes("order", app_order, count * sizeof(uint32_t));
+        order_prefs.end();
+    }
+#else
+    FILE *f = fopen(APP_ORDER_FILE, "wb");
+    if (f) {
+        fwrite(app_order, sizeof(uint32_t), count, f);
+        fclose(f);
+    }
+#endif
+}
+
 watch_slot_setting_t hw_get_watch_face_slot(uint8_t index)
 {
     watch_slot_setting_t slot = {WATCH_SLOT_DEFAULT, 0};
@@ -2432,6 +2492,20 @@ void hw_set_watch_keyboard_accents(uint8_t language)
 #endif
 }
 
+bool hw_get_watch_haptics(void)
+{
+    return !app_settings.watch_haptics_off;
+}
+
+void hw_set_watch_haptics(bool on)
+{
+    if (on == hw_get_watch_haptics()) return;
+    app_settings.watch_haptics_off = on ? 0 : 1;
+#ifdef ARDUINO
+    save_app_settings();
+#endif
+}
+
 uint32_t hw_get_watch_timer_recent(uint8_t index)
 {
     if (index >= WATCH_TIMER_RECENT_COUNT) return 0;
@@ -2486,6 +2560,8 @@ const char *hw_get_variant_name()
 #ifdef ARDUINO
     const LilyGoDeviceCapability &capability = instance.getCapability();
     return capability.boardName ? capability.boardName : instance.getName();
+#elif defined(ARDUINO_T_WATCH_S3_ULTRA)
+    return "LilyGo T-Watch Ultra (2025)";   /* Same as the hardware's boardName */
 #else
     return "LilyGo T-LoRa-Pager (2025)";
 #endif
@@ -3140,12 +3216,21 @@ void hw_get_wifi_scan_result(vector < wifi_scan_params_t > &list)
         list.push_back(param);
     }
 #else
-    wifi_scan_params_t param = {};
-    param.authmode = 1;
-    copy_cstr(param.ssid, sizeof(param.ssid), "LilyGo-AABB0");
-    param.rssi = -10;
-    param.channel = 0;
-    list.push_back(param);
+    /* A few networks of each strength, so the list can be reviewed. */
+    static const struct { const char *ssid; int8_t rssi; uint8_t channel; uint8_t auth; } fake[] = {
+        {"LilyGo-AABB0", -42, 6, 3},
+        {"Home Network 5G", -58, 36, 3},
+        {"Cafe Guest", -71, 11, 0},
+        {"Neighbour's very long network name", -84, 1, 4},
+    };
+    for (auto &f : fake) {
+        wifi_scan_params_t param = {};
+        copy_cstr(param.ssid, sizeof(param.ssid), f.ssid);
+        param.rssi = f.rssi;
+        param.channel = f.channel;
+        param.authmode = f.auth;
+        list.push_back(param);
+    }
 #endif
 }
 
@@ -4501,9 +4586,46 @@ uint8_t hw_get_keyboard_layout()
 void hw_feedback()
 {
 #if defined(ARDUINO) && FACTORY_HAS_HAPTIC_FEEDBACK
+#if FACTORY_WATCH_UI
+    if (app_settings.watch_haptics_off) return;
+#endif
     if (_feedback_enable) {
         instance.vibrator();
     }
+#endif
+}
+
+void hw_haptic(hw_haptic_t kind)
+{
+#if defined(ARDUINO) && FACTORY_HAS_HAPTIC_FEEDBACK
+    if (!_feedback_enable) return;
+#if FACTORY_WATCH_UI
+    /* Settings > Vibration turns all of them off, except alarms and timers
+     * ringing: those are what the person asked to be woken by. */
+    if (app_settings.watch_haptics_off && kind != HW_HAPTIC_ALERT) return;
+#endif
+#if FACTORY_HAS_HAPTIC_DRV
+    /* DRV2605 ROM library 1 waveforms, each a different feel: */
+    uint8_t effect;
+    switch (kind) {
+    case HW_HAPTIC_SUCCESS: effect = 10; break;   /* Double click 100 % */
+    case HW_HAPTIC_FAILURE: effect = 12; break;   /* Triple click 100 % */
+    case HW_HAPTIC_START:   effect = 17; break;   /* Strong click 1 100 % */
+    case HW_HAPTIC_STOP:    effect = 27; break;   /* Short double click strong 1 */
+    case HW_HAPTIC_ALERT:   effect = 15; break;   /* 750 ms alert 100 % */
+    case HW_HAPTIC_TAP:
+    default:                instance.vibrator(); return;
+    }
+    uint8_t chosen = instance.getHapticEffects();
+    instance.setHapticEffects(effect);
+    instance.vibrator();
+    instance.setHapticEffects(chosen);
+#else
+    (void)kind;
+    instance.vibrator();
+#endif
+#else
+    (void)kind;
 #endif
 }
 
@@ -4525,9 +4647,116 @@ bool hw_set_haptic_effect(uint8_t effect)
 #endif
 }
 
+/* ── Crash recovery ── */
+#define CRASH_MAGIC 0x43525348u   /* "CRSH" */
+typedef struct {
+    uint32_t magic;
+    uint32_t forced;      /* CRASH_MAGIC when hw_crash_restart() restarted the watch */
+    char app[32];
+} crash_record_t;
+
+#ifdef ARDUINO
+/* Not cleared by a software restart, a panic or a watchdog reset. */
+static RTC_NOINIT_ATTR crash_record_t crash_record;
+static esp_timer_handle_t ui_watchdog_timer = NULL;
+static volatile uint32_t ui_watchdog_fed_ms = 0;
+static volatile bool ui_watchdog_paused = false;
+#else
+static crash_record_t crash_record;
+#endif
+
+void hw_crash_note_app(const char *name)
+{
+    crash_record.magic = CRASH_MAGIC;
+    crash_record.forced = 0;
+    snprintf(crash_record.app, sizeof(crash_record.app), "%s", name ? name : "");
+}
+
+void hw_crash_restart(const char *reason)
+{
+    if (crash_record.magic != CRASH_MAGIC) hw_crash_note_app(NULL);
+    crash_record.forced = CRASH_MAGIC;
+#ifdef ARDUINO
+    LILYGO_LOG_E("Restarting after: %s (app: %s)", reason ? reason : "?", crash_record.app);
+    esp_restart();
+#else
+    fprintf(stderr, "Crash: %s (app: %s)\n", reason ? reason : "?", crash_record.app);
+    abort();
+#endif
+}
+
+bool hw_crash_take_report(char *app_name, size_t len)
+{
+    bool crashed = false;
+#ifdef ARDUINO
+    switch (esp_reset_reason()) {
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+        crashed = true;
+        break;
+    case ESP_RST_SW:
+        crashed = crash_record.magic == CRASH_MAGIC && crash_record.forced == CRASH_MAGIC;
+        break;
+    default:            /* Power on, brownout, deep sleep wake: RTC memory is not ours */
+        break;
+    }
+#endif
+    if (app_name && len) {
+        snprintf(app_name, len, "%s", crashed && crash_record.magic == CRASH_MAGIC ? crash_record.app : "");
+    }
+    hw_crash_note_app(NULL);
+    return crashed;
+}
+
+/* LVGL's checks (a NULL object, a failed allocation) end here instead of halting. */
+extern "C" void lilygo_lv_assert_failed(void)
+{
+    hw_crash_restart("LVGL check failed");
+}
+
+#ifdef ARDUINO
+static void ui_watchdog_cb(void *arg)
+{
+    (void)arg;
+    if (ui_watchdog_paused) return;
+    if (millis() - ui_watchdog_fed_ms > HW_UI_WATCHDOG_MS) {
+        hw_crash_restart("UI loop stopped");
+    }
+}
+#endif
+
+void hw_ui_watchdog_start(void)
+{
+#ifdef ARDUINO
+    if (ui_watchdog_timer) return;
+    ui_watchdog_fed_ms = millis();
+    const esp_timer_create_args_t args = {
+        .callback = ui_watchdog_cb,
+        .arg = NULL,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "ui_watchdog",
+        .skip_unhandled_events = true,
+    };
+    if (esp_timer_create(&args, &ui_watchdog_timer) == ESP_OK) {
+        esp_timer_start_periodic(ui_watchdog_timer, 1000 * 1000);
+    }
+#endif
+}
+
+void hw_ui_watchdog_feed(void)
+{
+#ifdef ARDUINO
+    ui_watchdog_fed_ms = millis();
+#endif
+}
+
 void hw_low_power_loop(uint32_t wake_after_ms)
 {
 #ifdef ARDUINO
+    /* loop() doesn't run while the watch sleeps; that isn't a freeze. */
+    ui_watchdog_paused = true;
     // 测试深度睡眠
     // instance.sleep();
 #if defined(ARDUINO_T_WATCH_S3_ULTRA)
@@ -4543,6 +4772,8 @@ void hw_low_power_loop(uint32_t wake_after_ms)
         instance.sensor.update();
     }
 #endif
+    ui_watchdog_fed_ms = millis();
+    ui_watchdog_paused = false;
 #endif
 }
 

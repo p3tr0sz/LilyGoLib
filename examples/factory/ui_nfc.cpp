@@ -402,7 +402,12 @@ void ui_nfc_enter(lv_obj_t *parent)
     lv_obj_set_width(label, lv_pct(90));
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+#if FACTORY_WATCH_UI
+    /* A headline under the icon, not a paragraph (watch-ux-guidelines.md 1.3, 4.4). */
+    lv_obj_set_style_text_color(label, UI_COLOR_TEXT_PRIMARY, 0);
+#else
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
+#endif
     lv_label_set_text(label, NFC_TIPS_STRING);
 }
 

@@ -88,6 +88,15 @@ static void refresh_power_status()
     if (!power_status_label || !primary_detail_label) return;
 
     const hw_power_off_mode_t mode = hw_get_power_off_mode();
+#if FACTORY_WATCH_UI
+    if (mode == HW_POWER_OFF_SHIP_MODE) {
+        lv_label_set_text(power_status_label, hw_adapter_is_connected() ?
+                          "Unplug USB-C to use ship mode" : "Ready: hold Ship mode");
+        lv_obj_set_style_text_color(power_status_label, hw_adapter_is_connected() ?
+                                    UI_COLOR_WARNING : UI_COLOR_TEXT_SECONDARY, 0);
+    }
+    return;
+#endif
     if (mode == HW_POWER_OFF_SHIP_MODE) {
         const bool usb_connected = hw_adapter_is_connected();
         lv_label_set_text(power_status_label,
@@ -318,6 +327,31 @@ void ui_power_enter(lv_obj_t *parent)
     page_container = ui_create_app_page(parent, "Power", back_event_handler);
     lv_obj_add_event_cb(page_container, page_delete_cb, LV_EVENT_DELETE, NULL);
 
+#if FACTORY_WATCH_UI
+    /* One row style for all three; the hold marks the two that can't be undone
+     * (watch-ux-guidelines.md 6.4). The long descriptions became the hold hints. */
+    if (mode == HW_POWER_OFF_SHIP_MODE) {
+        /* Ship mode needs USB-C unplugged: say so above the row it affects (7.2, 7.4). */
+        power_status_label = lv_label_create(page_container);
+        lv_obj_set_width(power_status_label, LV_PCT(100));
+        lv_obj_set_style_text_font(power_status_label, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_text_color(power_status_label, UI_COLOR_TEXT_SECONDARY, 0);
+        primary_detail_label = power_status_label;
+        power_status_timer = lv_timer_create(power_status_timer_cb, 1000, NULL);
+    }
+    ui_require_hold_hint(ui_create_menu_row(page_container, LV_SYMBOL_POWER,
+                                            mode == HW_POWER_OFF_SHIP_MODE ? "Ship mode" : "Power off",
+                                            shutdown_event_cb, NULL),
+                         mode == HW_POWER_OFF_DEEP_SLEEP ? "Hold to power off, BOOT wakes" :
+                         "Hold to power off");
+    if (mode != HW_POWER_OFF_DEEP_SLEEP) {
+        ui_create_menu_row(page_container, LV_SYMBOL_PAUSE, "Sleep", sleep_event_cb, NULL);
+    }
+    ui_require_hold_hint(ui_create_menu_row(page_container, LV_SYMBOL_REFRESH, "Restart",
+                                            restart_event_cb, NULL),
+                         "Hold to restart");
+    refresh_power_status();
+#else
     create_power_overview(page_container, mode);
 
     ui_require_hold(create_action_button(page_container, LV_SYMBOL_POWER, power_mode_title(mode),
@@ -338,6 +372,7 @@ void ui_power_enter(lv_obj_t *parent)
     if (mode == HW_POWER_OFF_SHIP_MODE) {
         power_status_timer = lv_timer_create(power_status_timer_cb, 1000, NULL);
     }
+#endif
 
 #ifdef USING_TOUCHPAD
     create_floating_button([](lv_event_t *e) {

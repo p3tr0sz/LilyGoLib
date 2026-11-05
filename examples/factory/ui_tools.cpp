@@ -1489,10 +1489,23 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     lv_obj_set_scrollbar_mode(row, LV_SCROLLBAR_MODE_OFF);
     lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
+#if FACTORY_WATCH_UI
+    /* A gear or a list icon says nothing about MAC, Range or Channel
+     * (watch-ux-guidelines.md 3.7): those rows keep the icon column empty, so
+     * their titles still line up with the rows that have a real icon. */
+    if (icon && (strcmp(icon, LV_SYMBOL_SETTINGS) == 0 || strcmp(icon, LV_SYMBOL_LIST) == 0)) {
+        icon = " ";
+    }
+#endif
     if (icon) {
         lv_obj_t *ic = lv_label_create(row);
         lv_label_set_text(ic, icon);
         lv_obj_add_style(ic, &ui_styles.accent_text, 0);
+#if FACTORY_WATCH_UI
+        /* One icon column, so titles start at the same x whatever the icon's width. */
+        lv_obj_set_width(ic, UI_ROW_ICON_W);
+        lv_obj_set_style_text_align(ic, LV_TEXT_ALIGN_CENTER, 0);
+#endif
     }
 
     if (title) {
@@ -1603,8 +1616,24 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     }
 #endif
 
-    /* Divider */
+#if FACTORY_WATCH_UI
+    /* A divider goes between rows, not under the last one: the previous row's
+     * divider, hidden while it was last (USER_3), shows again now. */
+    for (int32_t i = (int32_t)lv_obj_get_child_count(card) - 2; i >= 0; i--) {
+        lv_obj_t *prev = lv_obj_get_child(card, i);
+        if (!lv_obj_has_flag(prev, LV_OBJ_FLAG_USER_2)) continue;
+        if (lv_obj_has_flag(prev, LV_OBJ_FLAG_USER_3)) {
+            lv_obj_remove_flag(prev, (lv_obj_flag_t)(LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_USER_3));
+        }
+        break;
+    }
+#endif
+    /* Divider (USER_2 marks it for ui_card_row_set_hidden()) */
     lv_obj_t *div = lv_obj_create(card);
+    lv_obj_add_flag(div, LV_OBJ_FLAG_USER_2);
+#if FACTORY_WATCH_UI
+    lv_obj_add_flag(div, (lv_obj_flag_t)(LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_USER_3));
+#endif
     lv_obj_set_size(div, FACTORY_WATCH_UI ? LV_PCT(100) : LV_PCT(95), 1);
     lv_obj_set_style_bg_color(div, UI_COLOR_DIVIDER, 0);
     lv_obj_set_style_bg_opa(div, LV_OPA_COVER, 0);
@@ -1612,6 +1641,37 @@ lv_obj_t *ui_create_card_item(lv_obj_t *card, const char *icon, const char *titl
     lv_obj_set_style_radius(div, 0, 0);
 
     return row;
+}
+
+void ui_card_row_set_hidden(lv_obj_t *row, bool hidden)
+{
+    if (!row) return;
+    if (hidden) lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+
+    /* A divider shows only between two visible rows. Dividers this function
+     * hides carry USER_1; others that are hidden (under pills) stay hidden. */
+    lv_obj_t *card = lv_obj_get_parent(row);
+    uint32_t count = lv_obj_get_child_count(card);
+    for (uint32_t i = 0; i < count; i++) {
+        lv_obj_t *div = lv_obj_get_child(card, i);
+        if (!lv_obj_has_flag(div, LV_OBJ_FLAG_USER_2)) continue;
+        bool ours = lv_obj_has_flag(div, LV_OBJ_FLAG_USER_1);
+        if (lv_obj_has_flag(div, LV_OBJ_FLAG_HIDDEN) && !ours) continue;
+        lv_obj_t *prev = i > 0 ? lv_obj_get_child(card, i - 1) : NULL;
+        bool show = prev && !lv_obj_has_flag(prev, LV_OBJ_FLAG_HIDDEN);
+        bool row_after = false;
+        for (uint32_t k = i + 1; k < count && show; k++) {
+            lv_obj_t *next = lv_obj_get_child(card, k);
+            if (!lv_obj_has_flag(next, LV_OBJ_FLAG_USER_2) && !lv_obj_has_flag(next, LV_OBJ_FLAG_HIDDEN)) {
+                row_after = true;
+                break;
+            }
+        }
+        show = show && row_after;
+        if (show) lv_obj_remove_flag(div, (lv_obj_flag_t)(LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_USER_1));
+        else lv_obj_add_flag(div, (lv_obj_flag_t)(LV_OBJ_FLAG_HIDDEN | LV_OBJ_FLAG_USER_1));
+    }
 }
 
 lv_obj_t *ui_create_card_slider(lv_obj_t *card, const char *icon, const char *title,

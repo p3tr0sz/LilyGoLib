@@ -24,7 +24,13 @@
 #define WIFI_MAX_CURVES          16
 #define WIFI_CURVE_POINTS        5
 #define WIFI_GRAPH_W             262
+#if FACTORY_WATCH_UI
+#define WIFI_GRAPH_H             170
+#define WIFI_AXIS_LABEL_H        26
+#else
 #define WIFI_GRAPH_H             108
+#define WIFI_AXIS_LABEL_H        15
+#endif
 
 static lv_obj_t *page_container = NULL;
 static lv_timer_t *scan_poll_timer = NULL;
@@ -107,10 +113,12 @@ static lv_color_t rssi_color(int8_t rssi)
     return lv_color_hex(0x777777);
 }
 
+static uint8_t interval_sel = 1;   /* Kept while the watch's Options page is closed */
+
 static uint32_t interval_from_dropdown(void)
 {
-    if (!interval_dd) return WIFI_AUTO_SCAN_DEFAULT_MS;
-    switch (lv_dropdown_get_selected(interval_dd)) {
+    if (interval_dd) interval_sel = (uint8_t)lv_dropdown_get_selected(interval_dd);
+    switch (interval_sel) {
     case 0: return 5000;
     case 1: return 10000;
     case 2: return 30000;
@@ -141,7 +149,7 @@ static int channel_x(float channel)
 static int rssi_y(int8_t rssi)
 {
     int pct = rssi_to_percent(rssi);
-    return WIFI_GRAPH_H - 8 - (pct * (WIFI_GRAPH_H - 22) / 100);
+    return WIFI_GRAPH_H - WIFI_AXIS_LABEL_H + 7 - (pct * (WIFI_GRAPH_H - WIFI_AXIS_LABEL_H - 7) / 100);
 }
 
 static int channel_score(int channel)
@@ -199,8 +207,19 @@ static void set_status(const char *text, lv_color_t color)
     lv_obj_set_style_text_color(status_label, color, 0);
 }
 
+#if FACTORY_WATCH_UI
+static lv_obj_t *ap_list_cont = NULL;   /* Watch: rows and their dividers, cleaned at once */
+#endif
+
 static void clear_ap_rows(void)
 {
+#if FACTORY_WATCH_UI
+    if (ap_list_cont) {
+        lv_obj_clean(ap_list_cont);
+        memset(ap_rows, 0, sizeof(ap_rows));
+        return;
+    }
+#endif
     for (int i = 0; i < WIFI_MAX_AP_DISPLAY; ++i) {
         if (ap_rows[i]) {
             lv_obj_delete(ap_rows[i]);
@@ -317,7 +336,7 @@ static void build_graph_axis(void)
     for (int ch = 1; ch <= WIFI_MAX_CHANNELS; ++ch) {
         int x = channel_x((float)ch);
         lv_obj_t *line = lv_obj_create(graph_area);
-        lv_obj_set_size(line, 1, WIFI_GRAPH_H - 18);
+        lv_obj_set_size(line, 1, WIFI_GRAPH_H - WIFI_AXIS_LABEL_H - 3);
         lv_obj_set_pos(line, x, 4);
         lv_obj_set_style_bg_color(line, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_bg_opa(line, LV_OPA_70, 0);
@@ -331,7 +350,15 @@ static void build_graph_axis(void)
             lv_label_set_text(lbl, label);
             lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
             lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-            lv_obj_set_pos(lbl, x - 5, WIFI_GRAPH_H - 15);
+#if FACTORY_WATCH_UI
+            /* Centred under the line, but kept inside the chart's rounded box. */
+            lv_obj_update_layout(lbl);
+            int32_t lx = x - lv_obj_get_width(lbl) / 2;
+            lx = LV_CLAMP(6, lx, graph_width() - lv_obj_get_width(lbl) - 6);
+            lv_obj_set_pos(lbl, lx, WIFI_GRAPH_H - WIFI_AXIS_LABEL_H);
+#else
+            lv_obj_set_pos(lbl, x - 5, WIFI_GRAPH_H - WIFI_AXIS_LABEL_H);
+#endif
         }
     }
 }
@@ -385,7 +412,13 @@ static void update_recommendation(void)
     int score11 = channel_score(11);
     int best = best_24g_channel();
     char buf[96];
+#if FACTORY_WATCH_UI
+    /* Plain words; the per-channel load is what the chart above shows. */
+    LV_UNUSED(score1); LV_UNUSED(score6); LV_UNUSED(score11);
+    snprintf(buf, sizeof(buf), "Least crowded: channel %d", best);
+#else
     snprintf(buf, sizeof(buf), "Best CH%d   load 1:%d  6:%d  11:%d", best, score1, score6, score11);
+#endif
     lv_label_set_text(recommend_label, buf);
 }
 
@@ -394,6 +427,29 @@ static void build_ap_list(void)
     clear_ap_rows();
     if (!ap_list_card) return;
 
+#if FACTORY_WATCH_UI
+    if (ap_list_cont) {
+        int limit = scan_results.size() < WIFI_MAX_AP_DISPLAY ? scan_results.size() : WIFI_MAX_AP_DISPLAY;
+        for (int i = 0; i < limit; ++i) {
+            const wifi_scan_params_t &ap = scan_results[i];
+            char detail[48];
+            char rssi[16];
+            snprintf(detail, sizeof(detail), "Channel %d \xC2\xB7 %s", (int)ap.channel, auth_mode_str(ap.authmode));
+            snprintf(rssi, sizeof(rssi), "%d dBm", ap.rssi);
+            ap_rows[i] = ui_create_card_signal_row(ap_list_cont, LV_SYMBOL_WIFI, ssid_display(ap), detail,
+                                                   rssi, rssi_color(ap.rssi), NULL, NULL);
+            lv_obj_remove_flag(ap_rows[i], LV_OBJ_FLAG_CLICKABLE);   /* Nothing more to show */
+        }
+        if (limit == 0) {
+            lv_obj_t *empty = lv_label_create(ap_list_cont);
+            lv_label_set_text(empty, "No networks found");
+            lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
+        } else {
+            lv_obj_add_flag(lv_obj_get_child(ap_list_cont, -1), LV_OBJ_FLAG_HIDDEN);   /* Last divider */
+        }
+        return;
+    }
+#endif
     if (scan_results.empty()) {
         lv_obj_t *empty = lv_label_create(ap_list_card);
         ap_rows[0] = empty;
@@ -545,9 +601,17 @@ static void apply_scan_results(vector<wifi_scan_params_t> &results)
     }
 
     if (scan_results.empty()) {
-        set_status("Scan complete. No AP found.", UI_COLOR_WARNING);
+        set_status(FACTORY_WATCH_UI ? "No networks found" : "Scan complete. No AP found.", UI_COLOR_WARNING);
     } else {
+#if FACTORY_WATCH_UI
+        int open_count = 0;
+        for (auto &ap : scan_results) if (auth_is_open(ap.authmode)) open_count++;
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%u networks, %d open", (unsigned)scan_results.size(), open_count);
+        set_status(buf, UI_COLOR_TEXT_SECONDARY);
+#else
         set_status("Scan complete.", UI_COLOR_ACCENT);
+#endif
     }
 }
 
@@ -599,7 +663,7 @@ static void refresh_btn_cb(lv_event_t *e)
 
 static void auto_switch_cb(lv_event_t *e)
 {
-    auto_scan_enabled = lv_obj_has_state(auto_switch, LV_STATE_CHECKED);
+    auto_scan_enabled = auto_switch && lv_obj_has_state(auto_switch, LV_STATE_CHECKED);
     if (auto_scan_enabled) {
         if (!auto_scan_timer) {
             auto_scan_timer = lv_timer_create(auto_scan_cb, interval_from_dropdown(), NULL);
@@ -723,14 +787,80 @@ static void back_event_handler(lv_event_t *e)
     detail_interference_label = NULL;
     auto_switch = NULL;
     interval_dd = NULL;
+#if FACTORY_WATCH_UI
+    ap_list_cont = NULL;
+#endif
     selected_index = -1;
 
     menu_show();
 }
 
+#if FACTORY_WATCH_UI
+static void options_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    auto_switch = NULL;
+    interval_dd = NULL;
+}
+
+static void open_options_cb(lv_event_t *e)
+{
+    lv_obj_t *content = ui_push_page(lv_event_get_target_obj(e), "Options");
+    lv_obj_add_event_cb(content, options_page_delete_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_t *card = ui_create_card(content, NULL);
+    auto_switch = card_switch(card, LV_SYMBOL_REFRESH, "Auto scan", auto_scan_enabled, auto_switch_cb);
+    interval_dd = card_dropdown(card, LV_SYMBOL_BELL, "Every", "5 s\n10 s\n30 s", interval_sel, interval_cb);
+    ui_create_card_button(content, LV_SYMBOL_SAVE, "Export", "Export CSV", export_csv_cb);
+}
+#endif
+
 void ui_wifi_analyzer_enter(lv_obj_t *parent)
 {
     page_container = ui_create_app_page(parent, "WiFi Analyzer", back_event_handler);
+#if FACTORY_WATCH_UI
+    {
+        /* The chart is what the app is for: it comes first, under one summary
+         * line; networks below; options one tap away (watch-ux-guidelines.md 1.1). */
+        lv_obj_t *card = ui_create_card(page_container, "Channels");
+        status_label = lv_label_create(card);
+        lv_label_set_text(status_label, "Scanning...");
+        lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_pad_bottom(status_label, 8, 0);
+        graph_area = lv_obj_create(card);
+        lv_obj_set_size(graph_area, LV_PCT(100), WIFI_GRAPH_H);
+        lv_obj_set_style_bg_color(graph_area, lv_color_hex(0x101010), 0);
+        lv_obj_set_style_bg_opa(graph_area, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(graph_area, 0, 0);
+        lv_obj_set_style_radius(graph_area, 8, 0);
+        lv_obj_set_style_pad_all(graph_area, 0, 0);
+        lv_obj_remove_flag(graph_area, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(graph_area, LV_OBJ_FLAG_CLICKABLE);
+        build_graph_axis();
+        recommend_label = lv_label_create(card);
+        lv_label_set_text(recommend_label, "");
+        lv_obj_set_style_text_color(recommend_label, UI_COLOR_TEXT_PRIMARY, 0);
+        lv_obj_set_style_text_font(recommend_label, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_pad_top(recommend_label, 8, 0);
+        lv_obj_set_width(recommend_label, LV_PCT(100));
+
+        ap_list_card = ui_create_card(page_container, "Networks");
+        ap_list_cont = lv_obj_create(ap_list_card);
+        lv_obj_remove_style_all(ap_list_cont);
+        lv_obj_set_size(ap_list_cont, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(ap_list_cont, LV_FLEX_FLOW_COLUMN);
+        lv_obj_remove_flag(ap_list_cont, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(ap_list_cont, LV_OBJ_FLAG_CLICKABLE);
+
+        ui_create_card_action(page_container, LV_SYMBOL_REFRESH, "Scan now", refresh_btn_cb);
+        ui_create_menu_row(page_container, LV_SYMBOL_SETTINGS, "Options", open_options_cb, NULL);
+
+        update_connection_labels();
+        trigger_scan();
+        auto_scan_timer = lv_timer_create(auto_scan_cb, WIFI_AUTO_SCAN_DEFAULT_MS, NULL);
+        return;
+    }
+#endif
 
     lv_obj_t *card = ui_create_card(page_container, "Overview");
     status_label = lv_label_create(card);

@@ -36,6 +36,13 @@ static lv_obj_t *write_speed_label = NULL;
 static lv_obj_t *test_status_label = NULL;
 static lv_obj_t *test_btn = NULL;
 
+#if FACTORY_WATCH_UI
+/* Shown only once a card is mounted, so the page isn't rows of "--". */
+static lv_obj_t *mounted_rows[4] = {NULL};   /* Size, Type, Bus speed, Speed Test card */
+static lv_obj_t *mount_row = NULL;
+static lv_obj_t *result_rows[2] = {NULL};    /* Write, Read: once a test ran */
+#endif
+
 static bool sd_mounted = false;
 static uint32_t sd_mounted_freq = 0;
 
@@ -131,7 +138,7 @@ static void clear_sd_info(void)
     sd_mounted_freq = 0;
     set_label_text(size_label, "--");
     set_label_text(type_label, "--");
-    set_label_text(mount_label, "Not Mounted");
+    set_label_text(mount_label, FACTORY_WATCH_UI ? "Not mounted" : "Not Mounted");
     set_spi_freq_label(0);
 }
 
@@ -184,6 +191,11 @@ static void back_event_handler(lv_event_t *e)
     write_speed_label = NULL;
     test_status_label = NULL;
     test_btn = NULL;
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *&r : mounted_rows) r = NULL;
+    for (lv_obj_t *&r : result_rows) r = NULL;
+    mount_row = NULL;
+#endif
     sd_mounted = false;
     sd_mounted_freq = 0;
 #ifdef ARDUINO
@@ -247,6 +259,17 @@ static void update_status(lv_timer_t *t)
     if (mount_label && sd_mounted) {
         lv_label_set_text(mount_label, "Mounted");
     }
+#if FACTORY_WATCH_UI
+    if (mount_label && !sd_mounted && detect_capable && !inserted) {
+        lv_label_set_text(mount_label, "No card");
+    }
+    for (int i = 0; i < 3; i++) ui_card_row_set_hidden(mounted_rows[i], !sd_mounted);
+    if (mounted_rows[3]) {
+        if (sd_mounted) lv_obj_remove_flag(mounted_rows[3], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(mounted_rows[3], LV_OBJ_FLAG_HIDDEN);
+    }
+    ui_card_row_set_hidden(mount_row, sd_mounted);
+#endif
 }
 
 static void mount_btn_cb(lv_event_t *e)
@@ -260,7 +283,7 @@ static void mount_btn_cb(lv_event_t *e)
 #endif
         hw_unmount_sd();
         clear_sd_info();
-        set_label_text(mount_label, "No Card");
+        set_label_text(mount_label, FACTORY_WATCH_UI ? "No card" : "No Card");
         set_label_text(test_status_label, "Insert SD card first");
         return;
     }
@@ -293,14 +316,14 @@ static void mount_btn_cb(lv_event_t *e)
     }
 
     clear_sd_info();
-    set_label_text(mount_label, "Mount Failed");
+    set_label_text(mount_label, FACTORY_WATCH_UI ? "Mount failed" : "Mount Failed");
     set_label_text(test_status_label, "Try another card");
 #elif defined(USING_FATFS)
     if (sd_storage_ready(&size)) {
         update_sd_info(size, 0);
     } else {
         clear_sd_info();
-        set_label_text(mount_label, "Mount Failed");
+        set_label_text(mount_label, FACTORY_WATCH_UI ? "Mount failed" : "Mount Failed");
     }
 #else
     clear_sd_info();
@@ -389,6 +412,9 @@ static void speed_test_cb(lv_event_t *e)
     if (read_speed_label) lv_label_set_text(read_speed_label, buf2);
 
     if (test_status_label) lv_label_set_text(test_status_label, "Done");
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *r : result_rows) ui_card_row_set_hidden(r, false);
+#endif
 #else
     if (test_status_label) lv_label_set_text(test_status_label, "Not available");
 #endif
@@ -408,6 +434,39 @@ void ui_sdcard_enter(lv_obj_t *parent)
 
     /* ── Status card ── */
     lv_obj_t *card = ui_create_card(page_container, "Card Status");
+    lv_obj_t *row;
+#if FACTORY_WATCH_UI
+    /* One row says the state ("No card", "Mounted"); the coloured dot said it
+     * by colour alone (watch-ux-guidelines.md 5.3). */
+    status_dot = NULL;
+    status_text = NULL;
+    row = ui_create_card_info(card, LV_SYMBOL_SD_CARD, "Card", "Not mounted");
+    mount_label = lv_obj_get_child(row, -1);
+    row = ui_create_card_info(card, LV_SYMBOL_DRIVE, "Size", "--");
+    size_label = lv_obj_get_child(row, -1);
+    mounted_rows[0] = row;
+    row = ui_create_card_info(card, LV_SYMBOL_FILE, "Format", "--");
+    type_label = lv_obj_get_child(row, -1);
+    mounted_rows[1] = row;
+    row = ui_create_card_info(card, LV_SYMBOL_CHARGE, "Bus speed", "--");
+    spi_label = lv_obj_get_child(row, -1);
+    mounted_rows[2] = row;
+    mount_row = ui_create_card_button(card, LV_SYMBOL_SD_CARD, "Mount", "Mount card", mount_btn_cb);
+
+    card = ui_create_card(page_container, "Speed Test");
+    mounted_rows[3] = card;
+    row = ui_create_card_info(card, LV_SYMBOL_DOWNLOAD, "Write", "--");
+    write_speed_label = lv_obj_get_child(row, -1);
+    result_rows[0] = row;
+    row = ui_create_card_info(card, LV_SYMBOL_UPLOAD, "Read", "--");
+    read_speed_label = lv_obj_get_child(row, -1);
+    result_rows[1] = row;
+    for (lv_obj_t *r : result_rows) ui_card_row_set_hidden(r, true);
+    row = ui_create_card_info(card, LV_SYMBOL_REFRESH, "Test", "Not run");
+    test_status_label = lv_obj_get_child(row, -1);
+    test_btn = lv_obj_get_child(ui_create_card_button(card, LV_SYMBOL_REFRESH, "Test",
+                                                      "Test speed", speed_test_cb), -1);
+#else
 
     /* Status row with colored dot */
     lv_obj_t *status_row = lv_obj_create(card);
@@ -450,7 +509,6 @@ void ui_sdcard_enter(lv_obj_t *parent)
     lv_obj_set_style_radius(div, 0, 0);
 
     /* Info rows — store row, then extract value label */
-    lv_obj_t *row;
 
     row = ui_create_card_info(card, LV_SYMBOL_SD_CARD, "Mount", "Not Mounted");
     mount_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
@@ -491,6 +549,7 @@ void ui_sdcard_enter(lv_obj_t *parent)
     lv_obj_center(btn_lbl);
 
     lv_obj_add_event_cb(test_btn, speed_test_cb, LV_EVENT_CLICKED, NULL);
+#endif
 
     /* ── Status timer ── */
     status_timer = lv_timer_create(update_status, 1000, NULL);

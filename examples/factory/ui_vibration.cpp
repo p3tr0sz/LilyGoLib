@@ -60,6 +60,22 @@ void ui_vibration_enter(lv_obj_t *parent)
     const uint8_t effect = hw_get_haptic_effect();
     page_container = ui_create_app_page(parent, "Vibration", back_event_cb);
 
+#if FACTORY_WATCH_UI
+    /* One job: pick how a tap feels. The chip name, "Online" and the library
+     * range were for developers (watch-ux-guidelines.md 1.3). */
+    {
+        lv_obj_t *card = ui_create_card(page_container, "Tap feel");
+        ui_create_card_slider(card, LV_SYMBOL_BELL, "Effect", 1, 117, effect, effect_slider_cb);
+        ui_create_card_action(card, LV_SYMBOL_PLAY, "Play", preview_button_cb);
+        lv_obj_t *note = lv_label_create(page_container);
+        lv_label_set_text(note, "Taps use this effect. Settings > Vibration turns them off.");
+        lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(note, LV_PCT(100));
+        lv_obj_set_style_text_font(note, UI_FONT_CAPTION, 0);
+        lv_obj_set_style_text_color(note, UI_COLOR_TEXT_SECONDARY, 0);
+        return;
+    }
+#endif
     lv_obj_t *status_card = ui_create_card(page_container, "DRV2605");
     ui_create_card_info(status_card, LV_SYMBOL_BELL, "Driver", "Online");
     lv_obj_t *effect_row = ui_create_card_info(status_card, LV_SYMBOL_SETTINGS, "Selected", "");

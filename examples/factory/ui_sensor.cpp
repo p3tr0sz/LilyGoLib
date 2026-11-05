@@ -201,7 +201,7 @@ void ui_sensor_enter(lv_obj_t *parent)
 
 #if  defined(USING_BHI260_SENSOR)
     /* ── IMU display ── */
-    lv_obj_t *card = ui_create_card(page_container, "IMU");
+    lv_obj_t *card = ui_create_card(page_container, FACTORY_WATCH_UI ? NULL : "IMU");
     lv_obj_set_height(card, LV_PCT(100));
     lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -212,15 +212,14 @@ void ui_sensor_enter(lv_obj_t *parent)
     lv_obj_t *lbl;
 
 #if defined(ARDUINO_T_WATCH_S3_ULTRA)
-    /* Watch-Ultra: circle centered in upper third, data below */
-    int screen_h = lv_display_get_vertical_resolution(NULL);
-
-    /* Remove padding and flex layout for absolute positioning */
-    lv_obj_set_style_pad_ver(page_container, 0, 0);
-    lv_obj_set_style_pad_all(card, 0, 0);
-    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    /* Disable flex so lv_obj_align works */
-    lv_obj_set_layout(card, LV_LAYOUT_NONE);
+    /* Watch-Ultra: the dial on the left, the three numbers big on the right
+     * (watch-ux-guidelines.md 4.3), centred in the card. No caption: the page
+     * title says what this is. */
+    LV_UNUSED(small);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    arc_size = 150;
+    ball_size = 34;
 
     lv_obj_t *arc = lv_arc_create(card);
     lv_arc_set_bg_angles(arc, 0, 360);
@@ -228,7 +227,6 @@ void ui_sensor_enter(lv_obj_t *parent)
     lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(arc, arc_size, arc_size);
-    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, screen_h / 3 - arc_size / 2);
 
     lv_obj_t *led1 = lv_obj_create(arc);
     lv_obj_set_size(led1, ball_size, ball_size);
@@ -239,45 +237,26 @@ void ui_sensor_enter(lv_obj_t *parent)
     lv_obj_set_style_shadow_opa(led1, LV_OPA_40, 0);
     lv_obj_center(led1);
 
-    /* Data labels — below the circle, centered */
-    int data_y = screen_h / 3 + arc_size / 2 + 16;
-    int label_w = small ? 80 : 100;
+    lv_obj_t *col = lv_obj_create(card);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 2, 0);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE);
 
-    lbl = lv_label_create(card);
-    lv_label_set_text(lbl, "Roll");
-    lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_MID, -label_w / 2, data_y);
-
-    label_imu.roll = lv_label_create(card);
-    lv_label_set_text(label_imu.roll, "0.0");
-    lv_obj_add_style(label_imu.roll, &ui_styles.accent_text, 0);
-    lv_obj_set_style_text_font(label_imu.roll, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_imu.roll, LV_ALIGN_TOP_MID, label_w / 2, data_y);
-
-    lbl = lv_label_create(card);
-    lv_label_set_text(lbl, "Pitch");
-    lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_MID, -label_w / 2, data_y + 35);
-
-    label_imu.pitch = lv_label_create(card);
-    lv_label_set_text(label_imu.pitch, "0.0");
-    lv_obj_add_style(label_imu.pitch, &ui_styles.accent_text, 0);
-    lv_obj_set_style_text_font(label_imu.pitch, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_imu.pitch, LV_ALIGN_TOP_MID, label_w / 2, data_y + 35);
-
-    lbl = lv_label_create(card);
-    lv_label_set_text(lbl, "Heading");
-    lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_MID, -label_w / 2, data_y + 70);
-
-    label_imu.heading = lv_label_create(card);
-    lv_label_set_text(label_imu.heading, "0.0");
-    lv_obj_add_style(label_imu.heading, &ui_styles.accent_text, 0);
-    lv_obj_set_style_text_font(label_imu.heading, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_imu.heading, LV_ALIGN_TOP_MID, label_w / 2, data_y + 70);
+    const char *names[3] = {"Roll", "Pitch", "Heading"};
+    lv_obj_t **values[3] = {&label_imu.roll, &label_imu.pitch, &label_imu.heading};
+    for (int i = 0; i < 3; i++) {
+        lbl = lv_label_create(col);
+        lv_label_set_text(lbl, names[i]);
+        lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(lbl, UI_FONT_CAPTION, 0);
+        if (i) lv_obj_set_style_pad_top(lbl, 8, 0);
+        *values[i] = lv_label_create(col);
+        lv_label_set_text(*values[i], "0.0");
+        lv_obj_add_style(*values[i], &ui_styles.accent_text, 0);
+        lv_obj_set_style_text_font(*values[i], &lv_font_montserrat_32, 0);
+    }
 
 #else
     /* Other devices: arc left, data right in a row */

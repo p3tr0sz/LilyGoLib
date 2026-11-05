@@ -2,6 +2,8 @@
 
 This fork changes the factory app on the **T-Watch Ultra** (502×410, about 315 ppi) so it behaves like a Xiaomi or Apple watch, not a small tablet. Other boards keep the original launcher.
 
+Design rules, with their sources and pixel values for this screen, are in `watch-ux-guidelines.md`; new screens are checked against its review checklist.
+
 All watch-only code is behind `FACTORY_WATCH_UI` (in `examples/factory/hal_interface.h`). The flag is on only for `ARDUINO_T_WATCH_S3_ULTRA`. The `emulator_watch_ultra` simulator env defines that board, so the simulator shows the new UI.
 
 ## Agreed design
@@ -39,6 +41,33 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 6 | One-gesture app controls: pickers, action pills, Clock Tools time page, Display Test | Done; NFC Card and Arduino-only apps need checking on hardware |
 | 7 | No typing: presets instead of keyboards, a full-screen keyboard where text is unavoidable | Done; LoRa Hub and Walkie need checking on hardware |
 | 6b | Clock app (stopwatch, timer, alarms); date and time move to Settings; one screen margin | Done; alarm wake from light sleep needs checking on hardware |
+| 7b | Steady keyboard field; WiFi and BLE scan rows like other card rows | Done; BLE rows need checking on hardware |
+| 8 | Fixes from the audit against `watch-ux-guidelines.md` | Done; haptic patterns and File Manager need checking on hardware |
+| 8b | App list order (drag to reorder, saved) and crash recovery | Done in the simulator; needs checking on hardware |
+
+## Next steps
+
+In order. Details are in the follow-up sections further down.
+
+1. **Get the firmware building, then check everything on the wrist.** `pio run -e twatch_ultra` in `LilyGoLib-PlatformIO` now gets past SensorLib (pin raised to `^0.5.1`) and Button2 (added, 2.7.0), and the factory app and LVGL compile. It stops at `demo_ce.h: No such file or directory` in `src/nfc/LilyGoNfcService.cpp`: the `NFC-RFAL-fork` it fetches is older or newer than this checkout expects. Pin the fork to the commit this checkout was written against. Then flash the watch and go through the hardware checks: phases 4–8b follow-ups, and the crash-recovery test below.
+2. **Decisions waiting on you:**
+   - **"Arrange apps":** a visible way into reordering, so a long press isn't the only way (guideline 2.4).
+   - **Corner picker order:** whether the face corner picker lists apps in the app list's order.
+3. **App names match page titles.** The list says "BLE Scan", "SD Info", "File Manager", "IMU", "LoRa", "DisplayTest" and "QRCode"; the pages say "BLE Scanner", "SD Card", "SD Manager", "Sensor" and "LoRa Hub". Give `register_app()` watch names that match the titles ("Display test", "QR code"). Saved corners and app order find apps by name hash, so add the old names to `app_renames[]`.
+4. **Messages:** `create_msgbox()` pills are 64 px with white text on the accent; action pills are 82 px with dark text. Use the same pill.
+5. **Apps not reviewed yet:** BLE HID, Music, Net Radio, Compass, Walkie, GNSS, Recorder, LoRa Hub with a module, and NFC Card (a black screen in the simulator). None run in the simulator, so review them on the watch against the guidelines' checklist.
+6. **Power and motion** (guidelines 9.1, 9.2, 10.1):
+   - **Screen off inside apps:** a timeout that apps which must keep running opt out of (see "Later").
+   - **Lock clock:** drop its two endless glow animations.
+   - **Page slides:** make them follow the finger.
+7. **Bigger features, in order of value:**
+   - **Wi-Fi from the phone:** set up Wi-Fi over BLE, so there's no password typing.
+   - **Quick settings:** swipe down on the face for brightness, Wi-Fi and BLE.
+   - **Always-on clock:** a dim clock that stays on.
+   - **Typing:** word completion on the keyboard.
+   - **Accents in titles:** in the Alibaba title font.
+   - **Steps:** keep today's count across a reboot.
+   - **Corner picker:** group the apps instead of one 35-row list.
 
 ## Next phases
 
@@ -196,10 +225,156 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 
 - **Check on hardware:** LoRa Hub (quick replies send; profile editor fields open the number pad or keyboard and save) and Walkie's Name. Neither runs in the simulator.
 - **Phone provisioning for Wi-Fi:** worth adding later. Espressif's BLE provisioning (ESP BLE Prov app) or a SoftAP page would remove the password typing; it needs a provisioning library and a pairing flow, so it is a separate piece of work.
-- WiFi's network rows are still the small bordered rows from other boards; they could become pill rows.
 - **Accents in titles:** page titles and the face use the Alibaba fonts (ASCII only), so an accented Wi-Fi name in a title shows boxes. Those fonts would need the same treatment.
 - **Typing is two taps a letter.** A word-completion bar above the keys would cut that for messages; it needs a small word list in flash.
 - **Typing on the phone:** `screen_web_server.cpp` only serves screenshots (and only with `LILYGO_SCREEN_CAPTURE_ENABLED`), and it needs Wi-Fi first, so it can't help with the Wi-Fi password. A text-entry page on it could serve LoRa messages and names; BLE provisioning (above) covers Wi-Fi.
+
+### Phase 7 polish: steady text field, readable scan lists
+
+**Keyboard page field** (`ui_open_text_page()`):
+- **Passwords:** LVGL showed each new letter for 1.5 s and then swapped it for a much narrower dot, so the text and cursor jumped back after every key. The field now shows dots at once (`lv_textarea_set_password_show_time(edit, 0)`), 8 px apart so they can be counted. The key just pressed already shows the letter; "Show password" on the WiFi page shows the text.
+- **Long text:** LVGL animated the scroll to the cursor on every key, so text past the right edge slid back and forth. `kb_snap_scroll()` jumps there instead, after each key and when the page opens.
+
+**Scan lists** (`ui_create_card_signal_row()` in `ui_watch_pages.cpp`): a found network or device is a normal card row: the icon in the signal's colour, the name in the body font over a grey detail line, and the signal ("-58 dBm") on the right in the same colour. Same height, edges and divider as other rows; a long name ends in dots. The lists sit in the page's scroll instead of a 218 px box that scrolled inside it.
+- **WiFi:** detail "Channel 6 · WPA2". A tap opens the network's page as before.
+- **BLE Scanner:** detail "type · 12s ago"; an unnamed device shows its address as the name. A tap opens a page for the device (name, address, signal, type, seen, service, maker data, advert), which keeps updating; the "Selected Device" card below the list is gone on the watch. Its labels are cleared on `LV_EVENT_DELETE`.
+
+**Card rows:** the icon sits in a 30 px column (`UI_ROW_ICON_W`), so titles start at the same x whatever the icon's width (WiFi's Signal, Security and Password rows used to be a few pixels apart).
+
+**Simulator:** a WiFi scan returns four networks (strong to weak, one open, one with a long name) instead of one.
+
+### Phase 7 polish follow-ups
+
+- **Check on hardware:** BLE Scanner rows and the device page (the simulator has no BLE).
+- Password dots are LVGL's bullet, which is small at 32 px. A larger dot (●) would need a glyph added to `font_latin_32`.
+- BLE Scanner on the watch still opens on Overview and Controls; the device list is the third card. Moving it first would show devices at once, but the list's height changes on every refresh and would push the controls around.
+
+### Phase 8: audit against the UX guidelines (2026-11-05)
+
+Every app that runs in the simulator was checked against `watch-ux-guidelines.md` (numbers in brackets are its rules). Navigation, the face, Settings, pickers, level pages, hold to confirm, the Clock apps and the keyboard already follow it. The gaps, most important first:
+
+**A. Type is a size too small everywhere** (4.1). Apple's watchOS body text on this screen is about 32 px and its minimum about 22 px. Here `UI_FONT_BODY` is 22 px (the minimum) and `UI_FONT_CAPTION`/`UI_FONT_TINY` are 16 px, below it. Below 16 px: I2C Scan's "Tap Scan to start", Sensor's Roll/Pitch/Heading labels, WiFi Analyzer's chart labels and "Last scan" line.
+- Proposal: body 26–28 px, caption 22 px, nothing under 20 px; titles and big numbers stay. Rows then need about 88 px (see B). Do it in the tokens, check each app's page in the simulator, and move long values to their own page where they no longer fit.
+
+**B. Tap targets are under the comfortable size** (3.1). 82 px is the comfortable height, 52 px the minimum.
+- Card rows 76 px, app and menu list rows 72 px, action pills about 62 px: raise to 82–88 px together with A.
+- Under the minimum: I2C Scan's Scan pill (about 36 px), SD Manager's "View" and "Delete" buttons inside rows (about 30 px, and a button inside a row breaks the one-target-per-row rule).
+
+**C. Contrast fails on some themes** (5.1, 4.5 : 1). Grey secondary text `#888` on the card: Mint 4.9, Ocean 4.8, Sunset 4.7, Violet 4.8, Cherry 4.7, but Lime 4.3, Amber 4.1, Mono 4.1. Accent text on the card: Violet 4.4. Fix: secondary grey `#9A9A9A` or lighter (or per-theme), Violet accent a step lighter.
+
+**D. The first screen isn't the thing people came for** (1.1, 1.2).
+- BLE Scanner opens on counters (Shown, All Seen, Named, Strongest) and six controls; devices are the third card. WiFi opens on connection details, networks below. WiFi Analyzer: counts before the chart.
+- Fix: list first (BLE devices, WiFi networks), one summary line above it, scanner options (Active Scan, Named Only, Auto Refresh, Interval) on an "Options" sub-page (Garmin settings menu, 2.6). BLE's list still changes height on refresh, so keep its rows' order stable.
+
+**E. Rows of "--"** (1.1, 1.3). WiFi when disconnected shows SSID, IP, RSSI and MAC all "--"; WiFi Tools Gateway, DNS, MAC, RSSI; SD Card SPI, Write, Read. Show one line that says the state ("Not connected", "No card") and hide the empty rows.
+
+**F. Icons that don't say anything** (3.7, Apple: familiar icons). A gear marks MAC, DNS, Port, Best CH, Range, Bus, Waveform, BSSID and Security; a list icon marks Shown, Named, Channel, Items and Show. Either an icon that means the thing or none: info rows can go without one, with the title at the icon column's edge.
+
+**G. Jargon and cryptic values** (1.3, 4.4): RSSI (say "Signal"), BSSID, CTRL, PMIC, Gauge, SPI, Waveforms "1 - 117", "Best CH1 load 1:50 6:400 11:155". Plain words on the watch; the technical name can sit on the detail page.
+
+**H. Long text on a glance screen** (4.4). NFC's instruction is five lines; make it a headline ("Hold a card to the screen") under the icon. Power's descriptions ("The PMIC cuts system power completely…") belong on the hold-to-confirm hint, not under every option.
+
+**I. Values that wrap** (1.3). WiFi Analyzer "Strongest LilyGo-AABB0 -42 dBm" takes two lines; split name and signal, as the scan rows do.
+
+**J. One vibration for everything** (8.1). `hw_feedback()` has 76 callers and one pattern: taps, page pushes, the swipe-back threshold, results. Add a few named patterns (tap, success, failure, start/stop, alert) and use the tap one sparingly; keep the Settings switch that turns haptics off.
+
+**K. Smaller things**
+- QRCode's Device code says "LilyGo T-LoRa-Pager (2025)" in the simulator; check the name on the Ultra.
+- Sensor (IMU): numbers are body-size under a large empty dial; the numbers should be the big thing (4.3). Its "IMU" caption sits on the card edge instead of the 16 px line.
+- LoRa Hub without a module says "Radio module not detected." and nothing else; say what to do (7.2).
+- Power's three options use three different styles (red fill, outlined, plain); use one row style and the hold to mark the dangerous ones.
+- App list: one flat list of every app (2.6 suggests seven or so a level). Pinning favourites or recent apps at the top would cut the scroll.
+
+**Not checked:** BLE HID, Music, Net Radio, Compass and Walkie didn't open by name in the simulator, and hardware-only apps don't run there.
+
+**Simulator note:** a sideways drag made with `cliclick` opened the row under it (BLE Scanner's Interval) instead of going back. Found in phase 8: `cliclick` moves the pointer without the button held, so LVGL saw a tap, and a scripted drag that takes longer than LVGL's long-press time (400 ms) is cancelled as a long press. A drag posted as real `leftMouseDragged` events, starting with a move to the start point and taking about 200 ms, goes back as expected (see Testing).
+
+### What phase 8 changed
+
+Every item above, checked app by app in the simulator. Other boards are unchanged: each change is under `FACTORY_WATCH_UI`.
+
+**A. Type** (`ui_define.h`): `UI_FONT_BODY` 28 px (it was `MAIN_FONT`, 22 px; the Ultra's `MAIN_FONT` is 28 px too, so unstyled labels follow), `UI_FONT_SMALL` 24, `UI_FONT_CAPTION` and `UI_FONT_TINY` 22. The 10, 12, 14 and 16 px Montserrat sizes that apps set directly draw at 22 px and 18 at 24, so nothing that has to be read is under the guidelines' 22 px floor (4.1). The roadmap's proposal said 20 px; the guidelines say 22, so 22 it is. App list and pill text use the body size.
+
+**B. Targets:** card rows, list rows and app list rows are 88 px, action pills 82 px (3.1).
+- I2C Scan: the 36 px Scan button is a full-width pill; "Tap Scan to start" is gone (the Devices row says 0).
+- File Manager (SD Manager): no buttons inside rows. Files come first, as card rows (name, size); a folder opens, a file pushes its page with Size, "View" (text files) and "Delete file" (hold, "Hold to delete"). The preview is a pushed page that scrolls, not a box with a small close button. Storage below: Capacity and Used only with a card, then Refresh and "Clean logs" (hold). Results ("Deleted …") are toasts.
+- The touch guide's two buttons are stacked 82 px pills (the second wrapped onto two lines at the new size).
+
+**C. Contrast:** secondary grey `#A0A0A0` on the watch (5.5 : 1 or more on every preset); Violet's accent `#B577FF` (5.7 : 1, was 4.4). Figures in the guidelines, 5.1.
+
+**D. The thing first:**
+- **BLE Scanner:** a "Nearby" card with one summary line ("12 found, 8 named") over the device list, then "Scan now" and an "Options" row. Options (pushed page): Active scan, Named only, Auto refresh, Every (15/30/60 s, kept while the page is closed) and "Clear list". The Shown / All Seen / Named / Strongest counters are gone on the watch.
+- **WiFi:** with the empty rows hidden (E), the networks are on the first screen.
+- **WiFi Analyzer:** a "Channels" card first: "4 networks, 1 open", the chart (170 px, axis numbers kept inside it) and "Least crowded: channel 6". Networks below as scan rows ("Channel 6 · WPA2", signal on the right), then "Scan now" and "Options" (Auto scan, Every, Export CSV). The Overview and Selected AP cards are gone on the watch.
+
+**E. No rows of "--":** `ui_card_row_set_hidden(row, hidden)` (new, `ui_tools.cpp`) hides a card row with its divider and keeps dividers only between visible rows.
+- **WiFi:** WiFi switch and "Network" (Off / Not connected / Not found / the network's name). IP, Signal and "Forget network" show only while connected. The SSID row is gone (Network says it); MAC is in Settings > About.
+- **WiFi Tools:** "Network: Not connected", or the name with IP, Router, DNS server, Signal and Refresh.
+- **SD Card:** one "Card" row (No card / Not mounted / Mounted) instead of the coloured dot (colour alone, 5.3) and "Status: Unknown"; Size, Format and Bus speed once mounted; the Speed Test card only with a card, Write and Read only after a test.
+
+**F. Icons:** a gear (`LV_SYMBOL_SETTINGS`) or list icon (`LV_SYMBOL_LIST`) passed to a card row draws nothing; the icon column stays, so titles still line up (3.7). Rows that got new icons have ones that mean something (folder, file, drive).
+
+**G. Plain words:** RSSI → Signal; Gateway → Router; Best CH and the load line → "Least crowded: channel 6"; Monitor's PMIC → Power chip, Gauge → Battery chip, VBUS → USB volts, SOC → Charge, Battery I → Battery current, NTC → Battery sensor, and so on; SD's Type → Format, SPI → Bus speed. BSSID only appears on other boards now.
+
+**H. Short text:**
+- **NFC:** "Hold a card to the screen" under the icon, in white (it was five grey lines).
+- **Power:** three rows of one style (Power off, Sleep, Restart), like Settings. The overview card (eyebrow, PMIC paragraph, CTRL line) is gone; Power off and Restart need a hold, and a tap says what the hold does ("Hold to power off", "Hold to restart") through the new `ui_require_hold_hint()`. In ship mode, one line above the rows says whether USB-C must be unplugged.
+
+**I. Values that wrap:** WiFi Analyzer's Strongest row is gone (the list is sorted by signal); Monitor shows the percentage in 48 px with the state beside it, without the chip names that wrapped (they're in Status), and drops the State row that repeated it.
+
+**J. Haptics** (`hw_haptic()` in `hal_interface.cpp`): TAP (the effect chosen in Vibration; what `hw_feedback()` plays), SUCCESS (double click), FAILURE (triple click), START (strong click), STOP (short double click), ALERT (750 ms alert), each a DRV2605 library waveform; the chosen tap effect is restored after each.
+- Hold to confirm ends with SUCCESS; WiFi connect gives SUCCESS or FAILURE; Stopwatch start/pause and Timer start/pause/cancel give START or STOP; a ringing alarm or timer gives ALERT.
+- Pushing a page and opening the app list no longer buzz (8.2).
+- **Settings > Vibration** (new section): one switch, saved in a spare settings byte (`hw_get/set_watch_haptics()`, 0 = on, so older saves read as on). Off silences everything except ALERT: alarms and timers still vibrate, which the page says.
+- The Vibration app has one job: "Tap feel", the Effect level row and a Play pill; the DRV2605, Driver and Library rows are gone.
+
+**K. Smaller things:**
+- **QRCode** on the simulator now says "LilyGo T-Watch Ultra (2025)", as the hardware does (`hw_get_variant_name()`).
+- **Sensor (IMU):** the dial on the left and Roll, Pitch and Heading in 32 px on the right; no "IMU" caption on the card edge.
+- **LoRa Hub without a module:** "No LoRa radio found" and "Restart the watch to try again".
+- **App list:** a "Recent" section was tried here and replaced by the person's own order (next section).
+
+**Cards:** the last row in a card no longer draws a divider under it.
+
+### App list order (2026-11-05)
+
+Asked for: the app list's order is the person's, set by dragging, and kept through power off, like the face's corner shortcuts.
+
+- **Drag:** long-press a row (it lifts: accent outline, shadow, a tap buzz) and drag it; a grey outline shows where it will land, and the other rows make room. Holding the finger within 70 px of the list's top or bottom edge scrolls the list. Letting go drops it there. The release after a drag doesn't open the app; a plain tap still does. While a row is held it doesn't pass vertical drags to the list, so the list doesn't scroll under the finger, and the back swipe is off (a long press cancels it).
+- **Saved** by app name hash (`watch_app_name_hash()`, renames covered as for face slots) through `hw_get/set_watch_app_order()`. That's up to 64 hashes, too many for the settings blob's 11 spare bytes, so on the watch they have their own Preferences namespace (`app_order`, key `order`). The simulator writes `watch_app_order.bin` in its working directory, so the order survives a simulator restart too.
+- **Building the list:** saved order first (apps that are gone are skipped), then any app not in it, in registry order, so a newly added app shows at the end.
+- **Not done:** guideline 2.4 says a long press is never the only way to do something, and here it is. An "Arrange apps" row at the end of the list that turns on dragging without the long press, or the same list in Settings, would give it a visible way in. The face corner picker still lists apps in registry order, not this one.
+
+### Crash recovery (2026-11-05)
+
+Asked for: when something goes wrong, go back to the main screen instead of freezing.
+
+What froze before: LVGL's checks (a NULL object, a failed allocation) ended in `while(1);` (`src/lv_conf.h`), and nothing watched the UI loop, so an app stuck in a loop hung the watch until the battery ran out. A CPU fault already restarted the watch (the panic handler prints and reboots), but through the logo and boot sound.
+
+A crash leaves memory and LVGL in an unknown state, so it isn't continued in place. Instead:
+- **LVGL checks** call `lilygo_lv_assert_failed()` (new `src/lilygo_lv_assert.h`). The library's weak default still halts, so other examples behave as before; the factory app's version restarts.
+- **Frozen UI:** an `esp_timer` checks every second that `loop()` ran in the last 20 s (`HW_UI_WATCHDOG_MS`), and restarts the watch if not. It pauses while the watch is in light sleep, where `loop()` legitimately doesn't run. An app call that blocks for more than 20 s would also trigger it; none is known.
+- **Coming back:** the open app's name is kept in RTC memory (`RTC_NOINIT_ATTR`), which survives a restart, panic or watchdog reset. After such a reset (`esp_reset_reason()`: panic, interrupt or task watchdog, or our own restart), the watch skips the logo wait and boot sound and starts on the face with a full-screen "WiFi stopped / The watch restarted to recover." A normal power on shows nothing.
+- **C++ exceptions while an app opens** (for example `std::bad_alloc`) are caught in `ui_launch_app()`. The half-built page is removed and the face shows "<app> stopped / Back on the watch face.", with no restart. Exceptions thrown later, from LVGL callbacks, can't unwind through LVGL's C code; they end as a panic, so the restart path covers them.
+
+Checked in the simulator with temporary hooks (since removed): the message after a crash restart, and an exception while opening an app from the app list.
+
+**Check on hardware:**
+- Force each case: an `LV_ASSERT_NULL(NULL)`, an endless loop in an app, and a NULL pointer write. Each should come back on the face with the app's name within about 20 s (a few seconds for the faults).
+- Leave the watch asleep for a few minutes: it must not restart on waking.
+- A normal power on shows no message.
+
+### Phase 8 follow-ups
+
+- **Check on hardware:**
+  - The haptic patterns: whether the six feel different on the wrist, and whether ALERT is strong enough to wake someone.
+  - File Manager with a card: file rows, the file page, View and "Delete file". The simulator has no SD card.
+  - WiFi Tools and WiFi while connected (the rows that only show then).
+  - BLE Scanner's list and Options with real devices.
+  - The firmware build: `pio run -e twatch_ultra` stops at `ImuDrv.hpp: No such file or directory` (included by `src/LilyGoWatchUltra.h`): the SensorLib in `.pio/libdeps/twatch_ultra` is older than the one this checkout expects. Not caused by phase 8; update SensorLib, then build.
+- **Long values** still wrap in a few info rows at 28 px (Monitor's "Simulator PMU" on desktop). Real chip names are short; check on hardware.
+- **Apps not reviewed in this pass** (not in the simulator build): BLE HID, Music, Net Radio, Compass, Walkie, GNSS, Recorder, LoRa Hub with a module. They get the new type sizes, icon and divider rules through the shared helpers, so check their layouts on hardware.
+- "32.0 C" in Monitor could say "32.0 °C" (the Latin fonts have the degree sign).
 
 ### What phases 1–2 changed
 
@@ -327,6 +502,7 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
 - A pushed page is a child of the page it covers, so deleting an app page also deletes its sub-pages. Objects whose pointers outlive a sub-page, such as labels the Settings refresh timer writes to, must be cleared on `LV_EVENT_DELETE`; `ui_sys.cpp` does this with `track_value_label()`.
 - A picker row's last child is the `lv_dropdown` that holds the options and the choice.
 - An action pill row's last child is the button, and the button's first child is its label.
+- A card row's divider is the card's next child after the row, flagged `LV_OBJ_FLAG_USER_2`. On the watch `USER_3` marks the last row's divider (hidden until another row follows) and `USER_1` one that `ui_card_row_set_hidden()` hid; apps shouldn't set those flags on dividers. Hide or show card rows with `ui_card_row_set_hidden()`, not the hidden flag, so the dividers follow.
 - Button and PMU callbacks fire outside the LVGL loop. Set a flag there and act on it in an LVGL timer, as `lilygo_power_menu_request()` does.
 
 ## Testing
@@ -338,10 +514,14 @@ Asked for on 2026-11-04: setting the date and time is a setting, and Clock Tools
   - Swipe up on the face for the app list, and swipe right to go back.
   - Settings: open a section, then a picker (e.g. Display → Theme). Each swipe right goes back one page.
   - Long-press a face corner to change it. Steps show a fixed 6420 on desktop.
+  - App list: long-press a row, drag it up or down and let go. Restart the simulator; the order stays (delete `watch_app_order.bin` to reset it).
   - Lock mode: set Settings → Display → Timeout to 10 s and Settings → Lock screen to Clock. Then leave the face idle; set the timeout back afterwards.
   - Clock Tools: Date → move the wheels → Set date. The face shows the new date; restarting the simulator resets it.
   - Display Test: tap, long press, then swipe right.
+  - `FACTORY_SIM_APP="WiFi" .pio/build/emulator_watch_ultra/program` opens that app at start (any app list name) and skips the touch guide. The boot splash takes about 10 s.
+  - WiFi: turn it on and scroll down; Scan networks lists four made-up networks. Tap one, then Password, and type: the dots and cursor stay put.
   - F2 opens the power menu, standing in for holding PWR.
+  - **Scripted swipes:** post real drag events (macOS `CGEvent`: move to the start point, `leftMouseDown`, about ten `leftMouseDragged` steps over about 200 ms, `leftMouseUp`). `cliclick` drags arrive as taps, and a drag slower than 400 ms is cancelled as a long press.
   - When the screen times out it shows a black overlay; click to wake.
 - **Hardware:**
   ```bash

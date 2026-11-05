@@ -1233,6 +1233,17 @@ uint8_t hw_get_keyboard_layout();
  * vibration or a sound, depending on the hardware implementation.
  */
 void hw_feedback();
+/* One vibration per meaning (watch-ux-guidelines.md 8.1), after Apple's set.
+ * TAP is hw_feedback(): the effect chosen in Vibration; use it sparingly. */
+typedef enum {
+    HW_HAPTIC_TAP,       /* A control changed: switch, picker, −/+, key */
+    HW_HAPTIC_SUCCESS,   /* Something asked for worked: connected, held to confirm */
+    HW_HAPTIC_FAILURE,   /* It didn't: connect failed */
+    HW_HAPTIC_START,     /* Stopwatch or timer started */
+    HW_HAPTIC_STOP,      /* Stopwatch or timer stopped, paused or cancelled */
+    HW_HAPTIC_ALERT,     /* Needs attention now: an alarm or a timer ringing */
+} hw_haptic_t;
+void hw_haptic(hw_haptic_t kind);
 
 /** Get the persisted DRV2605 ROM waveform effect (1-117). */
 uint8_t hw_get_haptic_effect();
@@ -1268,6 +1279,21 @@ void ui_show_wifi_process_bar();
  * @param msg_txt A pointer to the message text to be displayed.
  */
 void ui_msg_pop_up(const char *title_txt, const char *msg_txt);
+
+/* ── Crash recovery ──
+ * A crash can't safely be continued, so the watch restarts and comes back on the
+ * face, skipping the logo, and says which app stopped. hw_crash_note_app() names
+ * the app that is open (NULL on exit); it survives the restart in RTC memory.
+ * hw_crash_take_report() is true once after a crash restart (CPU fault, watchdog,
+ * LVGL check, frozen UI) and gives that app's name ("" if none was open).
+ * hw_ui_watchdog_start() restarts the watch when loop() stops calling
+ * hw_ui_watchdog_feed() for HW_UI_WATCHDOG_MS (an app stuck in a loop). */
+#define HW_UI_WATCHDOG_MS 20000
+void hw_crash_note_app(const char *name);
+bool hw_crash_take_report(char *app_name, size_t len);
+void hw_crash_restart(const char *reason);
+void hw_ui_watchdog_start(void);
+void hw_ui_watchdog_feed(void);
 
 /**
  * @brief Check if the application is currently in the menu.
@@ -1335,6 +1361,12 @@ typedef struct {
 
 uint8_t hw_get_watch_lock_mode(void);
 void hw_set_watch_lock_mode(uint8_t mode);
+/* App list order: hashes of app names (watch_app_name_hash()), first row first.
+ * Saved in its own flash entry, so it survives power off; apps not in it follow
+ * in registry order. hw_get returns how many hashes it wrote to `out`. */
+#define WATCH_APP_ORDER_MAX 64
+uint8_t hw_get_watch_app_order(uint32_t *out, uint8_t max);
+void hw_set_watch_app_order(const uint32_t *hashes, uint8_t count);
 watch_slot_setting_t hw_get_watch_face_slot(uint8_t index);
 void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot);
 
@@ -1360,6 +1392,9 @@ uint32_t hw_get_watch_timer_recent(uint8_t index);
  * The languages are listed in ui_watch_pages.cpp. */
 uint8_t hw_get_watch_keyboard_accents(void);
 void hw_set_watch_keyboard_accents(uint8_t language);
+/* Settings > Vibration: taps, results and start/stop buzz only while on. */
+bool hw_get_watch_haptics(void);
+void hw_set_watch_haptics(bool on);
 /* Puts `seconds` first; an equal entry further down moves up instead of repeating. */
 void hw_add_watch_timer_recent(uint32_t seconds);
 
@@ -2309,8 +2344,8 @@ void hw_set_usb_rf_switch(bool to_usb);
 #elif defined(ARDUINO_T_WATCH_S3_ULTRA)
 #define FLOAT_BUTTON_WIDTH             60
 #define FLOAT_BUTTON_HEIGHT            60
-#define MAIN_FONT                      &lv_font_montserrat_22
-#define NFC_TIPS_STRING                "Hold the NFC card close to the front of the screen. It will vibrate when the card is detected; otherwise, it will not display anything if it cannot be resolved."
+#define MAIN_FONT                      &lv_font_montserrat_28
+#define NFC_TIPS_STRING                "Hold a card to the screen"
 #define DISP_BACKLIGHT_DELAY_MS        5
 
 #elif defined(ARDUINO_T_WATCH_S3)

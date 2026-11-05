@@ -185,3 +185,10 @@ void beginLvglHelper(LilyGo_Display &display, bool debug)
 }
 
 #endif  //LVGL_VERSION_MAJOR
+
+/* Default for LV_ASSERT_HANDLER (lv_conf.h): halt, as LVGL's own default does.
+ * Weak, so an application can recover instead (see lilygo_lv_assert.h). */
+extern "C" __attribute__((weak)) void lilygo_lv_assert_failed(void)
+{
+    while (1);
+}

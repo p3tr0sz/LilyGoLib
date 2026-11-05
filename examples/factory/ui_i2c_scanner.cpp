@@ -124,12 +124,23 @@ void ui_i2c_scanner_enter(lv_obj_t *parent)
 
     /* Result display */
     result_label = lv_label_create(card);
+#if FACTORY_WATCH_UI
+    /* The Devices row already says 0; the pill below says what to do. */
+    lv_label_set_text(result_label, "");
+    lv_obj_set_style_text_font(result_label, UI_FONT_CAPTION, 0);
+#else
     lv_label_set_text(result_label, "Tap Scan to start");
-    lv_obj_set_style_text_color(result_label, UI_COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_style_text_font(result_label, &lv_font_montserrat_12, 0);
+#endif
+    lv_obj_set_style_text_color(result_label, UI_COLOR_TEXT_PRIMARY, 0);
     lv_obj_set_width(result_label, LV_PCT(100));
     lv_obj_set_style_text_line_space(result_label, 4, 0);
 
+#if FACTORY_WATCH_UI
+    /* A full-width action pill (watch-ux-guidelines.md 3.1, 3.2). */
+    lv_obj_t *scan_row = ui_create_card_action(card, NULL, "Scan", scan_btn_cb);
+    scan_btn = lv_obj_get_child(scan_row, -1);
+#else
     /* Scan button */
     scan_btn = lv_btn_create(card);
     lv_obj_set_size(scan_btn, LV_PCT(100), 36);
@@ -142,6 +153,7 @@ void ui_i2c_scanner_enter(lv_obj_t *parent)
     lv_obj_center(btn_label);
 
     lv_obj_add_event_cb(scan_btn, scan_btn_cb, LV_EVENT_CLICKED, NULL);
+#endif
 
     /* Info card */
     lv_obj_t *info_card = ui_create_card(page_container, "Info");

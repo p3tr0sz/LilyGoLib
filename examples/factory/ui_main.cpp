@@ -172,11 +172,16 @@ static lv_obj_t *create_touch_guide_button(lv_obj_t *parent, const char *text,
         lv_color_t color, bool dismiss_permanently, bool compact)
 {
     lv_obj_t *btn = lv_btn_create(parent);
+#if FACTORY_WATCH_UI
+    /* Stacked full-width pills, as in other watch messages (watch-ux-guidelines.md 3.1, 3.2). */
+    lv_obj_set_size(btn, LV_PCT(100), 82);
+#else
     lv_obj_set_size(btn, LV_PCT(48), compact ? 42 : 40);
+#endif
     lv_obj_set_style_bg_color(btn, color, 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(btn, 0, 0);
-    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_set_style_radius(btn, FACTORY_WATCH_UI ? LV_RADIUS_CIRCLE : 8, 0);
     lv_obj_set_style_pad_all(btn, 4, 0);
     lv_obj_add_event_cb(btn, touch_guide_button_cb, LV_EVENT_CLICKED,
                         (void *)(intptr_t)dismiss_permanently);
@@ -187,7 +192,13 @@ static lv_obj_t *create_touch_guide_button(lv_obj_t *parent, const char *text,
     lv_obj_set_width(label, LV_PCT(100));
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label, lv_color_white(), 0);
+#if FACTORY_WATCH_UI
+    lv_obj_set_style_text_font(label, UI_FONT_SMALL, 0);
+    /* Dark text on the accent reads on every theme, as on action pills. */
+    if (!dismiss_permanently) lv_obj_set_style_text_color(label, lv_color_black(), 0);
+#else
     lv_obj_set_style_text_font(label, compact ? UI_FONT_TINY : UI_FONT_CAPTION, 0);
+#endif
     lv_obj_center(label);
 
     if (touch_guide_group) {
@@ -267,12 +278,17 @@ static void show_touch_guide(void)
     lv_obj_set_style_text_font(description, compact ? UI_FONT_TINY : UI_FONT_CAPTION, 0);
 
     lv_obj_t *button_row = lv_obj_create(panel);
+#if FACTORY_WATCH_UI
+    lv_obj_set_size(button_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_row(button_row, 10, 0);
+#else
     lv_obj_set_size(button_row, LV_PCT(100), compact ? 44 : 42);
+#endif
     lv_obj_set_style_bg_opa(button_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(button_row, 0, 0);
     lv_obj_set_style_pad_all(button_row, 0, 0);
     lv_obj_set_style_pad_column(button_row, 8, 0);
-    lv_obj_set_flex_flow(button_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_flow(button_row, FACTORY_WATCH_UI ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(button_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(button_row, LV_OBJ_FLAG_SCROLLABLE);
@@ -617,6 +633,7 @@ bool get_enter_low_power_flag()
 
 void menu_show()
 {
+    hw_crash_note_app(NULL);
     set_default_group(menu_g);
 #if FACTORY_WATCH_UI
     watch_shell_on_app_exit();
@@ -689,6 +706,29 @@ void update_page_indicator(void)
     }
 }
 
+static const char *app_name_of(app_t *app)
+{
+    for (uint32_t i = 0; i < ui_app_registry_count(); i++) {
+        const ui_app_entry_t *entry = ui_app_registry_get(i);
+        if (entry->app_func == app) return entry->name;
+    }
+    return "";
+}
+
+/* An app that stopped: say so on a full-screen message over the face
+ * (watch-ux-guidelines.md 7.2). `restarted` when the watch had to restart. */
+static void show_app_stopped(const char *name, bool restarted)
+{
+    char title[48];
+    if (name && name[0]) {
+        snprintf(title, sizeof(title), "%s stopped", name);
+    } else {
+        snprintf(title, sizeof(title), "Something went wrong");
+    }
+    ui_msg_pop_up(title, restarted ? "The watch restarted to recover." :
+                  "Back on the watch face.");
+}
+
 void ui_launch_app(app_t *app)
 {
     if (lv_obj_has_flag(main_screen, LV_OBJ_FLAG_HIDDEN)) return;
@@ -697,7 +737,23 @@ void ui_launch_app(app_t *app)
     hw_feedback();
     if (app && app->setup_func_cb) {
         lv_obj_t *parent = lv_obj_get_child(main_screen, 1);
-        (*app->setup_func_cb)(parent);
+        const char *name = app_name_of(app);
+        /* Remembered across a crash restart, so the face can say which app it was. */
+        hw_crash_note_app(name);
+        try {
+            (*app->setup_func_cb)(parent);
+        } catch (...) {
+            /* A C++ exception while the app opened (out of memory in a std::vector,
+             * for example): drop what it built and go back, without a restart. */
+            lv_obj_clean(parent);
+            hw_crash_note_app(NULL);
+            menu_show();
+#if FACTORY_WATCH_UI
+            watch_shell_show_face(false);
+#endif
+            show_app_stopped(name, false);
+            return;
+        }
     }
     menu_hidden();
 }
@@ -1795,8 +1851,14 @@ static void boot_anim_timer_cb(lv_timer_t *t)
 /* ============================================================
  *  setupGui  — main entry
  * ============================================================ */
+static char crashed_app[32];
+static bool crash_recovered = false;
+
 void setupGui()
 {
+    /* After a crash restart: no logo wait, no boot sound, and a message on the face. */
+    crash_recovered = hw_crash_take_report(crashed_app, sizeof(crashed_app));
+
     /* Load saved theme preset */
     user_setting_params_t settings;
     hw_get_user_setting(settings);
@@ -1853,7 +1915,7 @@ void setupGui()
     lv_obj_align(boot_progress_bar, LV_ALIGN_CENTER, 0, 40);
 
     lv_refr_now(NULL);
-    hw_play_boot_sound_async();
+    if (!crash_recovered) hw_play_boot_sound_async();
     boot_start_tick = lv_tick_get();
     lv_timer_t *boot_timer = lv_timer_create(boot_anim_timer_cb, 30, NULL);
 
@@ -1869,7 +1931,7 @@ void setupGui()
     hw_kb_enable_backlight(true);
 
     /* Wait ~3.5 seconds, processing LVGL timers so progress bar updates */
-    uint32_t boot_end = lv_tick_get() + 3500;
+    uint32_t boot_end = lv_tick_get() + (crash_recovered ? 0 : 3500);
     while (lv_tick_get() < boot_end) {
         lv_timer_handler();
         lv_delay_ms(10);
@@ -2233,6 +2295,23 @@ void setupGui()
     /* Allow low power mode */
     set_low_power_mode_flag(true);
     lv_display_trigger_activity(NULL);
+#if FACTORY_WATCH_UI && !defined(ARDUINO)
+    /* Simulator only: FACTORY_SIM_APP="WiFi" (an app list name) opens that app at
+     * start without the touch guide, so screens can be reviewed one by one. */
+    const char *sim_app = getenv("FACTORY_SIM_APP");
+    const ui_app_entry_t *sim_entry = sim_app ? ui_app_registry_find(sim_app) : NULL;
+    if (sim_entry) {
+        lv_timer_t *t = lv_timer_create([](lv_timer_t *timer) {
+            watch_shell_launch((app_t *)lv_timer_get_user_data(timer), WATCH_VIEW_LIST);
+        }, 300, (void *)sim_entry->app_func);
+        lv_timer_set_repeat_count(t, 1);
+        return;
+    }
+#endif
+    if (crash_recovered) {
+        show_app_stopped(crashed_app, true);
+        return;
+    }
 #if FACTORY_HAS_TOUCH_INPUT
     show_touch_guide();
 #endif

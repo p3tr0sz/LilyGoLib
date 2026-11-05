@@ -131,8 +131,17 @@ static const char *addr_type_text(uint8_t type)
     }
 }
 
+static uint8_t interval_sel = 1;   /* 15 s, 30 s, 60 s; kept while the Options page is closed */
+
 static uint32_t interval_from_dropdown(void)
 {
+    if (interval_dd) interval_sel = (uint8_t)lv_dropdown_get_selected(interval_dd);
+    switch (interval_sel) {
+    case 0: return 15000;
+    case 1: return 30000;
+    case 2: return 60000;
+    default: return BLE_SCAN_AUTO_INTERVAL_MS;
+    }
     if (!interval_dd) return BLE_SCAN_AUTO_INTERVAL_MS;
     switch (lv_dropdown_get_selected(interval_dd)) {
     case 0: return 15000;
@@ -200,6 +209,12 @@ static lv_obj_t *card_dropdown(lv_obj_t *card, const char *icon, const char *tit
 
 static void clear_device_rows(void)
 {
+#if FACTORY_WATCH_UI
+    /* The list holds the rows and their dividers. */
+    if (device_list_cont) lv_obj_clean(device_list_cont);
+    memset(device_rows, 0, sizeof(device_rows));
+    return;
+#endif
     for (uint8_t i = 0; i < BLE_SCAN_MAX_ROWS; ++i) {
         if (device_rows[i]) {
             lv_obj_delete(device_rows[i]);
@@ -211,6 +226,15 @@ static void clear_device_rows(void)
 static lv_obj_t *create_device_list_container(lv_obj_t *parent)
 {
     lv_obj_t *list = lv_obj_create(parent);
+#if FACTORY_WATCH_UI
+    /* The page scrolls; a box that scrolls inside it fights the finger. */
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(list, LV_OBJ_FLAG_CLICKABLE);
+    return list;
+#endif
     lv_obj_set_size(list, LV_PCT(100), is_screen_small() ? 162 : 218);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
@@ -670,6 +694,14 @@ static void update_overview(void)
 
 static int find_selected_index(void)
 {
+#if FACTORY_WATCH_UI
+    /* A device's page shows "--" while its device is out of the list, rather
+     * than switching to another device. */
+    for (size_t i = 0; i < device_snapshot.size(); ++i) {
+        if (device_snapshot[i].address == selected_address) return (int)i;
+    }
+    return -1;
+#endif
     if (device_snapshot.empty()) {
         selected_address.clear();
         return -1;
@@ -730,6 +762,37 @@ static void update_detail(void)
     set_value_label(selected_adv_label, buf);
 }
 
+#if FACTORY_WATCH_UI
+static void detail_page_delete_cb(lv_event_t *e)
+{
+    (void)e;
+    selected_name_label = NULL;
+    selected_addr_label = NULL;
+    selected_rssi_label = NULL;
+    selected_type_label = NULL;
+    selected_seen_label = NULL;
+    selected_service_label = NULL;
+    selected_mfg_label = NULL;
+    selected_adv_label = NULL;
+}
+
+/* The watch shows a device on its own page, not in a card below the list. */
+static void open_detail_page(lv_obj_t *from, const ble_scan_device_t &dev)
+{
+    lv_obj_t *content = ui_push_page(from, dev.name.empty() ? "Device" : dev.name.c_str());
+    lv_obj_add_event_cb(content, detail_page_delete_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_t *card = ui_create_card(content, NULL);
+    add_info_row(card, LV_SYMBOL_BLUETOOTH, "Name", "--", &selected_name_label);
+    add_info_row(card, LV_SYMBOL_SETTINGS, "Address", "--", &selected_addr_label);
+    add_info_row(card, LV_SYMBOL_WIFI, "Signal", "--", &selected_rssi_label);
+    add_info_row(card, LV_SYMBOL_LIST, "Type", "--", &selected_type_label);
+    add_info_row(card, LV_SYMBOL_REFRESH, "Seen", "--", &selected_seen_label);
+    add_info_row(card, LV_SYMBOL_LIST, "Service", "--", &selected_service_label);
+    add_info_row(card, LV_SYMBOL_SAVE, "Mfg Data", "--", &selected_mfg_label);
+    add_info_row(card, LV_SYMBOL_SETTINGS, "Adv", "--", &selected_adv_label);
+}
+#endif
+
 static void device_row_cb(lv_event_t *e)
 {
     int index = (int)(intptr_t)lv_event_get_user_data(e);
@@ -737,6 +800,11 @@ static void device_row_cb(lv_event_t *e)
         return;
     }
     selected_address = device_snapshot[index].address;
+#if FACTORY_WATCH_UI
+    open_detail_page(lv_event_get_current_target_obj(e), device_snapshot[index]);
+    update_detail();
+    return;
+#endif
     update_detail();
 
     for (uint8_t i = 0; i < BLE_SCAN_MAX_ROWS; ++i) {
@@ -789,6 +857,25 @@ static void build_device_list(void)
     int selected_index = find_selected_index();
     uint8_t limit = device_snapshot.size() < BLE_SCAN_MAX_ROWS ? device_snapshot.size() : BLE_SCAN_MAX_ROWS;
 
+#if FACTORY_WATCH_UI
+    /* Rows like the rest of the card; a tap opens the device's page. */
+    LV_UNUSED(selected_index);
+    for (uint8_t i = 0; i < limit; ++i) {
+        const ble_scan_device_t &dev = device_snapshot[i];
+        char detail[64];
+        char value[16];
+        uint32_t age_s = (millis() - dev.last_seen_ms) / 1000;
+        string type_text = device_type_text(dev);
+        snprintf(detail, sizeof(detail), "%s \xC2\xB7 %lus ago", type_text.c_str(), (unsigned long)age_s);
+        snprintf(value, sizeof(value), "%d dBm", dev.rssi);
+        device_rows[i] = ui_create_card_signal_row(device_list_cont, LV_SYMBOL_BLUETOOTH,
+                                                   dev.name.empty() ? dev.address.c_str() : dev.name.c_str(),
+                                                   detail, value, rssi_color(dev.rssi),
+                                                   device_row_cb, (void *)(intptr_t)i);
+    }
+    lv_obj_add_flag(lv_obj_get_child(device_list_cont, -1), LV_OBJ_FLAG_HIDDEN);   /* Last divider */
+    return;
+#endif
     for (uint8_t i = 0; i < limit; ++i) {
         const ble_scan_device_t &dev = device_snapshot[i];
         char meta[96];
@@ -897,7 +984,15 @@ static void refresh_ui(bool rebuild_list)
                 set_status("Scan complete. No devices.", UI_COLOR_WARNING);
             }
         } else {
+#if FACTORY_WATCH_UI
+            /* One summary line above the list. */
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%u found, %u named",
+                     (unsigned)raw_device_count, (unsigned)raw_named_count);
+            set_status(buf, UI_COLOR_TEXT_SECONDARY);
+#else
             set_status("Scan complete.", UI_COLOR_ACCENT);
+#endif
         }
         scan_end_pending_status = false;
         scan_end_reason = 0;
@@ -1047,11 +1142,62 @@ static void back_event_handler(lv_event_t *e)
     menu_show();
 }
 
+#if FACTORY_WATCH_UI
+static void options_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    active_switch = NULL;
+    auto_switch = NULL;
+    named_filter_switch = NULL;
+    interval_dd = NULL;
+}
+
+/* Scanner options live one tap away, so the devices are on the first screen
+ * (watch-ux-guidelines.md 1.1, 2.6). */
+static void open_options_cb(lv_event_t *e)
+{
+    lv_obj_t *content = ui_push_page(lv_event_get_target_obj(e), "Options");
+    lv_obj_add_event_cb(content, options_page_delete_cb, LV_EVENT_DELETE, NULL);
+    lv_obj_t *card = ui_create_card(content, NULL);
+    active_switch = card_switch(card, LV_SYMBOL_BLUETOOTH, "Active scan", active_scan_enabled, active_switch_cb);
+    named_filter_switch = card_switch(card, LV_SYMBOL_EDIT, "Named only", named_filter_enabled, named_filter_cb);
+    auto_switch = card_switch(card, LV_SYMBOL_REFRESH, "Auto refresh", auto_scan_enabled, auto_switch_cb);
+    interval_dd = card_dropdown(card, LV_SYMBOL_BELL, "Every", "15 s\n30 s\n60 s", interval_sel, interval_cb);
+    ui_create_card_button(content, LV_SYMBOL_CLOSE, "Clear", "Clear list", clear_btn_cb);
+}
+#endif
+
 void ui_ble_scanner_enter(lv_obj_t *parent)
 {
     cleanup();
     page_container = ui_create_app_page(parent, "BLE Scanner", back_event_handler);
 
+#if FACTORY_WATCH_UI
+    {
+        /* Devices first, under one summary line; the counters and options moved
+         * off the first screen. */
+        device_list_card = ui_create_card(page_container, "Nearby");
+        status_label = lv_label_create(device_list_card);
+        lv_label_set_text(status_label, "Scanning...");
+        lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(status_label, LV_PCT(100));
+        lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(status_label, UI_FONT_CAPTION, 0);
+        device_list_cont = create_device_list_container(device_list_card);
+        lv_obj_t *empty = lv_label_create(device_list_cont);
+        device_rows[0] = empty;
+        lv_label_set_text(empty, "");
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(empty, LV_PCT(100));
+        lv_obj_set_style_text_color(empty, UI_COLOR_TEXT_SECONDARY, 0);
+        scan_label = lv_label_create(device_list_card);
+        lv_label_set_text(scan_label, "");
+        lv_obj_set_style_text_color(scan_label, UI_COLOR_TEXT_SECONDARY, 0);
+        lv_obj_set_style_text_font(scan_label, UI_FONT_CAPTION, 0);
+        ui_create_card_action(page_container, LV_SYMBOL_REFRESH, "Scan now", refresh_btn_cb);
+        ui_create_menu_row(page_container, LV_SYMBOL_SETTINGS, "Options", open_options_cb, NULL);
+    }
+#else
     lv_obj_t *card = ui_create_card(page_container, "Overview");
     status_label = lv_label_create(card);
     lv_label_set_text(status_label, "Ready.");
@@ -1097,6 +1243,7 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     add_info_row(card, LV_SYMBOL_LIST, "Service", "--", &selected_service_label);
     add_info_row(card, LV_SYMBOL_SAVE, "Mfg Data", "--", &selected_mfg_label);
     add_info_row(card, LV_SYMBOL_SETTINGS, "Adv", "--", &selected_adv_label);
+#endif /* FACTORY_WATCH_UI */
 
 #if BLE_SCANNER_HAS_NIMBLE
     if (!device_mutex) {
@@ -1112,8 +1259,14 @@ void ui_ble_scanner_enter(lv_obj_t *parent)
     ui_timer = lv_timer_create(ui_timer_cb, BLE_SCAN_UI_PERIOD_MS, NULL);
     start_scan();
 #else
+#if FACTORY_WATCH_UI
+    set_status("Bluetooth scanning isn't in this build", UI_COLOR_WARNING);
+    lv_obj_add_flag(device_list_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(scan_label, LV_OBJ_FLAG_HIDDEN);
+#else
     set_status("NimBLE observer role unavailable.", lv_color_hex(0xFF4444));
     lv_label_set_text(scan_label, "This build cannot scan BLE devices.");
+#endif
     if (device_rows[0]) {
         lv_label_set_text(device_rows[0], "BLE scan is not available in this build.");
     }

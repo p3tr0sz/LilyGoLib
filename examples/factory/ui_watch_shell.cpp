@@ -82,6 +82,8 @@ static void list_hidden_ready_cb(lv_anim_t *a)
 {
     LV_UNUSED(a);
     list_reset_hidden();
+    /* Next time the list opens from the face it starts at the top. */
+    app_list_scroll_to_top();
 }
 
 watch_view_t watch_shell_get_view(void)
@@ -130,7 +132,6 @@ void watch_shell_list_drag_end(bool open)
     if (view != WATCH_VIEW_FACE || lv_obj_has_flag(list, LV_OBJ_FLAG_HIDDEN)) return;
     if (open) {
         view = WATCH_VIEW_LIST;
-        hw_feedback();
         list_animate(anim_set_y, lv_obj_get_y(list), 0, WATCH_LIST_OPEN_MS, NULL);
     } else {
         list_animate(anim_set_y, lv_obj_get_y(list), screen_height(),

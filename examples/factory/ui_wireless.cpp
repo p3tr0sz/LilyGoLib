@@ -40,6 +40,9 @@ static lv_group_t *connect_prev_group = NULL;
 static lv_group_t *connect_modal_group = NULL;
 #if FACTORY_WATCH_UI
 static lv_obj_t *connect_page = NULL;   /* Watch: the pushed Connect page's content */
+/* Rows that only mean something while connected; hidden otherwise, so the page
+ * doesn't show a column of "--" (watch-ux-guidelines.md 1.1, 1.3). */
+static lv_obj_t *connected_rows[5] = {NULL};
 #endif
 
 #ifdef USING_TOUCHPAD
@@ -123,11 +126,17 @@ static const char *status_to_text(wl_status_t status)
 {
     switch (status) {
     case WL_CONNECTED: return "Connected";
+#if FACTORY_WATCH_UI
+    case WL_NO_SSID_AVAIL: return "Not found";
+    case WL_DISCONNECTED:
+    case WL_IDLE_STATUS: return "Not connected";
+#else
     case WL_NO_SSID_AVAIL: return "SSID not found";
-    case WL_CONNECT_FAILED: return "Connect failed";
-    case WL_CONNECTION_LOST: return "Connection lost";
     case WL_DISCONNECTED: return "Disconnected";
     case WL_IDLE_STATUS: return "Idle";
+#endif
+    case WL_CONNECT_FAILED: return "Connect failed";
+    case WL_CONNECTION_LOST: return "Connection lost";
     default: return "Offline";
     }
 }
@@ -207,6 +216,15 @@ static void update_connection_labels(void)
     if (mac_label) lv_label_set_text(mac_label, WiFi.macAddress().c_str());
 #else
     if (mac_label) lv_label_set_text(mac_label, "--");
+#endif
+#if FACTORY_WATCH_UI
+    /* State shows the network's name once connected; the rest only then. */
+    if (status_label && connected) lv_label_set_text(status_label, ssid);
+    if (status_label && !wifi_enabled) {
+        lv_label_set_text(status_label, "Off");
+        lv_obj_set_style_text_color(status_label, UI_COLOR_TEXT_SECONDARY, 0);
+    }
+    for (lv_obj_t *row : connected_rows) ui_card_row_set_hidden(row, !connected);
 #endif
 }
 
@@ -320,6 +338,7 @@ static void wifi_result_anim_exec_cb(void *var, int32_t val)
 
 static void show_connecting_result(bool success, const char *detail)
 {
+    hw_haptic(success ? HW_HAPTIC_SUCCESS : HW_HAPTIC_FAILURE);
     if (!wifi_connecting_panel) return;
 
     if (wifi_connecting_timer) {
@@ -747,6 +766,20 @@ static void rebuild_ap_list(void)
     }
 
     int count = scan_results.size() < WIFI_MAX_AP_ROWS ? scan_results.size() : WIFI_MAX_AP_ROWS;
+#if FACTORY_WATCH_UI
+    /* Rows like the rest of the card; a tap opens the network's page. */
+    for (int i = 0; i < count; ++i) {
+        const wifi_scan_params_t &ap = scan_results[i];
+        char detail[48];
+        char value[16];
+        lv_snprintf(detail, sizeof(detail), "Channel %d \xC2\xB7 %s", (int)ap.channel, auth_mode_str(ap.authmode));
+        lv_snprintf(value, sizeof(value), "%d dBm", ap.rssi);
+        ui_create_card_signal_row(ap_list_cont, LV_SYMBOL_WIFI, ssid_display(ap), detail, value,
+                                  rssi_color(ap.rssi), ap_row_event_cb, (void *)(intptr_t)i);
+    }
+    lv_obj_add_flag(lv_obj_get_child(ap_list_cont, -1), LV_OBJ_FLAG_HIDDEN);   /* Last divider */
+    return;
+#endif
     for (int i = 0; i < count; ++i) {
         const wifi_scan_params_t &ap = scan_results[i];
 
@@ -838,7 +871,9 @@ static void ap_row_event_cb(lv_event_t *e)
     if (index < 0 || index >= (int)scan_results.size()) return;
 
     selected_index = index;
-    rebuild_ap_list();
+#if !FACTORY_WATCH_UI
+    rebuild_ap_list();      /* Marks the row; the watch pushes a page instead */
+#endif
     open_connect_modal();
     hw_feedback();
 }
@@ -857,8 +892,13 @@ static void apply_scan_results(vector<wifi_scan_params_t> &results)
         for (auto &ap : scan_results) {
             if (auth_is_open(ap.authmode)) open_count++;
         }
+#if FACTORY_WATCH_UI
+        lv_label_set_text_fmt(scan_summary_label, "%u, %d open",
+                              (unsigned)scan_results.size(), open_count);
+#else
         lv_label_set_text_fmt(scan_summary_label, "%u AP  %d open",
                               (unsigned)scan_results.size(), open_count);
+#endif
     }
 
     set_status(scan_results.empty() ? "Scan complete: no AP" : "Scan complete", UI_COLOR_ACCENT);
@@ -965,7 +1005,9 @@ static lv_obj_t *add_info_row(lv_obj_t *card, const char *icon, const char *titl
     if (out_label) {
         *out_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
         if (*out_label) {
+#if !FACTORY_WATCH_UI
             lv_obj_set_width(*out_label, 140);
+#endif
             lv_label_set_long_mode(*out_label, LV_LABEL_LONG_DOT);
         }
     }
@@ -1033,6 +1075,9 @@ static void back_event_handler(lv_event_t *e)
     rssi_label = NULL;
     mac_label = NULL;
     scan_summary_label = NULL;
+#if FACTORY_WATCH_UI
+    for (lv_obj_t *&row : connected_rows) row = NULL;
+#endif
     ap_list_card = NULL;
     ap_list_cont = NULL;
     wifi_switch = NULL;
@@ -1052,32 +1097,51 @@ void ui_wireless_enter(lv_obj_t *parent)
     wifi_switch = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
     wifi_enabled = hw_get_wifi_connected();
 
-    row = ui_create_card_info(card, LV_SYMBOL_WIFI, "State", "Offline");
+    row = ui_create_card_info(card, LV_SYMBOL_WIFI, FACTORY_WATCH_UI ? "Network" : "State", "Offline");
     status_label = lv_obj_get_child(row, lv_obj_get_child_count(row) - 1);
+#if FACTORY_WATCH_UI
+    /* "Network" shows the name once connected, so there is no SSID row; the
+     * MAC is in Settings > About. */
+    connected_rows[0] = add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
+    connected_rows[1] = add_info_row(card, LV_SYMBOL_WIFI, "Signal", "--", &rssi_label);
+    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE, "Forget network",
+                                                   disconnect_event_cb);
+    connected_rows[2] = forget_row;
+#else
     add_info_row(card, LV_SYMBOL_WIFI, "SSID", "--", &ssid_label);
     add_info_row(card, LV_SYMBOL_HOME, "IP", "--", &ip_label);
     add_info_row(card, LV_SYMBOL_WIFI, "RSSI", "--", &rssi_label);
     add_info_row(card, LV_SYMBOL_SETTINGS, "MAC", "--", &mac_label);
-    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE,
-                                                   FACTORY_WATCH_UI ? "Forget network" : "Forget",
+    lv_obj_t *forget_row = add_right_action_button(card, LV_SYMBOL_CLOSE, "Forget",
                                                    disconnect_event_cb);
+#endif
     ui_require_hold(lv_obj_get_child(forget_row, -1));
 
     ap_list_card = ui_create_card(page_container, "Networks");
-    lv_obj_t *scan_row = ui_create_card_info(ap_list_card, LV_SYMBOL_LIST, "Scan", "Not scanned");
+    lv_obj_t *scan_row = ui_create_card_info(ap_list_card, LV_SYMBOL_LIST,
+                                             FACTORY_WATCH_UI ? "Found" : "Scan", "Not scanned");
     scan_summary_label = lv_obj_get_child(scan_row, lv_obj_get_child_count(scan_row) - 1);
     add_right_action_button(ap_list_card, LV_SYMBOL_REFRESH, FACTORY_WATCH_UI ? "Scan networks" : "Scan",
                             scan_event_cb);
 
     ap_list_cont = lv_obj_create(ap_list_card);
+#if FACTORY_WATCH_UI
+    /* The page scrolls; a box that scrolls inside it fights the finger. */
+    lv_obj_remove_style_all(ap_list_cont);
+    lv_obj_set_size(ap_list_cont, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_remove_flag(ap_list_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(ap_list_cont, LV_OBJ_FLAG_CLICKABLE);
+#else
     lv_obj_set_size(ap_list_cont, LV_PCT(100), is_screen_small() ? 162 : 218);
     lv_obj_set_style_bg_opa(ap_list_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(ap_list_cont, 0, 0);
     lv_obj_set_style_pad_all(ap_list_cont, 0, 0);
     lv_obj_set_style_pad_row(ap_list_cont, 6, 0);
+#endif
     lv_obj_set_flex_flow(ap_list_cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(ap_list_cont, LV_SCROLLBAR_MODE_OFF);
-    add_empty_row(wifi_enabled ? "Tap Scan to discover nearby networks." : "Turn on WiFi to scan.");
+    add_empty_row(wifi_enabled ? (FACTORY_WATCH_UI ? "" : "Tap Scan to discover nearby networks.") :
+                  "Turn on WiFi to scan.");
     if (!wifi_enabled) lv_obj_add_flag(ap_list_card, LV_OBJ_FLAG_HIDDEN);
 
 #ifdef USING_TOUCHPAD
