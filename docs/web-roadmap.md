@@ -63,13 +63,14 @@ The SD card is a first-class part of the system, not an optional extra:
 | NFC: read tags, save dumps | `nfc` | P4 |
 | Recorder and player: record on the watch, play in the browser or on the watch | `recorder`, `audio.play` | P4 |
 | Wi-Fi and BLE scanners | `wifi.scan`, `ble.scan` | P4 |
+| Wi-Fi tools: connection, DNS, TCP reach, channel analyzer | `wifi.tools` | P5 |
 | Saved Wi-Fi networks in Settings | `wifi.manage` | later |
 | Notifications: send one to the watch (with vibration), history | `notify` | P4 |
 | Link: ESP-NOW file transfer between watches | `link.espnow` | P5 |
 | Assistant: voice from the watch mic, LLM called by the browser, answer spoken on the watch | `recorder`, `audio.play` | P5 |
 | USB keyboard scripts (BadUSB editor) | `usb.hid` | P5 |
 | Updates: firmware upload with rollback | `ota` | P5 |
-| Wi-Fi security tools (authorized testing only) | `wifi.attack` | P5 |
+| ~~Wi-Fi security tools~~ → delivered as read-only Wi-Fi tools above (the device has no attack capability) | `wifi.tools` | P5 |
 
 ## Phases
 
@@ -80,7 +81,7 @@ The SD card is a first-class part of the system, not an optional extra:
 | P2 | Desktop shell v1: pairing, status bar, launcher, windows, Files, Settings, SD tools, desktop install and update | 1–2 weeks | Done in the simulator: `web_ui_test.mjs` 29/29 on the mock and the simulator, starting from an empty card |
 | P3 | Screen and input; "Web" page on the watch (on/off, QR of the address, PIN, connected desktop); access-point fallback when no Wi-Fi is known; SD starter ZIP; desktop follows the watch theme; the watch installs the desktop by itself (card ZIP, then download) | 1–2 weeks | Done in the simulator: `web_api_test.mjs` 68/68 (mock 66/66), `web_ui_test.mjs` 40/40 (mock 39/39), `web_desktop_test.mjs` 24/24; the watch build compiles it. On the watch only, so untested until its build links: the access point, the HTTPS download, the ROM inflate. A release with the ZIP is not published yet |
 | P4 | Tool apps wave 1 (table above) | 3–4 weeks | Done in the simulator: Monitor, Notifications, Sensors, GNSS, LoRa, NFC, Recorder, Scanners. `web_api_test.mjs` 133/133 (mock 131/131), `web_ui_test.mjs` 78/78 (mock 77/77); the watch build compiles every tool file. IR dropped (no IR hardware); `wifi.manage` left for later. On the watch only, so untested until its build links: the real radio, GNSS, NFC reader, microphone, player, NimBLE and Wi-Fi scans |
-| P5 | Tool apps wave 2 (table above) | 3–4 weeks | |
+| P5 | Tool apps wave 2 (table above) | 3–4 weeks | Done in the simulator: Link (ESP-NOW file transfer), USB HID (BadUSB), Wi-Fi tools and OTA. `web_api_test.mjs` 167/167 (mock 165/165), `web_ui_test.mjs` 100/100 (mock 99/99); the watch build compiles every tool file. `wifi.attack` is delivered as `wifi.tools` (read-only diagnostics + analyzer: the device has no attack code); the Assistant is deferred. On the watch only, so untested until its build links: ESP-NOW, the USB keyboard, OTA flashing |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | |
 | P7 | `web_api_test.mjs` and `web_ui_test.mjs` on every firmware or desktop change | ongoing | |
 
@@ -88,7 +89,7 @@ The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, c
 
 ## Testing
 
-Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, Screen, every P4 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
+Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, Screen, every P4 and P5 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
 
 | Target | What runs | How |
 |---|---|---|
@@ -162,6 +163,7 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
 
 - Firmware: `examples/factory/web_server.h`, `web_internal.h`, `web_core.cpp` (routes, pairing, events, static), `web_fs.cpp`, `web_json.cpp`, `web_screen.cpp`, `web_transport_esp.cpp` (watch), `web_transport_posix.cpp` (simulator), generated `web_rescue.h`, and the watch page `ui_web.cpp`. All behind `FACTORY_WEB`, on for `ARDUINO_T_WATCH_S3_ULTRA`, the same way `FACTORY_WATCH_UI` works. Replaces `screen_web_server.cpp`.
 - Tools (P4): `web_tools.h` (the tool contract, shared helpers, the hardware interface), `web_tools.cpp` (registry: routing, caps, timer), one module per tool group (`web_tool_system.cpp` monitor/logs/notify, `web_tool_sensors.cpp` IMU/GNSS, `web_tool_lora.cpp`, `web_tool_nfc.cpp`, `web_tool_audio.cpp` recorder/player, `web_tool_scan.cpp` Wi-Fi/BLE) and `web_tools_hw.cpp` (real hardware and simulator fakes). A tool is a `web_tool_t {caps, handle, tick, second, stop}`; one the board lacks is left out of the registry, so it has no routes and no capability.
+- Tools (P5): more `web_tool_*.cpp` modules (`web_tool_link.cpp` ESP-NOW, `web_tool_hid.cpp` USB keyboard with the DuckyScript runner, `web_tool_net.cpp` Wi-Fi diagnostics + analyzer, `web_tool_ota.cpp` firmware update) and their hardware in `web_tools_hw2.cpp`. Link keeps all SD I/O on the UI thread (the ESP-NOW receive callback only queues packets).
 - Watch UI: a "Web" page in Settings (P3).
 - Desktop: `examples/factory/web/` (`js/shell.js`, `js/api.js`, `js/ui.js`, `js/chart.js`, `css/desktop.css`, `apps/<id>/app.js`: files, screen, settings, monitor, notify, sensors, gnss, lora, nfc, recorder, scanners).
 - Rescue page: `examples/factory/web-rescue/index.html` → generated `examples/factory/web_rescue.h`.

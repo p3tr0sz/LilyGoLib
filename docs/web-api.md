@@ -184,6 +184,66 @@ A scan runs in the background (the watch's server answers one request at a time,
 
 When a scan ends, `wifi.scan` or `ble.scan` carries the same object as the `GET`.
 
+## Tools wave 2 (P5)
+
+The same rules as P4: one capability per tool, `503 busy` with `"app"` while the matching watch app is open. These reach hardware the simulator cannot fully stand in for (USB, ESP-NOW, a second watch, the flash), so the simulator fakes them (Test hooks) and they are first proven on a real watch.
+
+### Link: ESP-NOW file transfer (`link.espnow`)
+
+Send a file to another T-Watch over ESP-NOW, with no Wi-Fi network between them. Watches running this announce themselves; the desktop lists the ones in range and sends a file to one.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/link` | paired | `{enabled, mac, name, peers: [{mac, name, rssi, last_seen}], transfer}`. `transfer` is `null` or the one in flight (below) |
+| `POST /api/link/enable` | paired | `{on}` → `{ok, enabled}`. Turns ESP-NOW and the 2 s "hello" announcement on or off. Off by default |
+| `POST /api/link/send` | paired | `{path, to_mac}` → `202 {ok}`. Sends a file on `/sd` or `/flash` to a peer's MAC (`"ff:ff:ff:ff:ff:ff"` broadcasts to every watch in range). One transfer at a time: a second → `409`. A missing peer → `404`. No card → `503 sd_missing` |
+| `POST /api/link/cancel` | paired | → `{ok}`. Stops the transfer in flight |
+
+A transfer: `{dir: "tx"|"rx", peer, name, size, done, state: "sending"|"receiving"|"done"|"error", error}`. Received files are written to `/sd/data/link/<name>` (a clash gets ` (2)` and so on). Chunks are sent stop-and-wait with a CRC and retries; a lost peer ends the transfer with `error`. Events: `link` on every state, peer-list and progress change, and `files.changed` when a file arrives.
+
+### USB HID: keyboard scripts (`usb.hid`)
+
+The watch is a USB keyboard to the computer it is plugged into. It types text and runs DuckyScript — the same subset the watch's BadUSB app runs. For the computer it is plugged into, with permission: a convenience for setup and testing, not for use against machines that are not yours.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/hid` | paired | `{available, state: "idle"|"armed"|"running", script, line, lines}`. `available` is false until the USB cable is in and the host enumerates the keyboard |
+| `POST /api/hid/type` | paired | `{text}` 1–1024 chars → `{ok}`. Types it once, now. `503 hid_unavailable` when no host |
+| `POST /api/hid/run` | paired | `{path}` (a `.txt`/`.duck`/`.ducky` on `/sd`) or `{text}` (the script itself, up to 16 KB) → `202 {ok}`. Arms for 2 s, then runs. Already running → `409` |
+| `POST /api/hid/stop` | paired | → `{ok}`. Stops the running script |
+
+DuckyScript subset: `STRING`, `DELAY ms`, `DEFAULT_DELAY ms`, `ENTER`/`TAB`/`ESC`/`GUI`/arrows and the function keys, and modifier combos such as `CTRL ALT DEL` or `GUI r`. Scripts are ordinary files, edited through the file API; the desktop keeps them in `/sd/data/badusb/`. Events: `hid` on each state or line change. `503 busy` while the watch's BadUSB app is open.
+
+### Wi-Fi tools (`wifi.tools`)
+
+The watch's own network diagnostics and RF overview — the Network Tools and Wi-Fi Analyzer apps, from the browser. Read-only: it looks at the air and reaches out from the watch; it does not transmit management frames or attack anything.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/net` | paired | `{connected, ssid, ip, gateway, netmask, dns, rssi, channel, mac}` for the watch's own connection |
+| `POST /api/net/resolve` | paired | `{host}` → `{ok, ip, ms}`; a failure is `{ok:false, ms}`. Needs Wi-Fi: `409 offline` |
+| `POST /api/net/tcp` | paired | `{host, port}` (port 1–65535) → `{ok, ms}` or `{ok:false, ms}`: can a TCP connection be opened. `409 offline` |
+| `GET /api/net/channels` | paired | the 2.4 GHz RF overview from a scan: `{best, channels: [{channel, count, score}], aps: [{ssid, bssid, channel, rssi}]}`, `best` the least-busy channel to use |
+
+`503 busy` while the watch's Network Tools or Wi-Fi Analyzer app is open.
+
+### Firmware update (`ota`)
+
+Replace the firmware over the air, into the spare app slot, with a roll-back to the running one if the new build does not come up. **Irreversible-ish and able to brick the watch: the desktop confirms twice and checks the file before it starts.**
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/ota` | paired | `{slot, other_slot, state: "idle"|"writing"|"ready"|"error", progress:{done,total}, error, can_rollback}`. `slot` the running partition (`"app0"`/`"app1"`), `can_rollback` whether the other slot holds a known-good build |
+| `POST /api/ota/upload` | paired | body = the firmware `.bin` (raw bytes, `Content-Length` required) → `{ok, size}`. Streams into the spare slot and verifies the image; a bad or too-large image → `400 bad_image`/`413 too_large` and the slot is left untouched. Publishes `ota` as it writes |
+| `POST /api/ota/commit` | paired | → `{ok}`, then the watch reboots into the new slot after about a second. Only after a good upload, else `409` |
+| `POST /api/ota/rollback` | paired | → `{ok}`, reboots into the other slot. `409` when there is nothing good to roll back to |
+
+After a reboot into a new build, the watch marks it good once it reaches the UI; a build that crashes first is rolled back by the bootloader on the next power-up. Events: `ota` on each state and progress change.
+
+### Assistant (`assistant`) — later
+
+Voice to the watch, an answer spoken back: record on the watch (`recorder`), the browser does speech-to-text, the language model and text-to-speech, the reply plays on the watch (`audio.play`). It needs a model endpoint and a key, so it waits until the desktop has a settings place for those. No firmware routes of its own; it is built on the P4 recorder and player.
+
 ## Events
 
 `GET /api/events` upgrades to a WebSocket (paired only).
@@ -210,6 +270,9 @@ When a scan ends, `wifi.scan` or `ble.scan` carries the same object as the `GET`
 | `recorder` | as `GET /api/recorder`, on start and stop and 4 times a second while recording | P4 |
 | `audio` | as `GET /api/audio`, on change | P4 |
 | `wifi.scan`, `ble.scan` | as `GET /api/wifi/scan` and `GET /api/ble/scan`, when a scan ends | P4 |
+| `link` | as `GET /api/link`, on peer, state and transfer changes | P5 |
+| `hid` | as `GET /api/hid`, on state or line changes | P5 |
+| `ota` | as `GET /api/ota`, while writing and on state changes | P5 |
 
 ## Static files
 
@@ -240,7 +303,11 @@ When a scan ends, `wifi.scan` or `ble.scan` carries the same object as the `GET`
 | `ir` | infrared send and learn: reserved, the T-Watch Ultra has no IR hardware | — |
 | `wifi.manage` | saved Wi-Fi networks: later | — |
 | `desktop.install` | `GET /api/desktop`, `POST /api/desktop/install` | P3 |
-| `link.espnow`, `usb.hid`, `ota`, `wifi.attack` | defined in P5 | P5 |
+| `link.espnow` | `GET /api/link`, `POST /api/link/enable\|send\|cancel`, events `link` | P5 |
+| `usb.hid` | `GET /api/hid`, `POST /api/hid/type\|run\|stop`, events `hid` | P5 |
+| `wifi.tools` | `GET /api/net`, `POST /api/net/resolve\|tcp`, `GET /api/net/channels` | P5 |
+| `ota` | `GET /api/ota`, `POST /api/ota/upload\|commit\|rollback`, events `ota` | P5 |
+| `assistant` | no routes of its own: the P4 recorder and player | later |
 
 ## Test hooks (simulator and mock only)
 
@@ -256,7 +323,9 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/app` | `{name}`: act as if that app were open on the watch (`""` for none), for the `busy` answers |
 | `POST /api/_dev/lora` | `{text}` or `{data_b64}`, `rssi?`, `snr?`: a packet arrives (when `listen` is on) |
 | `POST /api/_dev/nfc` | `{uid?, type?, text?}`: a tag is held to the reader (while it scans) |
+| `POST /api/_dev/link` | `{peer?}`: a fake watch appears in range (default one), or `{rx:{name,size}}`: a file is sent to this watch |
+| `POST /api/_dev/hid` | `{available}`: pretend the USB keyboard is or is not enumerated by a host |
 
-The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, and playback that lasts as long as the file.
+The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, playback that lasts as long as the file, a fake watch in range for the link, a USB host for the keyboard, and an OTA write that progresses but never reboots.
 
 The mock can also act as the release server for the simulator (`--dl <dir>`): it serves `<dir>/<file>` at `/dl/<file>` with `Range`, and with `--dev` adds `POST /api/_dev/dl {cut_after?, status?}` (cut the next download off, or answer a status) and `GET /api/_dev/dl-log`. The simulator downloads only when `TWATCH_SIM_DESKTOP_URL` is set (plain HTTP).

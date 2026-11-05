@@ -385,6 +385,109 @@ if (caps.includes('ble.scan')) {
   check('ble: strongest first', d.every((x, i) => !i || x.rssi <= d[i - 1].rssi), d.map((x) => x.rssi));
 }
 
+if (caps.includes('link.espnow')) {
+  console.log('link (esp-now)');
+  r = await call('GET', '/api/link');
+  check('GET /api/link', r.status === 200 && typeof r.json?.enabled === 'boolean' && Array.isArray(r.json.peers) &&
+    typeof r.json.mac === 'string' && 'transfer' in r.json, r.json);
+  r = await call('POST', '/api/link/enable', { on: true });
+  check('POST /api/link/enable', r.status === 200 && r.json?.enabled === true, r.json);
+  let peerMac = null;
+  if (DEV) {
+    await call('POST', '/api/_dev/link', { peer: 'T-Test-01' });
+    const ev = await waitMsg((m) => m.t === 'link' && m.d.peers?.some((p) => p.name === 'T-Test-01'), 3000);
+    peerMac = ev?.d?.peers?.find((p) => p.name === 'T-Test-01')?.mac
+      || (await call('GET', '/api/link')).json?.peers?.find((p) => p.name === 'T-Test-01')?.mac;
+    check('a peer appears after a hello', !!peerMac, ev?.d?.peers);
+  }
+  r = await call('POST', '/api/link/send', { path: '/sd/nope/x.bin', to_mac: 'aa:bb:cc:dd:ee:00' });
+  check('link send to unknown peer: 404', r.status === 404 || r.status === 503, r.status);
+  if (DEV && peerMac) {
+    await call('PUT', `/api/files/content?path=${q(T + '-link/gift.bin')}`, 'x'.repeat(2000), { raw: true });
+    r = await call('POST', '/api/link/send', { path: T + '-link/gift.bin', to_mac: peerMac });
+    check('POST /api/link/send', r.status === 202 && r.json?.ok, r.json);
+    const done = await waitMsg((m) => m.t === 'link' && m.d.transfer?.dir === 'tx' && m.d.transfer.state === 'done', 6000);
+    check('link transfer reaches done', !!done, done?.d?.transfer);
+    await call('DELETE', `/api/files?path=${q(T + '-link')}&recursive=1`);
+    // incoming file
+    await call('POST', '/api/_dev/link', { rx: { name: 'from-afar.bin', size: 1500 } });
+    const rx = await waitMsg((m) => m.t === 'files.changed' && /\/sd\/data\/link\//.test(m.d.path || ''), 3000);
+    check('an incoming file lands in /sd/data/link and fires files.changed', !!rx, rx?.d);
+  }
+  await call('POST', '/api/link/enable', { on: false });
+}
+
+if (caps.includes('usb.hid')) {
+  console.log('usb hid');
+  if (DEV) await call('POST', '/api/_dev/hid', { available: false });
+  r = await call('GET', '/api/hid');
+  check('GET /api/hid', r.status === 200 && typeof r.json?.available === 'boolean' && r.json.state === 'idle', r.json);
+  r = await call('POST', '/api/hid/type', { text: 'hello' });
+  check('hid type with no host: 503 hid_unavailable', r.status === 503 && r.json?.error === 'hid_unavailable', r.json);
+  if (DEV) {
+    await call('POST', '/api/_dev/hid', { available: true });
+    r = await call('GET', '/api/hid');
+    check('hid becomes available', r.json?.available === true, r.json);
+    await busyCheck('hid', 'BadUSB', 'POST', '/api/hid/type', { text: 'x' });
+    r = await call('POST', '/api/hid/type', { text: '' });
+    check('hid type empty: 400', r.status === 400, r.status);
+    r = await call('POST', '/api/hid/type', { text: 'typed over USB' });
+    check('POST /api/hid/type', r.status === 200, r.json);
+    r = await call('POST', '/api/hid/run', { text: 'STRING hello world\nENTER\nDELAY 20\nGUI r' });
+    check('POST /api/hid/run', r.status === 202, r.json);
+    check('hid goes to armed/running', !!(await waitMsg((m) => m.t === 'hid' && (m.d.state === 'armed' || m.d.state === 'running'), 3000)), null);
+    r = await call('GET', '/api/hid');
+    check('hid reports the script lines', r.json?.lines === 4 && (r.json.state === 'armed' || r.json.state === 'running'), r.json);
+    r = await call('POST', '/api/hid/run', { text: 'STRING again' });
+    check('hid run while running: 409', r.status === 409, r.status);
+    r = await call('POST', '/api/hid/stop', {});
+    check('POST /api/hid/stop', r.status === 200, r.json);
+    check('hid returns to idle', !!(await waitMsg((m) => m.t === 'hid' && m.d.state === 'idle', 3000)), null);
+  }
+}
+
+if (caps.includes('wifi.tools')) {
+  console.log('wifi tools');
+  r = await call('GET', '/api/net');
+  check('GET /api/net', r.status === 200 && typeof r.json?.connected === 'boolean' && typeof r.json.mac === 'string', r.json);
+  r = await call('POST', '/api/net/resolve', { host: 'example.com' });
+  check('POST /api/net/resolve', r.status === 200 && r.json?.ok === true && typeof r.json.ip === 'string' && typeof r.json.ms === 'number', r.json);
+  r = await call('POST', '/api/net/resolve', { host: 'definitelynotahost' });
+  check('resolve a bad name: ok false', r.status === 200 && r.json?.ok === false, r.json);
+  r = await call('POST', '/api/net/tcp', { host: 'example.com', port: 70000 });
+  check('tcp bad port: 400', r.status === 400, r.status);
+  r = await call('POST', '/api/net/tcp', { host: 'example.com', port: 80 });
+  check('POST /api/net/tcp', r.status === 200 && typeof r.json?.ok === 'boolean' && typeof r.json.ms === 'number', r.json);
+  await busyCheck('net', 'Wi-Fi Analyzer', 'GET', '/api/net/channels');
+  r = await call('GET', '/api/net/channels');
+  check('GET /api/net/channels', r.status === 200 && typeof r.json?.best === 'number' && Array.isArray(r.json.channels) &&
+    r.json.channels.length >= 11 && r.json.channels.every((c) => typeof c.channel === 'number' && typeof c.count === 'number' && typeof c.score === 'number') &&
+    Array.isArray(r.json.aps), r.json);
+}
+
+if (caps.includes('ota')) {
+  console.log('ota');
+  r = await call('GET', '/api/ota');
+  check('GET /api/ota', r.status === 200 && typeof r.json?.slot === 'string' && typeof r.json.other_slot === 'string' &&
+    r.json.state === 'idle' && typeof r.json.can_rollback === 'boolean' && r.json.progress, r.json);
+  r = await call('POST', '/api/ota/commit', {});
+  check('ota commit with nothing uploaded: 409', r.status === 409, r.status);
+  const fw = Buffer.alloc(4096, 0xA5);
+  r = await call('POST', '/api/ota/upload', fw, { raw: true });
+  check('POST /api/ota/upload', r.status === 200 && r.json?.size === 4096, r.json);
+  r = await call('GET', '/api/ota');
+  check('ota ready after upload', r.json?.state === 'ready', r.json);
+  r = await call('POST', '/api/ota/upload', Buffer.alloc(3), { raw: true });
+  check('ota upload a too-small image: 400 bad_image', r.status === 400 && r.json?.error === 'bad_image', r.json);
+  // commit: the mock/sim must not reboot; it logs and resets to idle
+  r = await call('POST', '/api/ota/upload', fw, { raw: true });
+  check('ota re-upload to ready', r.status === 200, r.json);
+  r = await call('POST', '/api/ota/commit', {});
+  check('POST /api/ota/commit', r.status === 200 && r.json?.ok, r.json);
+  r = await call('POST', '/api/ota/rollback', {});
+  check('POST /api/ota/rollback', r.status === 200 || r.status === 409, r.status);
+}
+
 // ---- one desktop at a time ----
 const ws2 = new WebSocket(wsUrl, { headers: { cookie } });
 await new Promise((done) => { ws2.onopen = done; ws2.onerror = done; setTimeout(done, 3000); });
