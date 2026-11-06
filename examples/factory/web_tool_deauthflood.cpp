@@ -130,13 +130,11 @@ static void status_json(web_req_t *r)
 {
     std::string j = "{\"active\":" + std::string(s_active ? "true" : "false");
     if (s_active) {
-        j += ",\"target_bssid\":";
-        web_json_str(j, s_target_bssid);
-        j += ",\"target_station\":";
-        web_json_str(j, s_target_station);
+        j += ",\"targetBssid\":"; web_json_str(j, s_target_bssid);
+        j += ",\"targetStation\":"; web_json_str(j, s_target_station);
         j += ",\"channel\":" + tools_int(s_channel) +
             ",\"sent\":" + tools_int(s_sent) +
-            ",\"rate_kbps\":" + tools_int(s_rate_kbps) +
+            ",\"rateKbps\":" + tools_int(s_rate_kbps) +
             ",\"started\":" + tools_int(s_started);
     }
     j += "}";
@@ -198,15 +196,51 @@ static void stop_flood(web_req_t *r)
     web_resp_ok(r);
 }
 
+/* ── Target scan (reads from last Wi-Fi scan) ── */
+
+static std::vector<web_hw_wifi_t> s_scan_targets;
+static std::mutex s_scan_mx;
+
+static void scan_targets(web_req_t *r)
+{
+    std::vector<web_hw_wifi_t> aps;
+#ifdef ARDUINO
+    web_hw_wifi_scan(aps);
+#endif
+    {
+        std::lock_guard<std::mutex> lk(s_scan_mx);
+        s_scan_targets = aps;
+    }
+    web_resp_json(r, 200, std::string("{\"ok\":true,\"count\":") + tools_int((long long)aps.size()) + "}");
+}
+
+static void list_targets(web_req_t *r)
+{
+    std::lock_guard<std::mutex> lk(s_scan_mx);
+    std::string j = "{\"targets\":[";
+    for (size_t i = 0; i < s_scan_targets.size(); i++) {
+        if (i) j += ",";
+        j += "{\"ssid\":"; web_json_str(j, s_scan_targets[i].ssid);
+        j += ",\"bssid\":"; web_json_str(j, s_scan_targets[i].bssid);
+        j += ",\"channel\":" + tools_int(s_scan_targets[i].channel) +
+            ",\"rssi\":" + tools_int(s_scan_targets[i].rssi) +
+            ",\"auth\":"; web_json_str(j, s_scan_targets[i].auth);
+        j += "}";
+    }
+    j += "]}";
+    web_resp_json(r, 200, j);
+}
+
 static bool handle(web_req_t *r)
 {
     if (strcmp(r->path, "/api/deauthflood") && strncmp(r->path, "/api/deauthflood/", 17)) return false;
     if (tools_is(r, "GET", "/api/deauthflood")) status_json(r);
     else if (tools_is(r, "POST", "/api/deauthflood/start")) start_flood(r);
     else if (tools_is(r, "POST", "/api/deauthflood/stop")) stop_flood(r);
+    else if (tools_is(r, "POST", "/api/deauthflood/scan")) scan_targets(r);
+    else if (tools_is(r, "GET", "/api/deauthflood/targets")) list_targets(r);
 #ifndef ARDUINO
     else if (tools_is(r, "POST", "/api/_dev/deauthflood")) {
-        /* Simulator: just acknowledge */
         s_active = true;
         s_sent = 0;
         std::string body;

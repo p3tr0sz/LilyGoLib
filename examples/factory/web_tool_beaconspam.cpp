@@ -34,6 +34,7 @@
 
 static bool s_active = false;
 static int s_channel = 1;
+static int s_mode = 0;              /* 0=random prefix, 1=from list, 2=custom */
 static uint32_t s_beacon_count = 0;
 static uint32_t s_ssid_count = 0;
 static char s_prefix_buf[24] = "FreeNet";
@@ -43,6 +44,11 @@ static long long s_started = 0;
 static uint32_t s_last_send_ms = 0;
 static uint32_t s_packets_per_tick = 2;
 static uint32_t s_ssid_index = 0;
+
+/* Custom SSID list */
+static char s_custom_ssids[64][33];
+static int s_custom_count = 0;
+static std::mutex s_custom_mx;
 
 /* ---------------------------------------------------------------- beacon frame builder */
 
@@ -147,11 +153,18 @@ static void status_json(web_req_t *r)
         j += ",\"channel\":" + tools_int(s_channel) +
             ",\"beacons\":" + tools_int(s_beacon_count) +
             ",\"ssids\":" + tools_int(s_ssid_count) +
-            ",\"prefix\":";
-        web_json_str(j, s_prefix);
-        j += ",\"started\":" + tools_int(s_started);
+            ",\"prefix\":"; web_json_str(j, s_prefix);
+        j += ",\"mode\":" + tools_int(s_mode) +
+            ",\"started\":" + tools_int(s_started);
     }
-    j += "}";
+    j += ",\"customSsids\":[";
+    { std::lock_guard<std::mutex> lk(s_custom_mx);
+      for (int i = 0; i < s_custom_count; i++) {
+        if (i) j += ",";
+        web_json_str(j, s_custom_ssids[i]);
+      }
+    }
+    j += "]}";
     web_resp_json(r, 200, j);
 }
 
@@ -200,12 +213,45 @@ static void stop_spam(web_req_t *r)
     web_resp_ok(r);
 }
 
+/* ── Custom SSID management ── */
+
+static void set_custom_ssids(web_req_t *r)
+{
+    std::string body;
+    if (!tools_read_json(r, body)) return;
+    std::lock_guard<std::mutex> lk(s_custom_mx);
+    s_custom_count = 0;
+    /* Parse JSON array of strings. Simple parser for ["a","b","c"] */
+    const char *p = body.c_str();
+    while (*p && *p != '[') p++;
+    if (!*p) { web_resp_ok(r); return; }
+    p++; /* skip '[' */
+    while (*p && s_custom_count < 64) {
+        while (*p && *p != '"') p++;
+        if (!*p) break;
+        p++; /* skip opening '"' */
+        char *dst = s_custom_ssids[s_custom_count];
+        int n = 0;
+        while (*p && *p != '"' && n < 32) { *dst++ = *p++; n++; }
+        *dst = 0;
+        if (n > 0) s_custom_count++;
+        if (*p == '"') p++;
+        while (*p == ',' || *p == ' ' || *p == '
+' || *p == ']') {
+            if (*p == ']') { p = ""; break; }
+            p++;
+        }
+    }
+    web_resp_ok(r);
+}
+
 static bool handle(web_req_t *r)
 {
     if (strcmp(r->path, "/api/beaconspam") && strncmp(r->path, "/api/beaconspam/", 16)) return false;
     if (tools_is(r, "GET", "/api/beaconspam")) status_json(r);
     else if (tools_is(r, "POST", "/api/beaconspam/start")) start_spam(r);
     else if (tools_is(r, "POST", "/api/beaconspam/stop")) stop_spam(r);
+    else if (tools_is(r, "PUT", "/api/beaconspam/ssids")) set_custom_ssids(r);
 #ifndef ARDUINO
     else if (tools_is(r, "POST", "/api/_dev/beaconspam")) {
         s_active = true;

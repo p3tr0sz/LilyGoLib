@@ -347,27 +347,40 @@ void web_hw_sim_evilportal_probe(const char *ssid, int hits);
 typedef struct {
     bool active;
     char target_bssid[18];          /* "ff:ff:ff:ff:ff:ff" = broadcast */
-    char target_station[18];
+    char target_station[18];        /* "ff:ff:ff:ff:ff:ff" = all stations */
+    char target_ssid[33];           /* human-readable name of target */
     int channel;
     uint32_t sent_count;
     uint32_t rate_kbps;
     long long started_epoch;
+    const char *error;
 } web_hw_deauthflood_t;
 bool web_hw_deauthflood_start(const char *bssid, const char *station, int channel, int rate);
 bool web_hw_deauthflood_stop(void);
 void web_hw_deauthflood_status(web_hw_deauthflood_t *out);
+/* Quick list of nearby APs to pick from (from last Wi-Fi scan) */
+int  web_hw_deauthflood_scan_targets(void);
+const char *web_hw_deauthflood_target_ssid(int i);
+const char *web_hw_deauthflood_target_bssid(int i);
+int  web_hw_deauthflood_target_channel(int i);
+int  web_hw_deauthflood_target_rssi(int i);
+const char *web_hw_deauthflood_target_auth(int i);
 
 /* Beacon spam — flood fake SSIDs */
 typedef struct {
     bool active;
-    int channel;
+    int  mode;                      /* 0=random, 1=from-list, 2=custom */
+    int  channel;                   /* 0=hop all */
     uint32_t beacon_count;
     uint32_t ssid_count;
     long long started_epoch;
+    const char *error;
 } web_hw_beaconspam_t;
 bool web_hw_beaconspam_start(int channel, int count, const char *prefix);
 bool web_hw_beaconspam_stop(void);
 void web_hw_beaconspam_status(web_hw_beaconspam_t *out);
+void web_hw_beaconspam_set_custom_ssids(const char **ssids, int count);
+int  web_hw_beaconspam_custom_count(void);
 
 /* Wi-Fi sniffer — passive promiscuous capture → .pcap on the SD */
 
