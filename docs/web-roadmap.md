@@ -84,10 +84,36 @@ The SD card is a first-class part of the system, not an optional extra:
 | P5 | Tool apps wave 2 (table above) | 3–4 weeks | Done in the simulator: Link (ESP-NOW file transfer), USB HID (BadUSB), Wi-Fi tools and OTA. `web_api_test.mjs` 167/167 (mock 165/165), `web_ui_test.mjs` 100/100 (mock 99/99); the watch firmware links (`793aafc`). `wifi.attack` is delivered as `wifi.tools` (read-only diagnostics + analyzer: the device has no attack code); the Assistant is deferred. On the watch only, so untested until it is flashed: ESP-NOW, the USB keyboard, OTA flashing |
 | P6 | Battery and robustness: idle shutdown, light sleep, OTA rollback, crash recovery | 1–2 weeks | Web-side mostly delivered during P3–P5: idle shutdown (`web_core.cpp` `s_idle_off_s`, `GET/POST /api/settings` `web_idle_off_s`), no-light-sleep-under-desktop (`web_server_keep_awake()` in `ui_watch_shell.cpp`), OTA rollback (`web_tool_ota.cpp`, dual slots), crash recovery (`hal_interface.cpp`). Remaining work is on-watch validation once flashed, not new simulator code |
 | P7 | `web_api_test.mjs` and `web_ui_test.mjs` on every firmware or desktop change | ongoing | |
+| P8 | **Web desktop as an OS shell** (parity with the NucleoOS shell, our own code): app icons / launchpad, global search across apps and files, a taskbar/dock, window chrome (move, resize, minimise, focus), a notifications tray and a system menu | 2–3 weeks | Planned |
+| P9 | **Device feature parity — defensive, connectivity, auth** (see "Parity with NucleoOS" below): passive Wi-Fi sniffer → pcap, Airspace (Wi-Fi attack detection), Sentinel (BLE anti-stalk), Presence (ESP-NOW nearby), FIDO2 security key, BadUSB payload library, extended BLE tools | 3–4 weeks | Planned |
 
 The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, change settings and drive the watch screen from the browser.
 
 The watch firmware now links (`793aafc`), so the next step is the first run on real hardware. The flash command and the on-device test checklist (everything the simulator cannot cover) are in **`web-device-bringup.md`**.
+
+## Parity with NucleoOS
+
+NucleoOS (Cardputer, PolyForm-NC firmware / AGPL desktop) is the model we aim at — patterns and capabilities, never its code. Two parity tracks:
+
+**P8 — the web desktop should feel like an OS**, not a page of tools. Launchpad of app icons, a global search box (apps + files + settings), a taskbar/dock of running apps, real window chrome, a notifications tray and a system menu (battery, Wi-Fi, SD, time). Everything our own HTML/CSS/ES modules, served off the SD card like the rest of the desktop.
+
+**P9 — device features we're missing**, split by what the feature *does*:
+
+| Feature | What it is | Build | Notes |
+|---|---|---|---|
+| **Wi-Fi sniffer** | passive promiscuous capture → `.pcap` on the SD | ✅ | Passive/observe only; dual-use for analysis. Never injects |
+| **Airspace** | Wi-Fi attack **detection** from passive capture: deauth floods, broadcast deauth, evil-twin APs, beacon floods | ✅ | The blue-team counterpart of the offensive trio below; NucleoOS `sentinel_wifi` is "defensive only, never injects" |
+| **Sentinel** | BLE anti-stalking: passive scan flags a device that follows you | ✅ | Fully passive, never transmits |
+| **Presence** | ESP-NOW "nearby devices" (extends our existing Link/ESP-NOW) | ✅ | Connectivity |
+| **FIDO2 security key** | the watch as a USB/BLE FIDO2/U2F authenticator (passkeys) | ✅ | Defensive auth; builds on the USB-HID stack |
+| **BadUSB payload library** | manage/organise DuckyScript payloads (we already run them via `usb.hid`) | ✅ | Editor + library around the existing runner |
+| **BLE tools** | extend the existing BLE scan (services, characteristics, advertise) | ✅ | Scanning/connectivity |
+| **Ethernet (W5500)** | wired networking over an SPI W5500 | ⚠️ | Hardware-gated — the T-Watch Ultra has no wired port; applies only with an add-on, otherwise N/A (like IR) |
+| ~~Evil portal~~ | rogue AP + captive portal to harvest credentials | ❌ | **Not authored in this project.** Transmit-based attack on non-consenting third parties (credential phishing). Detection counterpart: Airspace (evil-twin detection) |
+| ~~Deauth flood~~ | 802.11 deauth injection to disconnect devices | ❌ | **Not authored in this project.** Wireless DoS against bystanders. Detection counterpart: Airspace (deauth-flood detection) |
+| ~~Beacon spam~~ | flood fake SSIDs into the airspace | ❌ | **Not authored in this project.** Disruptive broadcast flooding. Detection counterpart: Airspace (beacon-flood detection) |
+
+The ❌ rows are tracked for parity completeness only: this repo ships the **detection + passive-capture** side (Airspace, sniffer), not the transmitters. The same call was already made in P5 (`wifi.attack` → read-only `wifi.tools`). External attack firmware can be integrated separately by whoever operates the device.
 
 ## Testing
 
