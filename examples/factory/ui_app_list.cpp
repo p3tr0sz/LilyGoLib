@@ -25,7 +25,7 @@
 #define APP_CATEGORY_ALL       "All"
 static const char *const APP_CATEGORY_ORDER[] = {
     APP_CATEGORY_ALL, "WiFi", "Bluetooth", "RF", "IR", "NFC", "USB",
-    "GNSS", "Sensors", "Media", "Clock", "Tools",
+    "GNSS", "Sensors", "Media", "Clock", "Security", "Tools",
 };
 
 /* Drag to reorder: a long press lifts a row, it follows the finger, and a gap
