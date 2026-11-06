@@ -44,6 +44,15 @@ static const web_tool_t *const TOOLS[] = {
     &web_tool_hid,
     &web_tool_net,
     &web_tool_ota,
+    /* P9 — NucleoOS parity tools */
+    &web_tool_sniffer,
+    &web_tool_airspace,
+    &web_tool_sentinel,
+    &web_tool_presence,
+    &web_tool_fido2,
+    &web_tool_evilportal,
+    &web_tool_deauthflood,
+    &web_tool_beaconspam,
 };
 
 static lv_timer_t *s_timer = NULL;

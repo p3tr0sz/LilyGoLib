@@ -118,6 +118,42 @@ export const api = {
     return r.text();
   },
 
+  // Generic helpers for custom tool endpoints (P9 NucleoOS parity)
+  get: (path) => request('GET', path),
+  post: (path, body) => request('POST', path, { json: body }),
+  patch: (path, body) => request('PATCH', path, { json: body }),
+  del: (path) => request('DELETE', path),
+
+  // P9 NucleoOS parity tool APIs
+  sniffer: () => request('GET', '/api/sniffer'),
+  snifferStart: (opts) => request('POST', '/api/sniffer/start', { json: opts }),
+  snifferStop: () => request('POST', '/api/sniffer/stop'),
+  airspace: () => request('GET', '/api/airspace'),
+  airspaceStart: () => request('POST', '/api/airspace/start'),
+  airspaceStop: () => request('POST', '/api/airspace/stop'),
+  sentinel: () => request('GET', '/api/sentinel'),
+  sentinelStart: () => request('POST', '/api/sentinel/start'),
+  sentinelStop: () => request('POST', '/api/sentinel/stop'),
+  presence: () => request('GET', '/api/presence'),
+  presenceStart: () => request('POST', '/api/presence/start'),
+  presenceStop: () => request('POST', '/api/presence/stop'),
+  fido2: () => request('GET', '/api/fido2'),
+  fido2Register: (rp, user) => request('POST', '/api/fido2/register', { json: { rp, user } }),
+  fido2Authenticate: (rp) => request('POST', '/api/fido2/authenticate', { json: { rp } }),
+  fido2Credentials: () => request('GET', '/api/fido2/credentials'),
+  fido2Remove: (index) => request('POST', '/api/fido2/remove', { json: { index } }),
+  evilportal: () => request('GET', '/api/evilportal'),
+  evilportalStart: (ssid) => request('POST', '/api/evilportal/start', { json: { ssid } }),
+  evilportalStop: () => request('POST', '/api/evilportal/stop'),
+  evilportalCaptures: () => request('GET', '/api/evilportal/captures'),
+  evilportalClear: () => request('POST', '/api/evilportal/clear'),
+  deauthflood: () => request('GET', '/api/deauthflood'),
+  deauthfloodStart: (opts) => request('POST', '/api/deauthflood/start', { json: opts }),
+  deauthfloodStop: () => request('POST', '/api/deauthflood/stop'),
+  beaconspam: () => request('GET', '/api/beaconspam'),
+  beaconspamStart: (opts) => request('POST', '/api/beaconspam/start', { json: opts }),
+  beaconspamStop: () => request('POST', '/api/beaconspam/stop'),
+
   // Upload with progress (fetch has no upload progress). Resolves with {ok, size}.
   write(path, blob, onProgress) {
     return new Promise((resolve, reject) => {

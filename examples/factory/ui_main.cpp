@@ -2240,6 +2240,27 @@ void setupGui()
     register_app("WiFi Tools", &img_tools, &ui_wifi_tools_main);
 #endif
 
+/* P9 NucleoOS parity tools */
+#if !defined(EXCLUDE_NUCLEO_TOOLS) && defined(FACTORY_WEB)
+    extern app_t ui_sniffer_main;
+    extern app_t ui_airspace_main;
+    extern app_t ui_sentinel_main;
+    extern app_t ui_presence_main;
+    extern app_t ui_fido2_main;
+    extern app_t ui_evilportal_main;
+    extern app_t ui_deauthflood_main;
+    extern app_t ui_beaconspam_main;
+
+    register_app("WiFi Sniffer", &img_wireless, &ui_sniffer_main);
+    register_app("Airspace", &img_scan, &ui_airspace_main);
+    register_app("Sentinel", &img_bluetooth, &ui_sentinel_main);
+    register_app("Presence", &img_wireless, &ui_presence_main);
+    register_app("FIDO2 Key", &img_usb, &ui_fido2_main);
+    register_app("Evil Portal", &img_wifi, &ui_evilportal_main);
+    register_app("Deauth Flood", &img_wireless, &ui_deauthflood_main);
+    register_app("Beacon Spam", &img_wireless, &ui_beaconspam_main);
+#endif
+
 #if !defined(EXCLUDE_KEYBOARD)
     if (hw_has_keyboard()) {
         register_app("Keyboard", &img_keyboard, &ui_keyboard_main);

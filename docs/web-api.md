@@ -244,6 +244,106 @@ After a reboot into a new build, the watch marks it good once it reaches the UI;
 
 Voice to the watch, an answer spoken back: record on the watch (`recorder`), the browser does speech-to-text, the language model and text-to-speech, the reply plays on the watch (`audio.play`). It needs a model endpoint and a key, so it waits until the desktop has a settings place for those. No firmware routes of its own; it is built on the P4 recorder and player.
 
+## Tools wave 3: P9 NucleoOS parity
+
+### Wi-Fi sniffer (`wifi.sniffer`)
+
+Passive promiscuous Wi-Fi capture, writing 802.11 frames to a `.pcap` file on the SD card. The resulting file can be opened in Wireshark or any pcap-aware tool. The watch never transmits while sniffing.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/sniffer` | paired | `{active, channel, packets, bytes, file, error}`. `channel` is `-1` (all), `1-13`, or `null` |
+| `POST /api/sniffer/start` | paired | `{channel?, max_bytes?, path?}` → `{ok}`. `channel` -1 (all, default), 1-13; `max_bytes` 0 (unlimited, default); `path` to the .pcap file, default `/sd/data/sniffer/capture-<timestamp>.pcap` |
+| `POST /api/sniffer/stop` | paired | → `{ok}` |
+
+When the capture fills `max_bytes` it stops automatically and publishes a `sniffer` event with `{active:false, reason:"max_bytes"}`. A path on a missing card answers `503 sd_missing`.
+
+### Airspace (`airspace`)
+
+Wi-Fi attack detection from passive capture. The blue-team counterpart of the offensive Wi-Fi tools — it listens for deauth floods, broadcast deauth, evil-twin APs and beacon floods, and publishes alerts when it detects them. Fully passive, never transmits.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/airspace` | paired | `{active, deauth_total, deauth_floods, beacon_total, beacon_floods, evil_twins, started}` |
+| `POST /api/airspace/start` | paired | → `{ok}`. Starts passive monitoring |
+| `POST /api/airspace/stop` | paired | → `{ok}` |
+
+Alerts are published as `airspace` events: `{type:"deauth_flood"|"beacon_flood"|"evil_twin", detail, bssid, rssi}`. `503 busy` while the watch's Wi-Fi Sniffer app is open (they share the promiscuous mode).
+
+### Sentinel (`sentinel`)
+
+BLE anti-stalking: a passive scan that flags BLE devices appearing persistently across multiple scan cycles in different locations. Fully passive, never transmits.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/sentinel` | paired | `{active, started, device_count, devices: [{addr, name, rssi, first_seen, last_seen, sightings, stalking}]}` |
+| `POST /api/sentinel/start` | paired | → `{ok}`. Starts monitoring |
+| `POST /api/sentinel/stop` | paired | → `{ok}` |
+
+A device flagged as stalking triggers a `sentinel` event: `{type:"stalking", addr, name, rssi, sightings}`. Devices older than 1 hour are automatically forgotten.
+
+### Presence (`presence`)
+
+ESP-NOW nearby device discovery — extends the existing Link/ESP-NOW tool with persistent peer tracking, arrival/departure events, and a history log. Builds on the same ESP-NOW infrastructure.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/presence` | paired | `{active, started, peers_ever, peers: [{mac, name, rssi, first_seen, last_seen, present}], history: [{ts, mac, name, event}]}` |
+| `POST /api/presence/start` | paired | → `{ok}`. Starts peer discovery with ESP-NOW |
+| `POST /api/presence/stop` | paired | → `{ok}` |
+
+`event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A `presence` event is published on arrival and departure.
+
+### FIDO2 security key (`fido2`)
+
+The watch as a USB/BLE FIDO2/U2F authenticator (passkeys / WebAuthn). Builds on the USB-HID stack (the same transport the BadUSB tool uses). The watch generates ECDSA P-256 keys on-device and stores credentials on the flash.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/fido2` | paired | `{available, state, credentials, error}` |
+| `POST /api/fido2/register` | paired | `{rp, user}` → `{ok}`. Register a new credential |
+| `POST /api/fido2/authenticate` | paired | `{rp}` → `{ok}`. Authenticate with an existing credential. `404 not_found` when no credential exists for this RP |
+| `GET /api/fido2/credentials` | paired | `{credentials: [{index, rp, user}]}` |
+| `POST /api/fido2/remove` | paired | `{index}` → `{ok}` |
+
+`503 hid_unavailable` when the USB HID is not enumerated by a host.
+
+### Evil portal (`evil.portal`)
+
+Rogue AP + captive portal for credential harvesting. Security audit tool — only for testing networks you own or have explicit permission to test. Creates a rogue access point with a configurable SSID, serves a captive portal login form, and captures credentials entered by connecting devices.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/evilportal` | paired | `{active, ssid, clients, attempts, started, error}` |
+| `POST /api/evilportal/start` | paired | `{ssid?}` → `{ok, ssid}`. Default SSID: "Free Wi-Fi" |
+| `POST /api/evilportal/stop` | paired | → `{ok}`. Stops the AP and DNS server |
+| `GET /api/evilportal/captures` | paired | `{captures: [{mac, hostname, url, username, password, ts}]}` |
+| `POST /api/evilportal/clear` | paired | → `{ok}`. Clears captured credentials |
+
+Whilst the portal is active, all HTTP requests from connected clients are intercepted and served the captive portal. DNS resolves every domain to the watch's IP.
+
+### Deauth flood (`deauth.flood`)
+
+802.11 deauthentication frame injection to disconnect devices from a target network. Security audit tool — only for testing networks you own or have explicit permission to test. Injects deauth frames at a configurable rate against a specific BSSID and optional station.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/deauthflood` | paired | `{active, target_bssid, target_station, channel, sent, rate_kbps, started}` |
+| `POST /api/deauthflood/start` | paired | `{bssid, station?, channel?, rate?}` → `{ok}`. `station` defaults to broadcast (`ff:ff:ff:ff:ff:ff`), `channel` 1-13, `rate` in pkts/s (default 10) |
+| `POST /api/deauthflood/stop` | paired | → `{ok}` |
+
+Requires the Wi-Fi interface to disconnect from any network during the flood.
+
+### Beacon spam (`beacon.spam`)
+
+Fake SSID beacon flooding. Security audit tool — only for use in controlled environments you own. Injects fake 802.11 beacon frames with sequentially named SSIDs into the airspace.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/beaconspam` | paired | `{active, channel, beacons, ssids, prefix, started}` |
+| `POST /api/beaconspam/start` | paired | `{prefix?, count?, channel?}` → `{ok}`. `prefix` (default "FreeNet"), `count` of unique SSIDs (default 20), `channel` 0 (current) or 1-13 |
+| `POST /api/beaconspam/stop` | paired | → `{ok}` |
+
 ## Events
 
 `GET /api/events` upgrades to a WebSocket (paired only).
@@ -273,6 +373,10 @@ Voice to the watch, an answer spoken back: record on the watch (`recorder`), the
 | `link` | as `GET /api/link`, on peer, state and transfer changes | P5 |
 | `hid` | as `GET /api/hid`, on state or line changes | P5 |
 | `ota` | as `GET /api/ota`, while writing and on state changes | P5 |
+| `sniffer` | `{active, reason?}`, capture state changes | P9 |
+| `airspace` | `{type, detail, bssid, rssi}`, alerts for detected attacks | P9 |
+| `sentinel` | `{type:"stalking", addr, name, rssi, sightings}`, a device flagged | P9 |
+| `presence` | peer arrival/departure | P9 |
 
 ## Static files
 
@@ -306,8 +410,16 @@ Voice to the watch, an answer spoken back: record on the watch (`recorder`), the
 | `link.espnow` | `GET /api/link`, `POST /api/link/enable\|send\|cancel`, events `link` | P5 |
 | `usb.hid` | `GET /api/hid`, `POST /api/hid/type\|run\|stop`, events `hid` | P5 |
 | `wifi.tools` | `GET /api/net`, `POST /api/net/resolve\|tcp`, `GET /api/net/channels` | P5 |
-| `ota` | `GET /api/ota`, `POST /api/ota/upload\|commit\|rollback`, events `ota` | P5 |
+| `ota` | `GET /api/ota`, `POST /api/ota/upload|commit|rollback`, events `ota` | P5 |
 | `assistant` | no routes of its own: the P4 recorder and player | later |
+| `wifi.sniffer` | `GET /api/sniffer`, `POST /api/sniffer/start|stop`, events `sniffer` | P9 |
+| `airspace` | `GET /api/airspace`, `POST /api/airspace/start|stop`, events `airspace` | P9 |
+| `sentinel` | `GET /api/sentinel`, `POST /api/sentinel/start|stop`, events `sentinel` | P9 |
+| `presence` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
+| `fido2` | `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials` | P9 |
+| `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|stop|clear`, `GET /api/evilportal/captures` | P9 |
+| `deauth.flood` | `GET /api/deauthflood`, `POST /api/deauthflood/start|stop` | P9 |
+| `beacon.spam` | `GET /api/beaconspam`, `POST /api/beaconspam/start|stop` | P9 |
 
 ## Test hooks (simulator and mock only)
 

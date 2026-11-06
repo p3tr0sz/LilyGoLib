@@ -56,7 +56,8 @@ const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
-  'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota'];
+  'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
+  'wifi.sniffer', 'airspace', 'sentinel', 'presence', 'fido2', 'evil.portal', 'deauth.flood', 'beacon.spam'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -111,6 +112,39 @@ const isPaired = (req) => sessions.has(tokenOf(req));
 // ---- events ----
 let seq = 0;
 let desktop = null;
+
+// P9 NucleoOS parity tool state
+let sniffer = { active: false, packets: 0, bytes: 24, channel: null, file: null };
+let airspace = { active: false, deauth_total: 0, deauth_floods: 0, beacon_total: 0, beacon_floods: 0, evil_twins: 0, started: 0 };
+let sentinel = { active: false, started: 0, device_count: 0, devices: [] };
+let presence = { active: false, started: 0, peers_ever: 0, peers: [], history: [] };
+let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
+let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [] };
+let deauthflood = { active: false, target_bssid: '', target_station: 'ff:ff:ff:ff:ff:ff', channel: 1, sent: 0 };
+let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet' };
+
+function airspaceState() {
+  return { active: airspace.active, deauth_total: airspace.deauth_total, deauth_floods: airspace.deauth_floods, beacon_total: airspace.beacon_total, beacon_floods: airspace.beacon_floods, evil_twins: airspace.evil_twins, started: airspace.started };
+}
+function sentinelState() {
+  return { active: sentinel.active, started: sentinel.started, device_count: sentinel.devices.length, devices: sentinel.devices };
+}
+function presenceState() {
+  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history };
+}
+function fido2State() {
+  return { available: true, state: fido2.state, credentials: fido2.credentials };
+}
+function evilportalState() {
+  return { active: evilportal.active, ssid: evilportal.ssid, clients: evilportal.clients, attempts: evilportal.attempts, started: nowEpoch() };
+}
+function deauthfloodState() {
+  return { active: deauthflood.active, target_bssid: deauthflood.target_bssid, target_station: deauthflood.target_station, channel: deauthflood.channel, sent: deauthflood.sent };
+}
+function beaconspamState() {
+  return { active: beaconspam.active, channel: beaconspam.channel, beacons: beaconspam.beacons, ssids: beaconspam.ssids, prefix: beaconspam.prefix };
+}
+
 function wsFrame(text) {
   const d = Buffer.from(text), n = d.length;
   let h;
@@ -892,6 +926,106 @@ async function toolsRoute(req, res, url, path) {
     log('[ota] rollback: the watch would reboot into the other slot now');
     return ok(res);
   }
+
+  // P9 dev hooks
+  if (DEV && path === '/api/_dev/evilportal' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.action === 'creds') {
+      evilportal.captures.push({ mac: j.mac || '00:00:00:00:00:01', hostname: '', url: j.url || '/login', username: j.username || 'user', password: j.password || 'pass', ts: nowEpoch() });
+      evilportal.attempts = evilportal.captures.length;
+    }
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/sentinel' && m === 'POST') {
+    const j = await readJSON(req);
+    sentinel.devices.push({ addr: j?.addr || '00:00:00:00:00:01', name: j?.name || 'Phone', rssi: j?.rssi || -60, first_seen: nowEpoch(), last_seen: nowEpoch(), sightings: 3, stalking: false });
+    sentinel.device_count = sentinel.devices.length;
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/sniffer' && m === 'POST') {
+    sniffer.packets += 50; sniffer.bytes += 10000;
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/deauthflood' && m === 'POST') {
+    deauthflood.active = true; deauthflood.sent = 100;
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/beaconspam' && m === 'POST') {
+    beaconspam.active = true; beaconspam.beacons = 200;
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/airspace' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.type === 'deauth_flood') { airspace.deauth_floods++; airspace.deauth_total += 100; }
+    if (j?.type === 'evil_twin') { airspace.evil_twins++; }
+    return ok(res);
+  }
+
+  // === P9 NucleoOS parity tools ===
+  // Wi-Fi Sniffer
+  if (path === '/api/sniffer' && m === 'GET') return json(res, 200, { active: sniffer.active === true, channel: sniffer.channel || null, packets: sniffer.packets || 0, bytes: sniffer.bytes || 24, file: sniffer.file || null });
+  if (path === '/api/sniffer/start' && m === 'POST') {
+    if (sniffer.active) return fail(res, 409, 'conflict', 'already capturing');
+    sniffer = { active: true, packets: 0, bytes: 24, channel: null, file: '/sd/data/sniffer/capture.pcap' };
+    setTimeout(() => { sniffer.packets++; sniffer.bytes += 200; }, 500);
+    return ok(res);
+  }
+  if (path === '/api/sniffer/stop' && m === 'POST') { sniffer.active = false; return ok(res); }
+
+  // Airspace
+  if (path === '/api/airspace' && m === 'GET') return json(res, 200, airspaceState());
+  if (path === '/api/airspace/start' && m === 'POST') { airspace.active = true; airspace.started = nowEpoch(); return ok(res); }
+  if (path === '/api/airspace/stop' && m === 'POST') { airspace.active = false; return ok(res); }
+
+  // Sentinel
+  if (path === '/api/sentinel' && m === 'GET') return json(res, 200, sentinelState());
+  if (path === '/api/sentinel/start' && m === 'POST') { sentinel.active = true; sentinel.started = nowEpoch(); sentinel.devices = []; return ok(res); }
+  if (path === '/api/sentinel/stop' && m === 'POST') { sentinel.active = false; return ok(res); }
+
+  // Presence
+  if (path === '/api/presence' && m === 'GET') return json(res, 200, presenceState());
+  if (path === '/api/presence/start' && m === 'POST') { presence.active = true; presence.started = nowEpoch(); presence.peers = []; presence.history = []; return ok(res); }
+  if (path === '/api/presence/stop' && m === 'POST') { presence.active = false; return ok(res); }
+
+  // FIDO2
+  if (path === '/api/fido2' && m === 'GET') return json(res, 200, fido2State());
+  if (path === '/api/fido2/register' && m === 'POST') { const j = await readJSON(req); fido2.creds.push({ rp: j?.rp || '?', user: j?.user || '?' }); fido2.credentials = fido2.creds.length; return ok(res); }
+  if (path === '/api/fido2/authenticate' && m === 'POST') { return ok(res); }
+  if (path === '/api/fido2/credentials' && m === 'GET') return json(res, 200, { credentials: fido2.creds.map((c,i) => ({ index: i, rp: c.rp, user: c.user })) });
+  if (path === '/api/fido2/remove' && m === 'POST') { const i = (await readJSON(req))?.index; if (i >= 0 && i < fido2.creds.length) { fido2.creds.splice(i, 1); fido2.credentials = fido2.creds.length; } return ok(res); }
+
+  // Evil Portal
+  if (path === '/api/evilportal' && m === 'GET') return json(res, 200, evilportalState());
+  if (path === '/api/evilportal/start' && m === 'POST') { const j = await readJSON(req); evilportal.active = true; evilportal.ssid = j?.ssid || 'Free Wi-Fi'; return ok(res); }
+  if (path === '/api/evilportal/stop' && m === 'POST') { evilportal.active = false; return ok(res); }
+  if (path === '/api/evilportal/captures' && m === 'GET') return json(res, 200, { captures: evilportal.captures });
+  if (path === '/api/evilportal/clear' && m === 'POST') { evilportal.captures = []; return ok(res); }
+
+  // Deauth flood
+  if (path === '/api/deauthflood' && m === 'GET') return json(res, 200, deauthfloodState());
+  if (path === '/api/deauthflood/start' && m === 'POST') {
+    const b = await readJSON(req);
+    deauthflood.active = true;
+    deauthflood.target_bssid = b?.bssid || '';
+    deauthflood.target_station = b?.station || 'ff:ff:ff:ff:ff:ff';
+    deauthflood.channel = b?.channel || 1;
+    deauthflood.sent = 0;
+    return ok(res);
+  }
+  if (path === '/api/deauthflood/stop' && m === 'POST') { deauthflood.active = false; return ok(res); }
+
+  // Beacon spam
+  if (path === '/api/beaconspam' && m === 'GET') return json(res, 200, beaconspamState());
+  if (path === '/api/beaconspam/start' && m === 'POST') {
+    const b = await readJSON(req);
+    beaconspam.active = true;
+    beaconspam.prefix = b?.prefix || 'FreeNet';
+    beaconspam.ssids = b?.count || 20;
+    beaconspam.channel = b?.channel || 0;
+    beaconspam.beacons = 0;
+    return ok(res);
+  }
+  if (path === '/api/beaconspam/stop' && m === 'POST') { beaconspam.active = false; return ok(res); }
 
   return null;
 }

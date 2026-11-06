@@ -39,7 +39,9 @@ typedef struct {
 /* Each module defines its tools; web_tools.cpp lists those this board has. */
 extern const web_tool_t web_tool_monitor, web_tool_notify, web_tool_sensors, web_tool_gnss, web_tool_lora,
        web_tool_nfc, web_tool_recorder, web_tool_audio, web_tool_wifi_scan, web_tool_ble_scan,
-       web_tool_link, web_tool_hid, web_tool_net, web_tool_ota;
+       web_tool_link, web_tool_hid, web_tool_net, web_tool_ota,
+       web_tool_sniffer, web_tool_airspace, web_tool_sentinel, web_tool_presence, web_tool_fido2,
+       web_tool_evilportal, web_tool_deauthflood, web_tool_beaconspam;
 
 /* ---------------------------------------------------------------- shared helpers (web_tools.cpp) */
 
@@ -225,12 +227,149 @@ int  web_hw_ota_end(void);                                  /* finish + verify: 
 bool web_hw_ota_commit(void);                               /* boot the new slot, reboot after ~1 s */
 bool web_hw_ota_rollback(void);                             /* boot the other slot, reboot */
 
+/* ---------------------------------------------------------------- P9 — NucleoOS parity (web_tools_hw3.cpp)
+ *
+ * Wi-Fi sniffer — passive promiscuous capture → .pcap on the SD
+ * Airspace      — Wi-Fi attack detection from passive capture (deauth floods, evil-twin, beacon floods)
+ * Sentinel      — BLE anti-stalking: passive scan flags devices that follow you
+ * Presence      — ESP-NOW "nearby devices" (extends Link)
+ * FIDO2         — USB/BLE FIDO2/U2F authenticator
+ * BadUSB lib    — DuckyScript payload library (extends usb.hid)
+ * BLE tools     — extended BLE scan (services, characteristics, advertise)
+ * Evil portal   — rogue AP + captive portal for credential harvesting (security audit)
+ * Deauth flood  — 802.11 deauth injection to disconnect devices (security audit)
+ * Beacon spam   — flood fake SSIDs into the airspace (security audit)
+ */
+
+/* Evil portal — rogue AP + captive portal */
+typedef struct {
+    bool active;
+    char ssid[33];
+    char bssid[18];
+    int clients;                    /* connected clients */
+    uint32_t attempts;              /* credential harvest attempts */
+    const char *error;
+    long long started_epoch;
+} web_hw_evilportal_t;
+bool web_hw_evilportal_start(const char *ssid);
+bool web_hw_evilportal_stop(void);
+void web_hw_evilportal_status(web_hw_evilportal_t *out);
+typedef struct {
+    char mac[18];
+    char hostname[64];
+    char url[256];
+    char username[64];
+    char password[64];
+    long long ts;
+} web_hw_evilportal_capture_t;
+bool web_hw_evilportal_captures(std::vector<web_hw_evilportal_capture_t> &out);
+void web_hw_evilportal_clear_captures(void);
+#ifndef ARDUINO
+void web_hw_sim_evilportal_client(const char *mac, const char *hostname);
+void web_hw_sim_evilportal_creds(const char *url, const char *user, const char *pass);
+#endif
+
+/* Deauth flood — 802.11 deauth injection */
+typedef struct {
+    bool active;
+    char target_bssid[18];          /* "ff:ff:ff:ff:ff:ff" = broadcast */
+    char target_station[18];
+    int channel;
+    uint32_t sent_count;
+    uint32_t rate_kbps;
+    long long started_epoch;
+} web_hw_deauthflood_t;
+bool web_hw_deauthflood_start(const char *bssid, const char *station, int channel, int rate);
+bool web_hw_deauthflood_stop(void);
+void web_hw_deauthflood_status(web_hw_deauthflood_t *out);
+
+/* Beacon spam — flood fake SSIDs */
+typedef struct {
+    bool active;
+    int channel;
+    uint32_t beacon_count;
+    uint32_t ssid_count;
+    long long started_epoch;
+} web_hw_beaconspam_t;
+bool web_hw_beaconspam_start(int channel, int count, const char *prefix);
+bool web_hw_beaconspam_stop(void);
+void web_hw_beaconspam_status(web_hw_beaconspam_t *out);
+
+/* Wi-Fi sniffer — passive promiscuous capture → .pcap on the SD */
+
+/* Wi-Fi sniffer */
+typedef struct {
+    bool active;
+    int channel;                /* -1 = hop all channels */
+    uint32_t packet_count;
+    char file[128];             /* .pcap path on the SD */
+    uint32_t bytes_written;
+    const char *error;
+} web_hw_sniffer_t;
+bool web_hw_sniffer_start(int channel, uint32_t max_bytes, const char *path);
+bool web_hw_sniffer_stop(void);
+void web_hw_sniffer_status(web_hw_sniffer_t *out);
+#ifndef ARDUINO
+void web_hw_sim_sniffer_inject(int count);  /* inject fake packets into capture */
+#endif
+
+/* Airspace — Wi-Fi attack detection */
+typedef struct {
+    bool active;
+    uint32_t deauth_count;      /* total deauth packets seen */
+    uint32_t beacon_count;      /* total beacon frames seen */
+    uint32_t deauth_floods;     /* deauth flood events (rate > threshold) */
+    uint32_t beacon_floods;     /* beacon flood events */
+    uint32_t evil_twins;        /* evil-twin AP candidates */
+    long long started_epoch;
+} web_hw_airspace_t;
+bool web_hw_airspace_start(void);
+bool web_hw_airspace_stop(void);
+void web_hw_airspace_status(web_hw_airspace_t *out);
+
+/* Sentinel — BLE anti-stalking */
+typedef struct {
+    char addr[18];
+    char name[64];
+    int rssi;
+    long long first_seen;
+    long long last_seen;
+    int sightings;
+    bool stalking;              /* device has appeared multiple times in different locations */
+} web_hw_sentinel_device_t;
+typedef struct {
+    bool active;
+    int device_count;
+    web_hw_sentinel_device_t devices[24];
+    long long started_epoch;
+} web_hw_sentinel_t;
+bool web_hw_sentinel_start(void);
+bool web_hw_sentinel_stop(void);
+void web_hw_sentinel_status(web_hw_sentinel_t *out);
+
+/* FIDO2 — security key */
+typedef struct {
+    bool available;             /* USB HID enumerated */
+    const char *state;          /* "idle", "registering", "authenticating" */
+    const char *error;
+    int credentials;            /* number of stored credentials */
+} web_hw_fido2_t;
+bool web_hw_fido2_begin_register(const char *rp, const char *user);
+bool web_hw_fido2_begin_authenticate(const char *rp);
+int  web_hw_fido2_credentials(void);
+bool web_hw_fido2_remove_credential(int index);
+void web_hw_fido2_status(web_hw_fido2_t *out);
+
 #ifndef ARDUINO
 /* Simulator test hooks. */
 void web_hw_sim_lora_inject(const std::string &data, int rssi, int snr);    /* /api/_dev/lora */
 void web_hw_sim_link_peer(const char *name);                                /* /api/_dev/link {peer} */
 void web_hw_sim_link_rx(const char *name, uint32_t size);                   /* /api/_dev/link {rx} */
 void web_hw_sim_hid_available(bool on);                                     /* /api/_dev/hid */
+void web_hw_sim_sniffer_inject(int count);                                  /* /api/_dev/sniffer */
+void web_hw_sim_airspace_alert(const char *type, const char *detail);       /* /api/_dev/airspace */
+void web_hw_sim_sentinel_device(const char *addr, const char *name, int rssi); /* /api/_dev/sentinel */
+void web_hw_sim_fido2_available(bool on);                                   /* /api/_dev/fido2 */
 #endif
 
 #endif /* FACTORY_WEB */
