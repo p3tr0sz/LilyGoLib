@@ -5,7 +5,8 @@ const TIMEOUTS = [[0, 'Never'], [5, '5 s'], [10, '10 s'], [15, '15 s'], [30, '30
 const IDLE = [[0, 'Never'], [300, '5 min'], [600, '10 min'], [1800, '30 min'], [3600, '1 hour']];
 
 function row(label, hint, ...ctrl) {
-  return h('div', { class: 'srow' },
+  const id = typeof label === 'string' ? label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : '';
+  return h('div', { class: 'srow', 'data-setting': id || null },
     h('div', { class: 's-label' }, label, hint ? h('small', {}, hint) : null), ...ctrl);
 }
 
@@ -29,6 +30,8 @@ export function mount(el, ctx) {
   page.append(display, time, storage, web, device);
 
   let settings = null;
+  let loadPromise = null;
+  let hitTimer = null;
   const patch = async (p) => {
     try { settings = await api.patchSettings(p); }
     catch (e) { toast(e.message, 'error'); }
@@ -193,6 +196,22 @@ export function mount(el, ctx) {
     events.on('battery', () => renderDevice()),
     events.on('theme', () => renderDevice()),
   ];
-  load();
-  return { unmount() { offs.forEach((f) => f()); clearInterval(clockTimer); } };
+  async function openTarget(target) {
+    if (!target?.setting) return;
+    await loadPromise;
+    const hit = [...page.querySelectorAll('.srow')].find((r) => r.dataset.setting === target.setting);
+    if (!hit) { toast('That setting is not available on this watch.', 'error'); return; }
+    clearTimeout(hitTimer);
+    page.querySelectorAll('.srow.search-hit').forEach((r) => r.classList.remove('search-hit'));
+    hit.classList.add('search-hit');
+    hit.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    hit.querySelector('button, select, input')?.focus({ preventScroll: true });
+    hitTimer = setTimeout(() => hit.classList.remove('search-hit'), 1800);
+  }
+
+  loadPromise = load();
+  return {
+    open: openTarget,
+    unmount() { offs.forEach((f) => f()); clearInterval(clockTimer); clearTimeout(hitTimer); },
+  };
 }

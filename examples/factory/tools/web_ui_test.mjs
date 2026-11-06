@@ -225,6 +225,18 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('the notifications tray closes', await waitFor('!document.querySelector(".tray-panel")'));
   await shot('2b-os-shell');
 
+  // Global search (P8.1): files open in their app; settings open at the matching control.
+  await js(`$type(document.querySelector('.lp-search'), 'todo');`);
+  check('global search finds a file on the SD card', await waitFor('document.querySelector(\'.lp-result[data-kind=file][data-path="/sd/ui-test/notes/todo.txt"]\')', 8000));
+  await js(`document.querySelector('.lp-result[data-kind=file][data-path="/sd/ui-test/notes/todo.txt"]').click();`);
+  check('a file search result opens its preview', await waitFor('document.querySelector(".dialog h2")?.textContent === "todo.txt" && document.querySelector(".dialog pre")?.textContent.includes("Shopping: milk")'));
+  await js(`$t('.dialog .btn', 'Close').click(); document.querySelector('.win .close').click();`);
+  await js(`$type(document.querySelector('.lp-search'), 'brightness');`);
+  check('global search finds a setting', await waitFor('document.querySelector(\'.lp-result[data-kind=setting][data-id=brightness]\')'));
+  await js(`document.querySelector('.lp-result[data-kind=setting][data-id=brightness]').click();`);
+  check('a setting search result opens and highlights its control', await waitFor('document.querySelector(\'.srow[data-setting=brightness].search-hit input[type=range]\')'));
+  await js(`document.querySelector('.win .close').click();`);
+
   // ---- files
   console.log('files');
   await go('#app=files');

@@ -52,7 +52,20 @@ export function mount(el, ctx) {
     ctx.setTitle(parts.length > 1 ? parts[parts.length - 1] : '');
   }
 
-  function go(path) { cwd = path; load(); }
+  function go(path) { cwd = path; return load(); }
+
+  async function openTarget(target) {
+    const path = target?.path || '';
+    if (!roots.some((r) => path === `/${r.id}` || path.startsWith(`/${r.id}/`))) return;
+    const dir = target.dir ? path : parent(path);
+    cwd = dir;
+    await load();
+    if (!target.preview) return;
+    const name = path.split('/').pop();
+    const entry = entries.find((e) => !e.dir && e.name === name);
+    if (entry) await preview(entry, path);
+    else toast(`File not found: ${name}`, 'error');
+  }
 
   async function load() {
     renderRoots();
@@ -215,5 +228,8 @@ export function mount(el, ctx) {
   const offSd = events.on('sd.changed', () => { if (cwd.startsWith('/sd')) soon(); });
 
   load();
-  return { unmount() { offFiles(); offSd(); clearTimeout(refreshTimer); } };
+  return {
+    open: openTarget,
+    unmount() { offFiles(); offSd(); clearTimeout(refreshTimer); },
+  };
 }

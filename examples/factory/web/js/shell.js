@@ -1,6 +1,7 @@
 // The desktop shell: pairing, status bar, launcher and windows.
 import { api, events, onUnpaired, ApiError } from './api.js';
 import { h, icon, toast } from './ui.js';
+import { searchFiles, searchSettings } from './search.js';
 
 // Apps the desktop knows. An app is shown only when the watch has every capability in `caps`
 // and at least one in `capsAny`.
@@ -168,15 +169,17 @@ function startDesktop() {
   state.focusedId = null;
   const desk = h('div', { class: 'desk' });
 
-  // Launchpad: a searchable grid of app icons (global search over apps, v1).
+  // Launchpad: global search over apps, settings and files on the watch.
   const search = h('input', {
-    class: 'lp-search', type: 'search', placeholder: 'Search apps…', 'aria-label': 'Search apps',
+    class: 'lp-search', type: 'search', placeholder: 'Search apps, files, settings…', 'aria-label': 'Global search',
     oninput: () => filterLaunchpad(search.value),
   });
   const grid = h('div', { class: 'lp-grid' });
-  const noHits = h('div', { class: 'lp-empty muted hidden' }, 'No apps match.');
-  const launcher = h('div', { class: 'launcher' }, h('div', { class: 'lp-head' }, icon('search'), search), grid, noHits);
+  const results = h('div', { class: 'lp-results' });
+  const noHits = h('div', { class: 'lp-empty muted hidden' }, 'No apps, files, or settings match.');
+  const launcher = h('div', { class: 'launcher' }, h('div', { class: 'lp-head' }, icon('search'), search), grid, results, noHits);
   launcher._noHits = noHits;
+  launcher._results = results;
   launcherEl = launcher;
   for (const app of APPS) {
     if (!allowed(app)) continue;
@@ -235,15 +238,56 @@ function startDesktop() {
 
 // ---------------------------------------------------------------- launchpad
 
-function filterLaunchpad(q) {
-  q = (q || '').trim().toLowerCase();
-  let hits = 0;
+let searchTimer = null;
+let searchGeneration = 0;
+let searchAppHits = 0;
+let searchSettingHits = [];
+let searchFileHits = [];
+let searchFilesPending = false;
+
+function renderSearchResults(q) {
+  if (!launcherEl) return;
+  const sections = [];
+  const section = (title, items, make) => {
+    if (!items.length) return;
+    sections.push(h('section', { class: 'lp-result-group' }, h('h2', {}, title), items.map(make)));
+  };
+  section('Settings', searchSettingHits, (s) => h('button', {
+    class: 'lp-result', 'data-kind': 'setting', 'data-id': s.id,
+    onclick: () => openApp('settings', { setting: s.id }),
+  }, icon('settings'), h('span', { class: 'lp-result-text' }, h('b', {}, s.title), h('small', {}, s.section))));
+  section('Files', searchFileHits, (f) => h('button', {
+    class: 'lp-result', 'data-kind': 'file', 'data-path': f.path,
+    onclick: () => openApp('files', { path: f.path, dir: f.dir, preview: !f.dir }),
+  }, icon(f.dir ? 'folder' : 'file'), h('span', { class: 'lp-result-text' }, h('b', {}, f.name), h('small', {}, f.path))));
+  if (searchFilesPending) sections.push(h('div', { class: 'lp-searching muted', role: 'status' }, 'Searching files…'));
+  launcherEl._results.replaceChildren(...sections);
+  const hits = searchAppHits + searchSettingHits.length + searchFileHits.length;
+  launcherEl._noHits.classList.toggle('hidden', !q || hits > 0 || searchFilesPending);
+}
+
+function filterLaunchpad(value) {
+  const q = (value || '').trim().toLowerCase();
+  const generation = ++searchGeneration;
+  clearTimeout(searchTimer);
+  searchAppHits = 0;
   for (const t of launcherEl.querySelectorAll('.tile')) {
     const show = !q || t.dataset.title.includes(q) || t.dataset.id.includes(q);
     t.classList.toggle('hidden', !show);
-    if (show) hits++;
+    if (show) searchAppHits++;
   }
-  launcherEl._noHits.classList.toggle('hidden', hits > 0);
+  searchSettingHits = q && state.caps.includes('settings') ? searchSettings(q) : [];
+  searchFileHits = [];
+  searchFilesPending = q.length >= 2 && state.caps.includes('files');
+  renderSearchResults(q);
+  if (!searchFilesPending) return;
+  searchTimer = setTimeout(async () => {
+    const found = await searchFiles(api, q, state.caps, () => generation === searchGeneration);
+    if (generation !== searchGeneration) return;
+    searchFileHits = found.results;
+    searchFilesPending = false;
+    renderSearchResults(q);
+  }, 180);
 }
 
 function openVisibleCount() {
@@ -410,10 +454,20 @@ function setHash(id) {
   history.replaceState(null, '', url);
 }
 
-export async function openApp(id) {
+export async function openApp(id, options = {}) {
   const app = APPS.find((a) => a.id === id);
   if (!app || !allowed(app)) return;
-  if (state.windows.has(id)) { state.windows.get(id).restore(); return; }
+  // Opening a result ends the query; do not keep walking folders behind the app.
+  searchGeneration++;
+  clearTimeout(searchTimer);
+  searchFilesPending = false;
+  renderSearchResults(launcherEl?.querySelector('.lp-search')?.value.trim().toLowerCase() || '');
+  if (state.windows.has(id)) {
+    const existing = state.windows.get(id);
+    existing.restore();
+    existing.navigate(options);
+    return;
+  }
 
   const title = h('span', { class: 't-text' }, app.title);
   const body = h('div', { class: 'win-body' });
@@ -424,9 +478,15 @@ export async function openApp(id) {
   Object.assign(win.style, { left: `${20 + n * 28}px`, top: `${20 + n * 28}px`, width: `${w}px`, height: `${hgt}px` });
 
   let mounted = null;
+  let pendingOptions = Object.keys(options).length ? options : null;
   const handle = {
     minimized: false,
     el: win,
+    navigate(next) {
+      if (!next || !Object.keys(next).length) return;
+      if (mounted?.open) mounted.open(next);
+      else pendingOptions = next;
+    },
     focus() {
       this.minimized = false; win.classList.remove('min');
       win.style.zIndex = ++state.z;
@@ -475,6 +535,8 @@ export async function openApp(id) {
       notify: (t, text, kind) => pushNote(t, text, kind),
       setTitle: (t) => { title.textContent = t ? `${app.title} — ${t}` : app.title; },
     });
+    if (pendingOptions && mounted?.open) await mounted.open(pendingOptions);
+    pendingOptions = null;
   } catch (e) {
     console.error(e);
     body.replaceChildren(h('div', { class: 'empty' }, `Could not open ${app.title}: ${e.message}`));

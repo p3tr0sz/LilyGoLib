@@ -122,6 +122,23 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .lp-search { flex: 1; min-height: 44px; border: 0; background: transparent; }
 .lp-search:focus { outline: none; }
 .lp-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); }
+.lp-results { max-width: 720px; margin: 18px auto 0; }
+.lp-results:empty { display: none; }
+.lp-result-group h2 { margin: 16px 0 8px; color: var(--text-2); font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+.lp-result {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px; padding: 9px 14px;
+  border: 1px solid #222; border-radius: 0; background: var(--card); color: var(--text); text-align: left; cursor: pointer;
+}
+.lp-result:first-of-type { border-radius: var(--radius-s) var(--radius-s) 0 0; }
+.lp-result:last-child { border-radius: 0 0 var(--radius-s) var(--radius-s); }
+.lp-result:only-of-type { border-radius: var(--radius-s); }
+.lp-result + .lp-result { border-top: 0; }
+.lp-result:hover { background: var(--card-hi); }
+.lp-result > svg { width: 22px; height: 22px; flex: none; color: var(--accent); }
+.lp-result-text { flex: 1; min-width: 0; }
+.lp-result-text b, .lp-result-text small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-result-text small { color: var(--text-2); }
+.lp-searching { padding: 14px; text-align: center; }
 .lp-empty { padding: 32px; text-align: center; }
 .tile {
   display: flex; flex-direction: column; align-items: center; gap: 10px;
@@ -321,6 +338,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .srow:first-of-type { border-radius: var(--radius-s) var(--radius-s) 0 0; }
 .srow:last-child { border-radius: 0 0 var(--radius-s) var(--radius-s); }
 .srow:only-of-type { border-radius: var(--radius-s); }
+.srow.search-hit { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
 .srow .s-label { flex: 1; min-width: 160px; }
 .srow .s-label small { display: block; color: var(--text-2); }
 .srow .s-value { color: var(--text-2); font-variant-numeric: tabular-nums; }

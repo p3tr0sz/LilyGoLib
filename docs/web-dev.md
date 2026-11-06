@@ -15,7 +15,7 @@ The single most common mistake: **`pio run` must run from `LilyGoLib-PlatformIO`
 
 ## What the pieces are
 
-- **Desktop** — `examples/factory/web/`: plain HTML, CSS and ES modules, **no build step** while developing. `js/shell.js` is the OS shell (pairing, launchpad, dock, windows, tray, system menu); `js/ui.js` DOM/icon/dialog helpers; `js/api.js` the API client; `apps/<id>/app.js` one module per app exporting `mount(el, ctx)`. Served off the SD card at `/sd/web/`.
+- **Desktop** — `examples/factory/web/`: plain HTML, CSS and ES modules, **no build step** while developing. `js/shell.js` is the OS shell (pairing, launchpad, dock, windows, tray, system menu); `js/search.js` indexes settings and walks files for global search; `js/ui.js` DOM/icon/dialog helpers; `js/api.js` the API client; `apps/<id>/app.js` one module per app exporting `mount(el, ctx)`. Served off the SD card at `/sd/web/`.
 - **Firmware** — `examples/factory/web_*.cpp`, all behind `FACTORY_WEB`. Shared core (`web_core.cpp`, `web_fs.cpp`, `web_json.cpp`) is pure POSIX + no ESP calls, so it runs on the watch and on the PC; a thin transport (`web_transport_esp.cpp` on the watch, `web_transport_posix.cpp` in the simulator) is the only difference. Tools are `web_tool_*.cpp` behind the `web_tools.h` contract.
 - **Naming** — everything is ours and named `web-*` / `FACTORY_WEB`. NucleoOS (`../NucleoOs`) is the model for patterns and capabilities only; none of its code, names or files are used (its firmware is PolyForm-NC, its desktop AGPL).
 
@@ -82,7 +82,7 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
 
 - Run **both** `web_api_test.mjs` and `web_ui_test.mjs` against the **mock** (fast); run them against the
   **simulator** too for anything touching firmware or the shell. Current baselines: `web_ui_test.mjs`
-  **142/142** simulator / **141/141** mock; `web_api_test.mjs` **250/250** simulator / **246/246** mock;
+  **146/146** simulator / **145/145** mock; `web_api_test.mjs` **250/250** simulator / **246/246** mock;
   `web_desktop_test.mjs` **24/24**. A new feature should add checks, not just keep the count.
 - When editing the desktop shell, **keep the selectors the UI test anchors on**: `.bar` (must still show
   the battery % and the SD status text), `.launcher .tile`, `.win` + `.win .back`, `.link-dot.on`, and the

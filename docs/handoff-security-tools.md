@@ -66,8 +66,8 @@ Final successful runs:
 - `pio run -e emulator_watch_ultra` — **pass**
 - `node web_api_test.mjs --dev-pin` — **246/246**
 - `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **250/250**
-- `node web_ui_test.mjs` — **141/141**
-- `node web_ui_test.mjs --url http://localhost:8080` — **142/142**
+- `node web_ui_test.mjs` — **145/145**
+- `node web_ui_test.mjs --url http://localhost:8080` — **146/146**
 
 The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, validation, alerts, tracker persistence, FIDO unavailable behaviour, authorization, captive POST, redaction, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, consent and credential deletion.
 
