@@ -161,6 +161,7 @@ export const api = {
   beaconspam: () => request('GET', '/api/beaconspam'),
   beaconspamStart: (opts) => request('POST', '/api/beaconspam/start', { json: opts }),
   beaconspamStop: () => request('POST', '/api/beaconspam/stop'),
+  beaconspamSetSsids: (ssids) => request('PUT', '/api/beaconspam/ssids', { json: ssids }),
 
   // Upload with progress (fetch has no upload progress). Resolves with {ok, size}.
   write(path, blob, onProgress) {
