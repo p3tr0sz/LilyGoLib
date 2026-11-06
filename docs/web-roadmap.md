@@ -87,6 +87,8 @@ The SD card is a first-class part of the system, not an optional extra:
 
 The first usable milestone is P1–P3 (about 4–5 weeks): pair, browse files, change settings and drive the watch screen from the browser.
 
+The watch firmware now links (`793aafc`), so the next step is the first run on real hardware. The flash command and the on-device test checklist (everything the simulator cannot cover) are in **`web-device-bringup.md`**.
+
 ## Testing
 
 Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, Screen, every P4 and P5 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
