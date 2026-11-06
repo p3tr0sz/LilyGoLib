@@ -1052,9 +1052,65 @@ static const struct {
 };
 #endif
 
+/* ── App categories (the app list's filter chips) ──
+ * One category per app, keyed on the name passed to register_app(). Edit this
+ * table to re-bucket an app; an app absent here falls into "Tools". The chip
+ * order in the list is fixed in ui_app_list.cpp (APP_CATEGORY_ORDER). */
+static const struct {
+    const char *name;
+    const char *category;
+} app_categories[] = {
+    { "WiFi",         "WiFi" },
+    { "WiFi Analyzer","WiFi" },
+    { "WiFi Tools",   "WiFi" },
+    { "BLE Scan",     "Bluetooth" },
+    { "BLE HID",      "Bluetooth" },
+    { "NFC",          "NFC" },
+    { "PN532",        "NFC" },
+    { "NFC Card",     "NFC" },
+    { "BadUSB",       "USB" },
+    { "USB Disk",     "USB" },
+    { "IR Send",      "IR" },
+    { "IR Record",    "IR" },
+    { "IR Play",      "IR" },
+    { "NRF24",        "RF" },
+    { "Sub-G",        "RF" },
+    { "LoRa",         "RF" },
+    { "LoRaWAN",      "RF" },
+    { "Walkie",       "RF" },
+    { "GNSS",         "GNSS" },
+    { "Track Log",    "GNSS" },
+    { "IMU",          "Sensors" },
+    { "Accel",        "Sensors" },
+    { "Compass",      "Sensors" },
+    { "INA219",       "Sensors" },
+    { "Thermal",      "Sensors" },
+    { "MAX30102",     "Sensors" },
+    { "Player",       "Media" },
+    { "Net Radio",    "Media" },
+    { "Radio",        "Media" },
+    { "I2S Test",     "Media" },
+    { "Music Eyes",   "Media" },
+    { "Recorder",     "Media" },
+    { "Mic",          "Media" },
+    { "Stopwatch",    "Clock" },
+    { "Timer",        "Clock" },
+    { "Alarm",        "Clock" },
+    { "Clock Tools",  "Clock" },
+};
+
+const char *ui_app_category_for(const char *name)
+{
+    for (size_t i = 0; name && i < sizeof(app_categories) / sizeof(app_categories[0]); i++) {
+        if (strcmp(name, app_categories[i].name) == 0) return app_categories[i].category;
+    }
+    return "Tools";
+}
+
 static void register_app(const char *name, const lv_img_dsc_t *img, app_t *app_fun)
 {
     if (app_count >= GRID_MAX_APPS) return;
+    const char *category = ui_app_category_for(name);
 #if FACTORY_WATCH_UI
     for (size_t i = 0; i < sizeof(watch_app_names) / sizeof(watch_app_names[0]); i++) {
         if (strcmp(name, watch_app_names[i].name) == 0) {
@@ -1066,6 +1122,7 @@ static void register_app(const char *name, const lv_img_dsc_t *img, app_t *app_f
     app_registry[app_count].name = name;
     app_registry[app_count].icon = img;
     app_registry[app_count].app_func = app_fun;
+    app_registry[app_count].category = category;
     app_count++;
 }
 

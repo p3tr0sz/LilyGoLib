@@ -13,7 +13,13 @@ typedef struct {
     const char *name;
     const lv_img_dsc_t *icon;
     app_t *app_func;
+    const char *category;   /* Filter chip in the app list: "WiFi", "NFC", … (never NULL) */
 } ui_app_entry_t;
+
+/* The category a registered app name belongs to; "Tools" when it has no
+ * explicit one. Keyed on the name passed to register_app() (before the
+ * watch_name remap). Defined in ui_main.cpp (app_categories[]). */
+const char *ui_app_category_for(const char *name);
 
 uint32_t ui_app_registry_count(void);
 const ui_app_entry_t *ui_app_registry_get(uint32_t index);

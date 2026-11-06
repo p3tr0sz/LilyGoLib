@@ -13,11 +13,20 @@
 #if FACTORY_WATCH_UI
 
 #define APP_LIST_HEADER_H      40
+#define APP_LIST_CHIP_BAR_H    48    /* Category filter chips, under the clock */
 #define APP_LIST_ROW_H         88
 #define APP_LIST_ROW_GAP       8
 #define APP_LIST_ICON_DISC     52
 #define APP_LIST_ICON_SIZE     34
 #define APP_LIST_PAD_HOR       UI_SCREEN_MARGIN
+
+/* "All" plus the categories ui_app_category_for() can return, in chip order.
+ * A chip appears only when at least one registered app has that category. */
+#define APP_CATEGORY_ALL       "All"
+static const char *const APP_CATEGORY_ORDER[] = {
+    APP_CATEGORY_ALL, "WiFi", "Bluetooth", "RF", "IR", "NFC", "USB",
+    "GNSS", "Sensors", "Media", "Clock", "Tools",
+};
 
 /* Drag to reorder: a long press lifts a row, it follows the finger, and a gap
  * shows where it will land; the list scrolls when the finger nears its top or
@@ -29,8 +38,12 @@
 static struct {
     lv_obj_t *root;
     lv_obj_t *time;
+    lv_obj_t *chips;      /* Horizontal category filter bar */
     lv_obj_t *scroll;
 } list_ui;
+
+/* The selected filter chip; a pointer from APP_CATEGORY_ORDER (never freed). */
+static const char *active_filter = APP_CATEGORY_ALL;
 
 #define APP_LIST_HANDLE_W      110   /* Arrange mode: the row's right end that drags */
 
@@ -317,6 +330,87 @@ uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max)
     return n;
 }
 
+static void chip_set_selected(lv_obj_t *chip, bool on)
+{
+    lv_obj_set_style_bg_color(chip, on ? UI_COLOR_ACCENT : UI_COLOR_CARD_BG, 0);
+    lv_obj_t *label = lv_obj_get_child(chip, 0);
+    if (label) {
+        lv_obj_set_style_text_color(label, on ? lv_color_black() : UI_COLOR_TEXT_SECONDARY, 0);
+    }
+}
+
+/* Show only the rows in the active category (all rows under "All"); the
+ * "Arrange apps" row and reordering are offered only under "All". */
+static void app_list_apply_filter(void)
+{
+    if (!list_ui.scroll) return;
+    bool all = strcmp(active_filter, APP_CATEGORY_ALL) == 0;
+    uint32_t children = lv_obj_get_child_count(list_ui.scroll);
+    for (uint32_t i = 0; i < children; i++) {
+        lv_obj_t *row = lv_obj_get_child(list_ui.scroll, i);
+        const ui_app_entry_t *entry = (const ui_app_entry_t *)lv_obj_get_user_data(row);
+        bool show = entry ? (all || (entry->category && strcmp(entry->category, active_filter) == 0))
+                          : all;   /* The Arrange row has no entry: All only */
+        if (show) lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (list_ui.chips) {
+        uint32_t n = lv_obj_get_child_count(list_ui.chips);
+        for (uint32_t i = 0; i < n; i++) {
+            lv_obj_t *chip = lv_obj_get_child(list_ui.chips, i);
+            const char *cat = (const char *)lv_obj_get_user_data(chip);
+            chip_set_selected(chip, cat && strcmp(cat, active_filter) == 0);
+        }
+    }
+    lv_obj_scroll_to_y(list_ui.scroll, 0, LV_ANIM_OFF);
+}
+
+static void chip_event_cb(lv_event_t *e)
+{
+    lv_obj_t *chip = lv_event_get_current_target_obj(e);
+    const char *cat = (const char *)lv_obj_get_user_data(chip);
+    if (!cat || cat == active_filter) return;
+    if (arrange.arranging) app_list_set_arranging(false);
+    active_filter = cat;
+    app_list_apply_filter();
+    hw_feedback();
+}
+
+/* A chip per category that at least one app uses, in APP_CATEGORY_ORDER order,
+ * "All" always first. */
+static void app_list_build_chips(lv_obj_t *bar)
+{
+    const size_t total = sizeof(APP_CATEGORY_ORDER) / sizeof(APP_CATEGORY_ORDER[0]);
+    bool present[sizeof(APP_CATEGORY_ORDER) / sizeof(APP_CATEGORY_ORDER[0])] = {false};
+    uint32_t count = ui_app_registry_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const ui_app_entry_t *entry = ui_app_registry_get(i);
+        if (!entry || !entry->category) continue;
+        for (size_t c = 1; c < total; c++) {
+            if (strcmp(entry->category, APP_CATEGORY_ORDER[c]) == 0) { present[c] = true; break; }
+        }
+    }
+    for (size_t c = 0; c < total; c++) {
+        if (c != 0 && !present[c]) continue;
+        lv_obj_t *chip = lv_obj_create(bar);
+        lv_obj_remove_style_all(chip);
+        lv_obj_set_height(chip, LV_PCT(100));
+        lv_obj_set_width(chip, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_hor(chip, 18, 0);
+        lv_obj_set_style_pad_ver(chip, 0, 0);
+        lv_obj_remove_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_user_data(chip, (void *)APP_CATEGORY_ORDER[c]);
+        lv_obj_add_event_cb(chip, chip_event_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *label = lv_label_create(chip);
+        lv_label_set_text(label, APP_CATEGORY_ORDER[c]);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+        lv_obj_center(label);
+        chip_set_selected(chip, c == 0);
+    }
+}
+
 lv_obj_t *app_list_create(lv_obj_t *parent)
 {
     lv_obj_t *root = lv_obj_create(parent);
@@ -335,10 +429,27 @@ lv_obj_t *app_list_create(lv_obj_t *parent)
     lv_label_set_text(list_ui.time, "--:--");
     lv_obj_align(list_ui.time, LV_ALIGN_TOP_MID, 0, 12);
 
+    /* Category filter chips, scrolling sideways under the clock. A horizontally
+     * scrollable object is exempt from the swipe-right-to-go-back gesture
+     * (ui_navigation.cpp), so the bar and the back gesture don't fight. */
+    lv_obj_t *chips = lv_obj_create(root);
+    lv_obj_remove_style_all(chips);
+    lv_obj_set_size(chips, LV_PCT(100), APP_LIST_CHIP_BAR_H);
+    lv_obj_align(chips, LV_ALIGN_TOP_MID, 0, APP_LIST_HEADER_H);
+    lv_obj_set_style_pad_hor(chips, APP_LIST_PAD_HOR, 0);
+    lv_obj_set_style_pad_ver(chips, 3, 0);
+    lv_obj_set_style_pad_column(chips, 8, 0);
+    lv_obj_set_flex_flow(chips, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(chips, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_scroll_dir(chips, LV_DIR_HOR);
+    lv_obj_set_scrollbar_mode(chips, LV_SCROLLBAR_MODE_OFF);
+    list_ui.chips = chips;
+    app_list_build_chips(chips);
+
     lv_obj_t *scroll = lv_obj_create(root);
     lv_obj_set_size(scroll, LV_PCT(100),
-                    lv_display_get_vertical_resolution(NULL) - APP_LIST_HEADER_H);
-    lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, APP_LIST_HEADER_H);
+                    lv_display_get_vertical_resolution(NULL) - APP_LIST_HEADER_H - APP_LIST_CHIP_BAR_H);
+    lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, APP_LIST_HEADER_H + APP_LIST_CHIP_BAR_H);
     lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(scroll, 0, 0);
     lv_obj_set_style_radius(scroll, 0, 0);
@@ -359,6 +470,8 @@ lv_obj_t *app_list_create(lv_obj_t *parent)
     for (uint32_t i = 0; i < count; i++) app_list_add_row(scroll, ordered[i]);
     app_list_add_arrange_row(scroll);
 
+    app_list_apply_filter();
+
     return root;
 }
 
@@ -374,6 +487,10 @@ void app_list_scroll_to_top(void)
 {
     if (drag.row) drag_drop();   /* The screen went off mid-drag */
     app_list_set_arranging(false);
+    /* Reopen on the full list, chips scrolled back to "All". */
+    active_filter = APP_CATEGORY_ALL;
+    if (list_ui.chips) lv_obj_scroll_to_x(list_ui.chips, 0, LV_ANIM_OFF);
+    app_list_apply_filter();
     if (list_ui.scroll) {
         lv_obj_scroll_to_y(list_ui.scroll, 0, LV_ANIM_OFF);
     }
