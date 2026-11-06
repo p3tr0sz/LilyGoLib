@@ -392,6 +392,8 @@ static native_page_t portal_ui;
 static bool portal_consented = false;
 static lv_obj_t *portal_ssid, *portal_ssid_text, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_error;
 static lv_obj_t *portal_start_row, *portal_stop_row, *portal_scan_row, *portal_karma_row, *portal_karma_info;
+static lv_obj_t *portal_twin_bssid, *portal_twin_channel, *portal_twin_psk, *portal_coherent, *portal_verify;
+static lv_obj_t *portal_twin_start_row, *portal_clone_row, *portal_clone_info;
 static void portal_build(void);
 static void portal_refresh(lv_timer_t *)
 {
@@ -400,10 +402,14 @@ static void portal_refresh(lv_timer_t *)
     web_hw_evilportal_t st;
     web_hw_evilportal_status(&st);
     bool scanning = web_hw_evilportal_karma_busy();
-    label_set(portal_state, st.active ? (st.mode == EP_MODE_KARMA ? "KARMA AP active" : "Active") : scanning ? "Discovering probes" : "Stopped");
+    bool cloning = web_hw_evilportal_cloning();
+    label_set(portal_state, st.active ? (st.mode == EP_MODE_KARMA ? "KARMA AP active" : st.twin_coherent ? "WPA2 twin active" : st.mode == EP_MODE_TWIN ? "Open twin active" : "Standalone active") : cloning ? "Cloning page" : scanning ? "Discovering probes" : "Stopped");
     label_set(portal_clients, "%d", st.clients);
-    label_set(portal_attempts, "%lu", (unsigned long)st.attempts);
+    label_set(portal_attempts, "%lu · PSK %d ok / %d bad", (unsigned long)st.attempts,
+              web_hw_evilportal_verified_ok(), web_hw_evilportal_verified_bad());
     label_set(portal_error, st.error ? st.error : "");
+    const char *clone_name = web_hw_evilportal_clone_name();
+    label_set(portal_clone_info, cloning ? "Joining open lab AP and fetching page..." : clone_name && *clone_name ? "Saved: %s" : "No page cloned yet", clone_name);
     char found[256] = "";
     int count = web_hw_evilportal_karma_count();
     for (int i = 0; i < count && i < 4; i++) {
@@ -413,10 +419,12 @@ static void portal_refresh(lv_timer_t *)
         strlcat(found, line, sizeof(found));
     }
     label_set(portal_karma_info, count ? "%s" : scanning ? "Listening..." : "No probe SSIDs discovered", found);
-    row_disabled(portal_start_row, st.active || scanning);
-    row_disabled(portal_stop_row, !st.active && !scanning);
-    row_disabled(portal_scan_row, st.active || scanning);
-    row_disabled(portal_karma_row, st.active || scanning || count == 0);
+    row_disabled(portal_start_row, st.active || scanning || cloning);
+    row_disabled(portal_stop_row, !st.active && !scanning && !cloning);
+    row_disabled(portal_scan_row, st.active || scanning || cloning);
+    row_disabled(portal_karma_row, st.active || scanning || cloning || count == 0);
+    row_disabled(portal_twin_start_row, st.active || scanning || cloning);
+    row_disabled(portal_clone_row, st.active || scanning || cloning);
 }
 static void portal_back(lv_event_t *) { close_native(portal_ui, web_hw_evilportal_stop, true); }
 static void portal_start(lv_event_t *)
@@ -429,6 +437,37 @@ static void portal_start(lv_event_t *)
     portal_refresh(NULL);
 }
 static void portal_stop_cb(lv_event_t *) { web_hw_evilportal_stop(); portal_refresh(NULL); }
+static void portal_verify_cb(lv_event_t *)
+{
+    web_hw_evilportal_set_verify(portal_verify && lv_obj_has_state(portal_verify, LV_STATE_CHECKED));
+}
+static void portal_twin_start(lv_event_t *)
+{
+    int ssid_idx = portal_ssid ? lv_dropdown_get_selected(portal_ssid) : 0;
+    int template_idx = web_hw_evilportal_template_id(portal_template ? lv_dropdown_get_selected(portal_template) : 0);
+    const char *manual = portal_ssid_text ? lv_textarea_get_text(portal_ssid_text) : "";
+    const char *ssid = manual && *manual ? manual : web_hw_evilportal_ssid_preset(ssid_idx);
+    const char *mac = portal_twin_bssid ? lv_textarea_get_text(portal_twin_bssid) : "";
+    uint8_t bssid[6];
+    int used = 0;
+    if (sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx%n", &bssid[0], &bssid[1], &bssid[2],
+               &bssid[3], &bssid[4], &bssid[5], &used) != 6 || used != 17) {
+        label_set(portal_error, "Enter the authorized lab AP BSSID"); return;
+    }
+    int channel = portal_twin_channel ? atoi(lv_textarea_get_text(portal_twin_channel)) : 0;
+    bool coherent = portal_coherent && lv_obj_has_state(portal_coherent, LV_STATE_CHECKED);
+    const char *psk = portal_twin_psk ? lv_textarea_get_text(portal_twin_psk) : "";
+    web_hw_evilportal_start_twin(template_idx, ssid, bssid, channel, coherent ? 3 : 0, coherent, coherent ? psk : NULL);
+    portal_refresh(NULL);
+}
+static void portal_clone_cb(lv_event_t *)
+{
+    int ssid_idx = portal_ssid ? lv_dropdown_get_selected(portal_ssid) : 0;
+    const char *manual = portal_ssid_text ? lv_textarea_get_text(portal_ssid_text) : "";
+    const char *ssid = manual && *manual ? manual : web_hw_evilportal_ssid_preset(ssid_idx);
+    web_hw_evilportal_clone_page(ssid);
+    portal_refresh(NULL);
+}
 static void portal_scan_cb(lv_event_t *) { web_hw_evilportal_karma_start(10); portal_refresh(NULL); }
 static void portal_karma_cb(lv_event_t *)
 {
@@ -464,7 +503,21 @@ static void portal_build(void)
     }
     portal_template = row_value(ui_create_card_dropdown(card, NULL, "Template", templates, 0, NULL));
     portal_start_row = action_row(card, LV_SYMBOL_PLAY, "Start portal", portal_start);
-    portal_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop portal / scan", portal_stop_cb);
+    portal_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop portal / scan / clone", portal_stop_cb);
+    card = ui_create_card(portal_ui.page, "Authorized lab twin");
+    portal_twin_bssid = text_input_row(card, "Target BSSID", "aa:bb:cc:dd:ee:ff", 17);
+    portal_twin_channel = text_input_row(card, "Channel", "1-13", 2);
+    lv_textarea_set_accepted_chars(portal_twin_channel, "0123456789");
+    portal_coherent = row_value(ui_create_card_switch(card, LV_SYMBOL_WIFI, "WPA2-coherent AP", false, NULL));
+    portal_twin_psk = text_input_row(card, "Known lab PSK", "Required for WPA2 twin", 63);
+    lv_textarea_set_password_mode(portal_twin_psk, true);
+    portal_verify = row_value(ui_create_card_switch(card, LV_SYMBOL_OK, "Verify captured PSKs", web_hw_evilportal_verify_enabled(), portal_verify_cb));
+    portal_twin_start_row = action_row(card, LV_SYMBOL_PLAY, "Start selected twin", portal_twin_start);
+    wrapped_text(card, "Open twin needs no PSK. Coherent mode uses your known WPA2 lab PSK and never silently downgrades security. Verification associates only with the selected BSSID.");
+    card = ui_create_card(portal_ui.page, "Clone safe lab portal");
+    portal_clone_row = action_row(card, LV_SYMBOL_DOWNLOAD, "Clone current SSID", portal_clone_cb);
+    portal_clone_info = wrapped_text(card, "No page cloned yet");
+    wrapped_text(card, "Joins the open lab SSID, fetches its captive page and saves only an already-safe self-contained POST /login page as cloned.html. Active or external content is rejected.");
     card = ui_create_card(portal_ui.page, "Passive probe discovery");
     portal_scan_row = action_row(card, LV_SYMBOL_REFRESH, "Scan probe requests (10 s)", portal_scan_cb);
     portal_karma_row = action_row(card, LV_SYMBOL_PLAY, "Start KARMA AP (most seen)", portal_karma_cb);

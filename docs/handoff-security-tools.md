@@ -37,6 +37,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - FIDO2 is simulator-only. Hardware does not advertise `fido2` and returns `503 fido_unavailable`; it never reports fake authentication success.
 - Portal has working standalone and open-twin lifecycles, typed validation, gateway/DNS/DHCP checks, live clients, safe JSON/CSV output, hidden-password default, working redaction and clear-capture consent.
 - P9.2 core adds persistent custom templates from `/sd/data/evilportal/portals/`: safe filenames, 64 KiB limit, required POST `/login` fields, no scripts/external resources, revalidation on selection and explicit malformed-file reporting. Passive KARMA discovery hops channels 1–13, aggregates directed-probe SSIDs/hits/unique clients/RSSI/channel and starts an open AP for a selected or most-seen SSID. Dynamic per-probe responses are not claimed.
+- P9.3 core adds asynchronous live cloning for authorized open lab APs. Responses are bounded to 64 KiB, accepted only if they already pass the safe static-template rules, written atomically as `cloned.html`, and reloaded into the SD catalog. WPA2-coherent twins require the operator-known lab PSK and never silently fall back to open mode. Captured PSKs are checked one at a time against only the selected BSSID/channel with per-capture `queued/checking/valid/invalid/error` states, timeout handling, redaction preserved, and saved station configuration restored after checks and teardown.
 - Offensive starts require `authorized:true` after UI confirmation. Normal Wi-Fi disconnection and reconnect behaviour is stated to the operator.
 - Deauth scans are asynchronous. Beacon generated/custom modes and real channel hopping work.
 
@@ -45,7 +46,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - Replaced fake macro pages with real calls into the same tool lifecycle used by HTTP.
 - Added channel/prefix/rate/template/target pickers, live counters and short lists, and readable error text.
 - Added on-watch text editing: Evil Portal accepts a manual SSID and Beacon Spam accepts a manual generated-SSID prefix; either overrides its preset when non-empty.
-- Evil Portal lists built-in and validated SD templates, runs a 10-second passive probe scan, shows discovered SSIDs/hits, and starts KARMA core using the most-seen result.
+- Evil Portal lists built-in and validated SD templates, clones safe lab pages, configures open/WPA2 twins with target BSSID/channel and optional PSK verification, runs a 10-second passive probe scan, shows discovered SSIDs/hits, and starts KARMA core using the most-seen result.
 - Added consent screens for Evil Portal, Deauth Flood and Beacon Spam.
 - Closing a radio test stops it and requests Wi-Fi reconnect.
 - FIDO2 shows an explicit unavailable explanation and no misleading controls.
@@ -62,16 +63,16 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 
 ## Verification
 
-Final successful runs after P9.2 core:
+Final successful runs after P9.3 core:
 
-- `pio run -e twatch_ultra` — **pass** (RAM 52.0%, flash 90.7%)
+- `pio run -e twatch_ultra` — **pass** (RAM 52.2%, flash 90.9%)
 - `pio run -e emulator_watch_ultra` — **pass**
-- `node web_api_test.mjs --dev-pin` — **258/258**
-- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **262/262**
-- `node web_ui_test.mjs` — **149/149**
-- `node web_ui_test.mjs --url http://localhost:8080` — **150/150**
+- `node web_api_test.mjs --dev-pin` — **270/270**
+- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **274/274**
+- `node web_ui_test.mjs` — **155/155**
+- `node web_ui_test.mjs --url http://localhost:8080` — **156/156**
 
-The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, validation, alerts, tracker persistence, FIDO unavailable behaviour, authorization, custom SD template validation/serving, passive probe aggregation, selected-SSID KARMA startup, captive POST, redaction, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, custom template selection, probe-discovery consent/results/KARMA startup and credential deletion.
+The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, validation, alerts, tracker persistence, FIDO unavailable behaviour, authorization, custom SD template validation/serving, safe clone success/failure, WPA2 PSK validation, per-capture valid/invalid verification with redaction, passive probe aggregation, selected-SSID KARMA startup, captive POST, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, custom template selection, asynchronous cloning, WPA2 twin startup, live PSK verification, probe-discovery consent/results/KARMA startup and credential deletion.
 
 ## Parity with `/Development/firmware` and `/Development/NucleoOs`
 
@@ -80,7 +81,7 @@ The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filte
 - **Presence:** core single-AP CSI sensing is implemented and simulator-tested. Real-radio accuracy, CSI frame rates, reconnects and environmental false positives remain unvalidated. The reference's optional Faro transmitter/second zone, alarm and history graph are not implemented.
 - **FIDO2:** NucleoOS has a real authenticator with user presence/PIN and credential protection. Here it is only a simulator fake; hardware capability is deliberately hidden.
 - **Sniffer:** filtering, AP discovery and basic WPA four-way-handshake/EAPOL breakdown are implemented and simulator-tested. Real capture correctness, loss rates, channel hopping and encrypted/high-throughput traffic still need radio validation; no specialised reference firmware modes are claimed.
-- **Evil Portal:** custom SD templates and passive probe discovery/selected-SSID KARMA core are implemented and simulator-tested. Real authorized probe traffic still needs validation. Dynamic per-probe KARMA responses, live page cloning, PSK verification and WPA2-coherent twin remain unavailable and fail explicitly.
+- **Evil Portal:** custom SD templates, safe-page cloning, per-capture PSK verification, open/WPA2 twins and passive probe discovery/selected-SSID KARMA core are implemented and simulator-tested. Real authorized clone traffic, correct/incorrect PSK association, WPA2 client association, reconnect behavior and probe traffic still need validation. Dynamic per-probe KARMA responses remain unavailable. Cloning deliberately rejects pages that are not already safe self-contained templates; it is not a general active-site copier.
 - **Offensive tools:** no reference-equivalent multi-target campaigns, injection-health/reconnect metrics or PMF-aware behaviour.
 - **Radio/on-wrist validation:** actual injection, promiscuous capture, DHCP, reconnect timing, touch layout and outdoor readability remain unverified on hardware.
 
@@ -89,7 +90,7 @@ Do not restore “full parity” wording until those gaps are closed and tested 
 ## Important API notes
 
 - Capabilities are `presence.csi` for motion/presence and `presence.peers` for ESP-NOW discovery. The root peer-discovery fields and routes remain compatible; CSI status is nested under `csi` in `GET /api/presence`.
-- Hardware omits `fido2` and live-clone/coherent-twin capabilities. `evil.portal.karma` advertises passive discovery + selected-SSID AP startup only; dynamic per-probe response is not implied.
+- Hardware omits `fido2`. `evil.portal.clone`, `evil.portal.verify` and `evil.portal.coherentTwin` advertise implemented contracts, not completed radio validation. `evil.portal.karma` advertises passive discovery + selected-SSID AP startup only; dynamic per-probe response is not implied.
 - Portal start routes, Deauth start and Beacon start require `authorized:true`.
 - Deauth status uses `targetBssid`, `targetStation`, `targetSsid` and `ratePps`.
 - Sniffer/Airspace include `drops`; sniffer adds `filter`, `seen`, frame-type/EAPOL/handshake counters and `aps`; Sentinel includes `kind`, `separated`, `scanning` and `error`.

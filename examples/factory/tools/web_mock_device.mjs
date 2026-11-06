@@ -58,7 +58,8 @@ for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'fido2',
-  'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings', 'deauth.flood', 'beacon.spam'];
+  'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
+  'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'beacon.spam'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -130,6 +131,7 @@ function resetPresenceCsi(active = false, threshold = 0.35) {
 resetPresenceCsi();
 let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
 let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [], customTemplates: [], templateError: null,
+  cloning: false, cloneName: '', cloneBytes: 0, cloneSsid: '', coherent: false,
   karmaScanning: false, karmaTimer: null, karmaProbes: [], html: '', settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
 const BUILTIN_PORTAL_TEMPLATES = ['Default (Wi-Fi Login)', 'Router Update', 'Google Sign-In', 'OAuth / Social Login'];
 let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null };
@@ -281,7 +283,8 @@ function fido2State() {
 }
 function evilportalState() {
   return { active: evilportal.active, mode: evilportal.mode || 0, ssid: evilportal.ssid, twinBssid: evilportal.twinBssid,
-    channel: evilportal.channel || 1, coherent: false, deauthFrames: evilportal.deauthFrames || 0,
+    channel: evilportal.channel || 1, coherent: evilportal.coherent, deauthFrames: evilportal.deauthFrames || 0,
+    cloning: evilportal.cloning, cloneName: evilportal.cloneName, cloneBytes: evilportal.cloneBytes, cloneSsid: evilportal.cloneSsid,
     clients: evilportal.clients, attempts: evilportal.attempts, confirmed: evilportal.confirmed || 0,
     started: evilportal.started || 0, dhcpsOk: true, probesTotal: evilportal.probesTotal || 0, error: evilportal.error || null,
     templates: [...BUILTIN_PORTAL_TEMPLATES.map((name, id) => ({ id, name, builtin: true })),
@@ -297,7 +300,8 @@ function validPortalHtml(html) {
     ["action='/login'", 'action="/login"', 'action=/login'].some(x => compact.includes(x)) &&
     ["name='username'", 'name="username"', 'name=username'].some(x => compact.includes(x)) &&
     ["name='password'", 'name="password"', 'name=password'].some(x => compact.includes(x)) &&
-    !['<script', '<iframe', '<object', '<embed', 'src=', 'href=', 'http:', 'https:'].some(x => compact.includes(x));
+    !['<script', '<iframe', '<object', '<embed', '<svg', '<math', '<meta', '<base', '<link',
+      'src=', 'srcset=', 'href=', 'http:', 'https:', 'javascript:', 'vbscript:', 'data:', '//', '\\', '&'].some(x => compact.includes(x));
 }
 async function reloadPortalTemplates() {
   const dir = join(ROOTS.sd, 'data/evilportal/portals');
@@ -328,6 +332,18 @@ function finishKarmaScan() {
   clearTimeout(evilportal.karmaTimer);
   evilportal.karmaTimer = null;
   evilportal.karmaScanning = false;
+}
+function addPortalCapture(capture) {
+  const cap = { mac: '', hostname: '', url: '/login', ts: nowEpoch(), ...capture,
+    verification: evilportal.settings.verify && evilportal.mode === 1 ? 'queued' : 'off' };
+  evilportal.captures.push(cap);
+  evilportal.attempts++;
+  if (cap.verification === 'queued') setTimeout(() => { if (cap.verification === 'queued') cap.verification = 'checking'; }, 0);
+  return cap;
+}
+function stopPortalClone() {
+  evilportal.cloning = false;
+  evilportal.cloneSsid = '';
 }
 function deauthfloodState() { return { ...deauthflood }; }
 function beaconspamState() { return { ...beaconspam }; }
@@ -1174,8 +1190,22 @@ async function toolsRoute(req, res, url, path) {
     const j = await readJSON(req);
     if (j?.action === 'creds') {
       if (!evilportal.active) return fail(res, 409, 'conflict', 'start the portal first');
-      evilportal.captures.push({ mac: j.mac || '00:00:00:00:00:01', hostname: '', url: j.url || '/login', username: j.username || 'user', password: j.password || 'pass', ts: nowEpoch() });
-      evilportal.attempts++;
+      addPortalCapture({ mac: j.mac || '00:00:00:00:00:01', username: j.username || 'user', password: j.password || 'pass' });
+    } else if (j?.action === 'clone') {
+      if (!evilportal.cloning) return fail(res, 409, 'conflict', 'start page cloning first');
+      if (j?.ok === false) { evilportal.error = 'Simulator clone request failed'; stopPortalClone(); return ok(res); }
+      const dir = join(ROOTS.sd, 'data/evilportal/portals');
+      await fsp.mkdir(dir, { recursive: true });
+      const html = `<!doctype html><html><head><title>Cloned lab portal</title></head><body><h1>Cloned: ${evilportal.cloneSsid}</h1><form method="post" action="/login"><input name="username"><input type="password" name="password"></form></body></html>`;
+      await fsp.writeFile(join(dir, 'cloned.html.tmp'), html);
+      await fsp.rename(join(dir, 'cloned.html.tmp'), join(dir, 'cloned.html'));
+      evilportal.cloneBytes = Buffer.byteLength(html); evilportal.cloneName = 'cloned.html'; evilportal.error = null;
+      stopPortalClone(); await reloadPortalTemplates();
+    } else if (j?.action === 'verify') {
+      const cap = evilportal.captures.find(c => c.verification === 'checking');
+      if (!cap) return fail(res, 409, 'conflict', 'no PSK verification is pending');
+      cap.verification = j?.error ? 'error' : j?.valid ? 'valid' : 'invalid';
+      if (!j?.error) evilportal.settings[cap.verification === 'valid' ? 'verifiedOk' : 'verifiedBad']++;
     } else if (j?.action === 'probe') {
       if (!evilportal.karmaScanning) return fail(res, 409, 'conflict', 'start probe discovery first');
       const ssid = j?.ssid;
@@ -1332,13 +1362,17 @@ async function toolsRoute(req, res, url, path) {
     const j = await readJSON(req);
     if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
     if (j?.gateway && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(j.gateway)) return fail(res, 400, 'bad_request', 'Gateway must be a valid IPv4 address');
-    if (evilportal.active || evilportal.karmaScanning) return fail(res, 409, 'conflict', 'already running');
-    if (j?.coherent) return fail(res, 503, 'unavailable', 'WPA2-coherent twin mode is not implemented');
+    if (evilportal.active || evilportal.karmaScanning || evilportal.cloning) return fail(res, 409, 'conflict', 'already running');
+    if (j?.coherent && (!path.endsWith('twin') || typeof j?.psk !== 'string' || j.psk.length < 8 || j.psk.length > 63 || !/^[\x20-\x7e]+$/.test(j.psk))) {
+      return fail(res, 400, 'bad_request', 'WPA2 twin requires the authorized lab AP PSK (8-63 ASCII bytes)');
+    }
+    if (path.endsWith('twin') && !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(j?.bssid || '')) return fail(res, 400, 'bad_request', 'invalid BSSID format');
     const template = selectPortalTemplate(j?.templateId ?? 0);
     if (!template) return fail(res, 400, 'bad_request', 'Unknown, changed or invalid SD portal template');
     evilportal.active = true; evilportal.mode = path.endsWith('twin') ? 1 : 0;
     evilportal.html = template.html;
     evilportal.ssid = j?.ssid || 'Free Wi-Fi'; evilportal.twinBssid = j?.bssid || '';
+    evilportal.coherent = !!j?.coherent; evilportal.settings.verifiedOk = 0; evilportal.settings.verifiedBad = 0;
     evilportal.channel = j?.channel || 1; evilportal.started = nowEpoch(); evilportal.attempts = 0;
     if (j?.gateway) evilportal.settings.gateway = j.gateway;
     return ok(res, { ssid: evilportal.ssid, mode: evilportal.mode ? 'twin' : 'standalone' });
@@ -1349,7 +1383,7 @@ async function toolsRoute(req, res, url, path) {
     if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
     const seconds = j?.seconds ?? 30;
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120) return fail(res, 400, 'bad_request', 'seconds must be 1-120');
-    if (evilportal.active || evilportal.karmaScanning) return fail(res, 409, 'conflict', 'Stop the portal or current probe discovery first');
+    if (evilportal.active || evilportal.karmaScanning || evilportal.cloning) return fail(res, 409, 'conflict', 'Stop the portal, page cloning or current probe discovery first');
     evilportal.karmaProbes = []; evilportal.karmaScanning = true;
     evilportal.karmaTimer = setTimeout(finishKarmaScan, seconds * 1000);
     return json(res, 202, { ok: true, scanning: true, seconds });
@@ -1361,28 +1395,39 @@ async function toolsRoute(req, res, url, path) {
     if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
     const choices = evilportal.karmaProbes.filter(p => !j?.ssid || p.ssid === j.ssid).sort((a, b) => b.hits - a.hits);
     if (!choices.length) return fail(res, 409, 'conflict', j?.ssid ? 'Requested SSID was not discovered' : 'Run probe discovery first');
+    if (evilportal.cloning) return fail(res, 409, 'conflict', 'Stop page cloning first');
     const template = selectPortalTemplate(j?.templateId ?? 0);
     if (!template) return fail(res, 400, 'bad_request', 'Unknown, changed or invalid SD portal template');
     if (j?.gateway && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(j.gateway)) return fail(res, 400, 'bad_request', 'Gateway must be a valid IPv4 address');
     if (j?.channel && (!Number.isInteger(j.channel) || j.channel < 1 || j.channel > 13)) return fail(res, 400, 'bad_request', 'channel must be 1-13');
     finishKarmaScan();
     evilportal.active = true; evilportal.mode = 2; evilportal.ssid = choices[0].ssid; evilportal.html = template.html;
+    evilportal.coherent = false; evilportal.settings.verifiedOk = 0; evilportal.settings.verifiedBad = 0;
     evilportal.channel = j?.channel || 1; evilportal.started = nowEpoch(); evilportal.attempts = 0;
     if (j?.gateway) evilportal.settings.gateway = j.gateway;
     return ok(res, { ssid: evilportal.ssid, mode: 'karma' });
   }
-  if (path === '/api/evilportal/clone' && m === 'POST') return fail(res, 503, 'unavailable', 'Live page cloning is not implemented');
+  if (path === '/api/evilportal/clone' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may clone this open lab network');
+    if (typeof j?.ssid !== 'string' || !j.ssid || Buffer.byteLength(j.ssid) > 32) return fail(res, 400, 'bad_request', 'SSID must be 1-32 UTF-8 bytes');
+    if (evilportal.active || evilportal.karmaScanning || evilportal.cloning) return fail(res, 409, 'conflict', 'Stop the portal, probe discovery or current clone first');
+    evilportal.cloning = true; evilportal.cloneSsid = j.ssid; evilportal.cloneName = ''; evilportal.cloneBytes = 0; evilportal.error = null;
+    return json(res, 202, { ok: true, cloning: true, ssid: j.ssid });
+  }
   if (path === '/api/evilportal/settings' && m === 'PUT') {
     const j = await readJSON(req);
-    if (j?.verify) return fail(res, 503, 'unavailable', 'PSK verification is not implemented');
-    evilportal.settings = { ...evilportal.settings, ...j }; return ok(res);
+    if ('verify' in (j || {}) && typeof j.verify !== 'boolean') return fail(res, 400, 'bad_request', 'verify must be boolean');
+    evilportal.settings = { ...evilportal.settings, ...j };
+    if (j?.verify === false) for (const c of evilportal.captures) if (['queued', 'checking'].includes(c.verification)) c.verification = 'off';
+    return ok(res);
   }
-  if (path === '/api/evilportal/stop' && m === 'POST') { finishKarmaScan(); evilportal.active = false; evilportal.clients = 0; return ok(res); }
+  if (path === '/api/evilportal/stop' && m === 'POST') { finishKarmaScan(); stopPortalClone(); evilportal.active = false; evilportal.coherent = false; evilportal.clients = 0; return ok(res); }
   if (path === '/api/evilportal/captures' && m === 'GET') return json(res, 200, { captures: evilportal.captures.map(c => {
     const mode = evilportal.settings.pwdMode, p = c.password;
-    return { ...c, password: mode === 2 ? '******' : mode === 1 && p.length > 2 ? p[0] + '*'.repeat(p.length - 2) + p.at(-1) : p };
+    return { ...c, password: mode === 2 ? '******' : mode === 3 ? `${p.length} chars` : mode === 1 && p.length > 2 ? p[0] + '*'.repeat(p.length - 2) + p.at(-1) : p };
   }) });
-  if (path === '/api/evilportal/clear' && m === 'POST') { evilportal.captures = []; evilportal.attempts = 0; return ok(res); }
+  if (path === '/api/evilportal/clear' && m === 'POST') { evilportal.captures = []; evilportal.attempts = 0; evilportal.settings.verifiedOk = 0; evilportal.settings.verifiedBad = 0; return ok(res); }
 
   // Deauth flood
   if (path === '/api/deauthflood' && m === 'GET') return json(res, 200, deauthfloodState());
@@ -1454,8 +1499,7 @@ const server = createServer(async (req, res) => {
           const form = new URLSearchParams((await readBody(req)).toString('utf8'));
           const username = form.get('username') || '', password = form.get('password') || '';
           if (!username || !password) return json(res, 400, { error: 'bad_request' });
-          evilportal.captures.push({ mac: '', hostname: '', url: '/login', username, password, ts: nowEpoch() });
-          evilportal.attempts++;
+          addPortalCapture({ username, password });
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
           return res.end('<!doctype html><title>Connected</title><h1>Connected</h1>');
         }

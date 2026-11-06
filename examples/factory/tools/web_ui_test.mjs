@@ -652,6 +652,31 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     check('portal reports active state', await waitFor('/ACTIVE/.test(document.querySelector(".evilportal")?.textContent || "")'));
     await js(`$t('.evilportal .btn', 'Stop').click();`);
     check('portal stops', await waitFor('/Portal stopped/.test(document.querySelector(".evilportal")?.textContent || "")'));
+    if (has('evil.portal.clone')) {
+      await js(`$type(document.querySelector('.evilportal input[aria-label="Portal SSID"]'), 'UI Open Lab'); $t('.evilportal .btn', 'Clone current SSID').click();`);
+      check('page cloning asks authorization', await waitFor('document.querySelector(".scrim") && /Clone an authorized lab portal/.test(document.querySelector(".scrim").textContent)'));
+      await js(`$t('.scrim .btn', 'I am authorized — clone').click();`);
+      check('desktop shows asynchronous cloning state', await waitFor('/Joining the open lab AP/.test(document.querySelector(".evilportal")?.textContent || "")'));
+      await call('POST', '/api/_dev/evilportal', { action: 'clone', ok: true });
+      check('cloned SD page appears in template catalog', await waitFor('/Saved cloned.html/.test(document.querySelector(".evilportal")?.textContent || "") && [...document.querySelectorAll(".evilportal select[aria-label=\'Portal template\'] option")].some(o => /cloned · SD/.test(o.textContent))'));
+    }
+    if (has('evil.portal.coherentTwin') && has('evil.portal.verify')) {
+      await call('PUT', '/api/evilportal/settings', { verify: true, pwdMode: 2 });
+      await js(`$t('.evilportal .tab', 'Evil Twin').click();
+        $type(document.querySelector('.evilportal input[aria-label="Target AP BSSID"]'), '02:00:00:00:00:60');
+        document.querySelector('.evilportal input[aria-label="Start WPA2-coherent twin"]').click();
+        $type(document.querySelector('.evilportal input[aria-label="Authorized lab AP PSK"]'), 'lab-password');
+        $t('.evilportal .btn', 'Start portal').click();`);
+      await waitFor('document.querySelector(".scrim")');
+      await js(`$t('.scrim .btn', 'I am authorized — start').click();`);
+      check('desktop starts WPA2-coherent twin', await waitFor('/WPA2-coherent twin · UI Open Lab/.test(document.querySelector(".evilportal")?.textContent || "")'));
+      await call('POST', '/api/_dev/evilportal', { action: 'creds', username: 'lab-user', password: 'lab-password' });
+      check('desktop shows pending PSK verification', await waitFor('/PSK checking/.test(document.querySelector(".evilportal")?.textContent || "")'));
+      await call('POST', '/api/_dev/evilportal', { action: 'verify', valid: true });
+      check('desktop shows valid PSK result without exposing password', await waitFor('[...document.querySelectorAll(".evilportal .list")].some(x => x.textContent.includes("lab-user") && /PSK valid/.test(x.textContent) && !x.textContent.includes("lab-password"))'));
+      await js(`$t('.evilportal .btn', 'Stop').click();`);
+      await waitFor('/Portal stopped/.test(document.querySelector(".evilportal")?.textContent || "")');
+    }
     if (has('evil.portal.karma')) {
       await js(`$t('.evilportal .tab', 'KARMA').click(); $t('.evilportal .btn', 'Scan probes').click();`);
       check('probe scan asks authorization', await waitFor('document.querySelector(".scrim") && /Scan nearby probe requests/.test(document.querySelector(".scrim").textContent)'));
@@ -668,6 +693,7 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
       await js(`$t('.evilportal .btn', 'Stop').click();`);
     }
     await call('DELETE', '/api/files?path=%2Fsd%2Fdata%2Fevilportal%2Fportals%2Fuitest.html&recursive=1');
+    await call('DELETE', '/api/files?path=%2Fsd%2Fdata%2Fevilportal%2Fportals%2Fcloned.html&recursive=1');
     await call('POST', '/api/evilportal/templates/reload', {});
   }
   if (has('deauth.flood')) {

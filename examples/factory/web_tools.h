@@ -264,8 +264,8 @@ bool web_hw_evilportal_template_is_builtin(int idx);
 int  web_hw_evilportal_ssid_count(void);
 const char *web_hw_evilportal_ssid_preset(int idx);
 
-/* Live page cloning: join open_ssid, fetch its captive-portal page, save as cloned.html */
-int  web_hw_evilportal_clone_page(const char *open_ssid);  /* >0 bytes saved, -1 portal running, -2 join failed, -3 no captive */
+/* Live page cloning: asynchronously join open_ssid, fetch its safe captive page, save as cloned.html. */
+int  web_hw_evilportal_clone_page(const char *open_ssid);  /* 0 started, negative failure; poll cloning/status */
 bool web_hw_evilportal_cloning(void);
 const char *web_hw_evilportal_clone_name(void);
 
@@ -292,7 +292,7 @@ typedef struct {
 bool web_hw_evilportal_start(int template_idx, const char *ssid, const char *gateway_ip);
 /* Start evil-twin: clone real AP on its channel, deauth real bssid, serve template */
 bool web_hw_evilportal_start_twin(int template_idx, const char *ssid, const uint8_t bssid[6],
-                                   int channel, int authmode, bool coherent);
+                                   int channel, int authmode, bool coherent, const char *psk = NULL);
 /* Start KARMA core: open an AP using the most frequently discovered SSID.
  * Dynamic per-probe responses remain a separate hardware-validation gap. */
 bool web_hw_evilportal_start_karma(int template_idx);
