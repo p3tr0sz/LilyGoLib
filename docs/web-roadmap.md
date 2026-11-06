@@ -117,12 +117,14 @@ The ❌ rows are tracked for parity completeness only: this repo ships the **det
 
 ## Testing
 
-Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, Files, SD removal, Settings, Screen, every P4 and P5 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
+Full build/run/test workflow (the two repos, the fast mock loop, gotchas): **`web-dev.md`**.
+
+Two tests in `examples/factory/tools/`: `web_api_test.mjs` checks the API, `web_ui_test.mjs` clicks through the desktop in headless Chrome (rescue install from an empty card, pairing, the OS shell — launchpad/dock/windows/tray/system menu, Files, SD removal, Settings, Screen, every P4 and P5 tool app, phone layout). The API test runs against three targets, the UI test against the first two (it needs the `/api/_dev` hooks):
 
 | Target | What runs | How |
 |---|---|---|
 | PC, no simulator | `web_mock_device.mjs --dev` (serves `web/` live, no build step) | `node web_api_test.mjs --dev-pin`, `node web_ui_test.mjs` |
-| LVGL simulator (`emulator_watch_ultra`) | the real web code, built for the desktop | `pio run -e emulator_watch_ultra -t execute`, then `node web_api_test.mjs --url http://localhost:8080 --dev-pin` and `node web_ui_test.mjs --url http://localhost:8080`. Put the desktop on the simulated card with `python3 web_build.py --install <dir>/sim_sd`, or install it through `/rescue` |
+| LVGL simulator (`emulator_watch_ultra`) | the real web code, built for the desktop | **from the `LilyGoLib-PlatformIO` repo** `pio run -e emulator_watch_ultra -t execute`, then `node web_api_test.mjs --url http://localhost:8080 --dev-pin` and `node web_ui_test.mjs --url http://localhost:8080`. Put the desktop on the simulated card with `python3 web_build.py --install <platformio-repo>/sim_sd`, or install it through `/rescue` |
 | Watch | the same code on `esp_http_server` | `node web_api_test.mjs --url http://<watch-ip> --pin <pin>` |
 
 How the simulator runs the real web code:
