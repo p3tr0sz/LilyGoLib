@@ -33,7 +33,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - Sniffer now resolves `/sd` paths through `web_fs_resolve`, creates parent directories, writes valid PCAP/radiotap data, reports drops/errors, and stops safely at `max_bytes`. It now also offers typed PCAP filters (`all`, `management`, `data`, `beacons`, `probes`, `eapol`), observed-vs-saved counters, an AP table, and EAPOL/four-way-handshake detection in the API, desktop and watch UI.
 - Airspace reports deauth/beacon/flood/twin/broadcast counters and emits detailed events.
 - Sentinel uses passive scans, classifies Find My/SmartTag/Tile/Chipolo, and requires a persistence window. “Persistent” is explicitly described as a heuristic, not proof of stalking.
-- ESP-NOW Presence is now exposed honestly as `presence.peers` / **Nearby Peers**, with identified arrival/departure events.
+- Presence now combines Wi-Fi CSI motion/presence sensing (`presence.csi`) with the existing ESP-NOW Nearby Peers (`presence.peers`). CSI uses AP-sourced L-LTF amplitudes, AGC-independent profile correlation, 32-frame calibration, a normalized motion score and a 10-second presence hold. It includes radio ownership, gateway traffic generation, power-save restoration, reconnect/recalibration handling, native/desktop controls, state events and deterministic synthetic-profile tests.
 - FIDO2 is simulator-only. Hardware does not advertise `fido2` and returns `503 fido_unavailable`; it never reports fake authentication success.
 - Portal has working standalone and open-twin lifecycles, typed validation, gateway/DNS/DHCP checks, live clients, safe JSON/CSV output, hidden-password default, working redaction and clear-capture consent.
 - Offensive starts require `authorized:true` after UI confirmation. Normal Wi-Fi disconnection and reconnect behaviour is stated to the operator.
@@ -43,6 +43,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 
 - Replaced fake macro pages with real calls into the same tool lifecycle used by HTTP.
 - Added channel/prefix/rate/template/target pickers, live counters and short lists, and readable error text.
+- Added on-watch text editing: Evil Portal accepts a manual SSID and Beacon Spam accepts a manual generated-SSID prefix; either overrides its preset when non-empty.
 - Added consent screens for Evil Portal, Deauth Flood and Beacon Spam.
 - Closing a radio test stops it and requests Wi-Fi reconnect.
 - FIDO2 shows an explicit unavailable explanation and no misleading controls.
@@ -61,20 +62,20 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 
 Final successful runs:
 
-- `pio run -e twatch_ultra` — **pass**
+- `pio run -e twatch_ultra` — **pass** (RAM 49.7%, flash 90.5%)
 - `pio run -e emulator_watch_ultra` — **pass**
-- `node web_api_test.mjs --dev-pin` — **231/231**
-- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **234/234**
-- `node web_ui_test.mjs` — **138/138**
-- `node web_ui_test.mjs --url http://localhost:8080` — **139/139**
+- `node web_api_test.mjs --dev-pin` — **246/246**
+- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **250/250**
+- `node web_ui_test.mjs` — **141/141**
+- `node web_ui_test.mjs --url http://localhost:8080` — **142/142**
 
-The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, validation, radio conflicts, alerts, tracker persistence, FIDO unavailable behaviour, authorization, captive POST, redaction, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, consent and credential deletion.
+The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, validation, alerts, tracker persistence, FIDO unavailable behaviour, authorization, captive POST, redaction, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, consent and credential deletion.
 
 ## Parity with `/Development/firmware` and `/Development/NucleoOs`
 
 **Still not full parity.** Remaining material gaps:
 
-- **Presence:** NucleoOS uses Wi-Fi CSI motion/presence sensing. This firmware offers ESP-NOW peer discovery only.
+- **Presence:** core single-AP CSI sensing is implemented and simulator-tested. Real-radio accuracy, CSI frame rates, reconnects and environmental false positives remain unvalidated. The reference's optional Faro transmitter/second zone, alarm and history graph are not implemented.
 - **FIDO2:** NucleoOS has a real authenticator with user presence/PIN and credential protection. Here it is only a simulator fake; hardware capability is deliberately hidden.
 - **Sniffer:** filtering, AP discovery and basic WPA four-way-handshake/EAPOL breakdown are implemented and simulator-tested. Real capture correctness, loss rates, channel hopping and encrypted/high-throughput traffic still need radio validation; no specialised reference firmware modes are claimed.
 - **Evil Portal:** no KARMA probe capture, live page cloning, PSK verification, WPA2-coherent twin or custom SD template loading. These routes fail explicitly instead of pretending to work.
@@ -85,7 +86,7 @@ Do not restore “full parity” wording until those gaps are closed and tested 
 
 ## Important API notes
 
-- Capability is `presence.peers`, not `presence`.
+- Capabilities are `presence.csi` for motion/presence and `presence.peers` for ESP-NOW discovery. The root peer-discovery fields and routes remain compatible; CSI status is nested under `csi` in `GET /api/presence`.
 - Hardware omits `fido2` and all KARMA/clone capabilities.
 - Portal start routes, Deauth start and Beacon start require `authorized:true`.
 - Deauth status uses `targetBssid`, `targetStation`, `targetSsid` and `ratePps`.

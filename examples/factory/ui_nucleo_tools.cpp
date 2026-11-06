@@ -63,6 +63,19 @@ static lv_obj_t *action_row(lv_obj_t *card, const char *icon, const char *text, 
     return ui_create_card_button(card, icon, NULL, text, cb);
 }
 
+/* ui_create_card_item() turns this into the watch's full-screen keyboard page.
+ * On other factory UIs it remains a normal one-line text field. */
+static lv_obj_t *text_input_row(lv_obj_t *card, const char *title, const char *placeholder, uint32_t max_length)
+{
+    lv_obj_t *ta = lv_textarea_create(lv_obj_create(card));
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_max_length(ta, max_length);
+    lv_textarea_set_placeholder_text(ta, placeholder);
+    lv_obj_set_width(ta, 150);
+    ui_create_card_item(card, LV_SYMBOL_EDIT, title, ta);
+    return ta;
+}
+
 static void row_disabled(lv_obj_t *row, bool disabled)
 {
     lv_obj_t *obj = row_value(row);
@@ -257,20 +270,39 @@ static void enter_sentinel(lv_obj_t *parent)
 }
 static void exit_sentinel(lv_obj_t *) { exit_native(sentinel_ui, web_hw_sentinel_stop); }
 
-/* ================================================================ Nearby peers */
+/* ================================================================ Presence: Wi-Fi CSI + nearby peers */
 
 static native_page_t presence_ui;
 static lv_obj_t *presence_state, *presence_count, *presence_error, *presence_start_row, *presence_stop_row, *presence_rows[4];
+static lv_obj_t *csi_state, *csi_metrics, *csi_network, *csi_error, *csi_threshold;
+static lv_obj_t *csi_start_row, *csi_stop_row, *csi_calibrate_row;
+static const float CSI_THRESHOLDS[] = { 0.20f, 0.35f, 0.55f };
+
 static void presence_refresh(lv_timer_t *)
 {
     drive_native(presence_ui);
     static web_hw_presence_t st;
     web_hw_presence_status(&st);
+    web_hw_csi_presence_t csi;
+    web_hw_presence_csi_status(&csi);
+    label_set(csi_state, !csi.active ? "Stopped" : csi.calibrating ? "Calibrating" : csi.motion ? "Motion" : csi.present ? "Present" : "Clear");
+    label_set(csi_metrics, "%d%% motion · %lu/s · drop %lu", (int)(csi.score * 100 + 0.5f),
+              (unsigned long)csi.rate, (unsigned long)csi.drops);
+    label_set(csi_network, "%s · ch %d · %d dBm", csi.ssid[0] ? csi.ssid : "No network", csi.channel, csi.rssi);
+    label_set(csi_error, csi.error ? csi.error : "Calibrate in an empty room. Presence is an estimate.");
+    row_disabled(csi_start_row, csi.active);
+    row_disabled(csi_stop_row, !csi.active);
+    row_disabled(csi_calibrate_row, !csi.active);
+    if (csi_threshold) {
+        if (csi.active) lv_obj_add_state(csi_threshold, LV_STATE_DISABLED);
+        else lv_obj_remove_state(csi_threshold, LV_STATE_DISABLED);
+    }
+
     int now = 0;
     for (int i = 0; i < st.peer_count; i++) if (st.peers[i].present) now++;
     label_set(presence_state, st.active ? "Discovering" : "Stopped");
     label_set(presence_count, "%d now / %d ever", now, st.peers_ever);
-    label_set(presence_error, st.error ? st.error : "ESP-NOW peers, not CSI motion");
+    label_set(presence_error, st.error ? st.error : "Separate ESP-NOW watch/peer discovery");
     row_disabled(presence_start_row, st.active);
     row_disabled(presence_stop_row, !st.active);
     int shown = 0;
@@ -280,27 +312,52 @@ static void presence_refresh(lv_timer_t *)
     }
     for (; shown < 4; shown++) label_set(presence_rows[shown], "");
 }
-static void presence_back(lv_event_t *) { close_native(presence_ui, web_hw_presence_stop, true); }
+static bool presence_stop_all(void)
+{
+    web_hw_presence_csi_stop();
+    web_hw_presence_stop();
+    return true;
+}
+static void presence_back(lv_event_t *) { close_native(presence_ui, presence_stop_all, true); }
 static void presence_start(lv_event_t *) { web_hw_presence_start(); presence_refresh(NULL); }
 static void presence_stop_cb(lv_event_t *) { web_hw_presence_stop(); presence_refresh(NULL); }
+static void csi_start(lv_event_t *)
+{
+    int selected = csi_threshold ? (int)lv_dropdown_get_selected(csi_threshold) : 1;
+    if (selected < 0 || selected > 2) selected = 1;
+    web_hw_presence_csi_start(CSI_THRESHOLDS[selected]);
+    presence_refresh(NULL);
+}
+static void csi_stop(lv_event_t *) { web_hw_presence_csi_stop(); presence_refresh(NULL); }
+static void csi_calibrate(lv_event_t *) { web_hw_presence_csi_calibrate(); presence_refresh(NULL); }
 static void enter_presence(lv_obj_t *parent)
 {
     presence_ui = {};
     presence_ui.tool = &web_tool_presence;
-    presence_ui.page = ui_create_app_page(parent, "Nearby Peers", presence_back);
-    lv_obj_t *card = ui_create_card(presence_ui.page, "ESP-NOW discovery");
-    presence_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
+    presence_ui.page = ui_create_app_page(parent, "Presence", presence_back);
+    lv_obj_t *card = ui_create_card(presence_ui.page, "Wi-Fi CSI motion");
+    csi_state = info_row(card, LV_SYMBOL_EYE_OPEN, "State", "Stopped");
+    csi_metrics = info_row(card, LV_SYMBOL_WIFI, "Activity", "0% motion · 0/s");
+    csi_network = wrapped_text(card, "No network");
+    csi_error = wrapped_text(card, "Calibrate in an empty room. Presence is an estimate.", true);
+    csi_threshold = row_value(ui_create_card_dropdown(card, NULL, "Sensitivity",
+        "High (0.20)\nBalanced (0.35)\nLow (0.55)", 1, NULL));
+    csi_start_row = action_row(card, LV_SYMBOL_PLAY, "Start CSI sensing", csi_start);
+    csi_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop CSI sensing", csi_stop);
+    csi_calibrate_row = action_row(card, LV_SYMBOL_REFRESH, "Recalibrate", csi_calibrate);
+    wrapped_text(card, "Uses changes in Wi-Fi channel response from the connected 2.4 GHz router. Keep watch and router fixed.");
+
+    card = ui_create_card(presence_ui.page, "Nearby ESP-NOW peers");
+    presence_state = info_row(card, LV_SYMBOL_WIFI, "Discovery", "Stopped");
     presence_count = info_row(card, LV_SYMBOL_LIST, "Peers", "0");
-    presence_error = wrapped_text(card, "ESP-NOW peers, not CSI motion");
-    card = ui_create_card(presence_ui.page, "Control");
+    presence_error = wrapped_text(card, "Separate ESP-NOW watch/peer discovery");
     presence_start_row = action_row(card, LV_SYMBOL_PLAY, "Start discovery", presence_start);
     presence_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop discovery", presence_stop_cb);
-    card = ui_create_card(presence_ui.page, "Nearby now");
     for (int i = 0; i < 4; i++) presence_rows[i] = wrapped_text(card, "");
     presence_ui.timer = lv_timer_create(presence_refresh, 1000, NULL);
     presence_refresh(NULL);
 }
-static void exit_presence(lv_obj_t *) { exit_native(presence_ui, web_hw_presence_stop); }
+static void exit_presence(lv_obj_t *) { exit_native(presence_ui, presence_stop_all); }
 
 /* ================================================================ FIDO2 (honest unavailable state) */
 
@@ -333,7 +390,7 @@ static void exit_fido2(lv_obj_t *) { exit_native(fido_ui, NULL); }
 
 static native_page_t portal_ui;
 static bool portal_consented = false;
-static lv_obj_t *portal_ssid, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_error;
+static lv_obj_t *portal_ssid, *portal_ssid_text, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_error;
 static lv_obj_t *portal_start_row, *portal_stop_row;
 static void portal_build(void);
 static void portal_refresh(lv_timer_t *)
@@ -354,7 +411,9 @@ static void portal_start(lv_event_t *)
 {
     int ssid_idx = portal_ssid ? lv_dropdown_get_selected(portal_ssid) : 0;
     int template_idx = portal_template ? lv_dropdown_get_selected(portal_template) : 0;
-    web_hw_evilportal_start(template_idx, web_hw_evilportal_ssid_preset(ssid_idx), web_hw_evilportal_gateway());
+    const char *manual = portal_ssid_text ? lv_textarea_get_text(portal_ssid_text) : "";
+    const char *ssid = manual && *manual ? manual : web_hw_evilportal_ssid_preset(ssid_idx);
+    web_hw_evilportal_start(template_idx, ssid, web_hw_evilportal_gateway());
     portal_refresh(NULL);
 }
 static void portal_stop_cb(lv_event_t *) { web_hw_evilportal_stop(); portal_refresh(NULL); }
@@ -377,7 +436,8 @@ static void portal_build(void)
         if (i) strlcat(ssids, "\n", sizeof(ssids));
         strlcat(ssids, web_hw_evilportal_ssid_preset(i), sizeof(ssids));
     }
-    portal_ssid = row_value(ui_create_card_dropdown(card, NULL, "SSID", ssids, 0, NULL));
+    portal_ssid = row_value(ui_create_card_dropdown(card, NULL, "SSID preset", ssids, 0, NULL));
+    portal_ssid_text = text_input_row(card, "Manual SSID", "Empty: use preset", 32);
     char templates[192] = "";
     for (int i = 0; i < web_hw_evilportal_template_count(); i++) {
         if (i) strlcat(templates, "\n", sizeof(templates));
@@ -386,7 +446,7 @@ static void portal_build(void)
     portal_template = row_value(ui_create_card_dropdown(card, NULL, "Template", templates, 0, NULL));
     portal_start_row = action_row(card, LV_SYMBOL_PLAY, "Start portal", portal_start);
     portal_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop portal", portal_stop_cb);
-    wrapped_text(card, "Standalone mode on watch. Passwords stay hidden in the browser by default. Closing this page stops the AP.");
+    wrapped_text(card, "Standalone mode on watch. Manual SSID overrides the preset. Passwords stay hidden in the browser by default. Closing this page stops the AP.");
 }
 static void enter_evilportal(lv_obj_t *parent)
 {
@@ -497,7 +557,7 @@ static void exit_deauthflood(lv_obj_t *) { exit_native(deauth_ui, web_hw_deauthf
 
 static native_page_t beacon_ui;
 static bool beacon_consented = false;
-static lv_obj_t *beacon_prefix, *beacon_count, *beacon_channel, *beacon_state, *beacon_sent, *beacon_error;
+static lv_obj_t *beacon_prefix, *beacon_prefix_text, *beacon_count, *beacon_channel, *beacon_state, *beacon_sent, *beacon_error;
 static lv_obj_t *beacon_start_row, *beacon_stop_row;
 static void beacon_build(void);
 static void beacon_refresh(lv_timer_t *)
@@ -518,7 +578,9 @@ static void beacon_start(lv_event_t *)
     static const char *prefixes[] = {"FreeNet", "LabTest", "BeaconTest"};
     static const int counts[] = {20, 50, 100};
     int channel = beacon_channel ? (int)lv_dropdown_get_selected(beacon_channel) : 0;
-    web_hw_beaconspam_start(channel, counts[lv_dropdown_get_selected(beacon_count)], prefixes[lv_dropdown_get_selected(beacon_prefix)]);
+    const char *manual = beacon_prefix_text ? lv_textarea_get_text(beacon_prefix_text) : "";
+    const char *prefix = manual && *manual ? manual : prefixes[lv_dropdown_get_selected(beacon_prefix)];
+    web_hw_beaconspam_start(channel, counts[lv_dropdown_get_selected(beacon_count)], prefix);
     beacon_refresh(NULL);
 }
 static void beacon_stop_cb(lv_event_t *) { web_hw_beaconspam_stop(); beacon_refresh(NULL); }
@@ -530,13 +592,14 @@ static void beacon_build(void)
     beacon_sent = info_row(card, LV_SYMBOL_LIST, "Accepted beacons", "0");
     beacon_error = wrapped_text(card, "", true);
     card = ui_create_card(beacon_ui.page, "Generated beacons");
-    beacon_prefix = row_value(ui_create_card_dropdown(card, NULL, "Prefix", "FreeNet\nLabTest\nBeaconTest", 0, NULL));
+    beacon_prefix = row_value(ui_create_card_dropdown(card, NULL, "Prefix preset", "FreeNet\nLabTest\nBeaconTest", 0, NULL));
+    beacon_prefix_text = text_input_row(card, "Manual prefix", "Empty: use preset", 20);
     beacon_count = row_value(ui_create_card_dropdown(card, NULL, "SSID count", "20\n50\n100", 0, NULL));
     static const char channels[] = "Hop all\nChannel 1\nChannel 2\nChannel 3\nChannel 4\nChannel 5\nChannel 6\nChannel 7\nChannel 8\nChannel 9\nChannel 10\nChannel 11\nChannel 12\nChannel 13";
     beacon_channel = row_value(ui_create_card_dropdown(card, NULL, "Channel", channels, 0, NULL));
     beacon_start_row = action_row(card, LV_SYMBOL_PLAY, "Start test", beacon_start);
     beacon_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop and reconnect", beacon_stop_cb);
-    wrapped_text(card, "Generated SSIDs on watch; custom lists are configured in the browser. Closing this page stops injection.", true);
+    wrapped_text(card, "Generated SSIDs on watch; manual prefix overrides the preset. Custom lists are configured in the browser. Closing this page stops injection.", true);
 }
 static void enter_beaconspam(lv_obj_t *parent)
 {

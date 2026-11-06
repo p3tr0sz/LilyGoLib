@@ -237,7 +237,7 @@ bool web_hw_ota_rollback(void);                             /* boot the other sl
  * Wi-Fi sniffer — passive promiscuous capture → .pcap on the SD
  * Airspace      — Wi-Fi attack detection from passive capture (deauth floods, evil-twin, beacon floods)
  * Sentinel      — BLE anti-stalking: passive scan flags devices that follow you
- * Presence      — ESP-NOW "nearby devices" (extends Link)
+ * Presence      — Wi-Fi CSI motion/presence + ESP-NOW nearby devices
  * FIDO2         — USB/BLE FIDO2/U2F authenticator
  * BadUSB lib    — DuckyScript payload library (extends usb.hid)
  * BLE tools     — extended BLE scan (services, characteristics, advertise)
@@ -453,7 +453,7 @@ bool web_hw_sentinel_start(void);
 bool web_hw_sentinel_stop(void);
 void web_hw_sentinel_status(web_hw_sentinel_t *out);
 
-/* Nearby peers over ESP-NOW (not the reference project's CSI motion detector). */
+/* Nearby peers over ESP-NOW, plus Wi-Fi CSI motion/presence sensing. */
 typedef struct {
     char mac[18];
     char name[64];
@@ -476,6 +476,27 @@ typedef struct {
 bool web_hw_presence_start(void);
 bool web_hw_presence_stop(void);
 void web_hw_presence_status(web_hw_presence_t *out);
+
+typedef struct {
+    bool active;
+    bool calibrating;
+    bool present;               /* latched for 10 s after the latest motion */
+    bool motion;
+    float score;                /* normalized 0..1 */
+    float threshold;            /* motion threshold, 0.05..0.95 */
+    uint32_t samples;
+    uint32_t rate;              /* accepted CSI frames in the last second */
+    uint32_t drops;             /* raw samples dropped by the driver/UI queue */
+    int rssi;
+    int channel;
+    long long started_epoch;
+    char ssid[33];
+    const char *error;
+} web_hw_csi_presence_t;
+bool web_hw_presence_csi_start(float threshold);
+bool web_hw_presence_csi_stop(void);
+bool web_hw_presence_csi_calibrate(void);
+void web_hw_presence_csi_status(web_hw_csi_presence_t *out);
 
 /* FIDO2 — security key */
 typedef struct {

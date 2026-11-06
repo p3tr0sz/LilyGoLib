@@ -57,7 +57,7 @@ for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
-  'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'fido2',
+  'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.twin', 'evil.portal.settings', 'deauth.flood', 'beacon.spam'];
 
 // ---- state ----
@@ -120,6 +120,14 @@ let sniffer = { active: false, packets: 0, drops: 0, bytes: 24, channel: null, f
 let airspace = { active: false, deauth_total: 0, deauth_floods: 0, beacon_total: 0, beacon_floods: 0, evil_twins: 0, started: 0 };
 let sentinel = { active: false, started: 0, device_count: 0, devices: [] };
 let presence = { active: false, started: 0, peers_ever: 0, peers: [], history: [] };
+let presenceCsi = {};
+function resetPresenceCsi(active = false, threshold = 0.35) {
+  presenceCsi = { active, state: active ? 'calibrating' : 'stopped', calibrating: active, present: false, motion: false,
+    score: 0, level: 0, noise: 0.005, threshold, samples: 0, rate: 0, drops: 0, rssi: -90,
+    channel: active ? 1 : null, ssid: active ? 'mock-wifi' : null, started: active ? nowEpoch() : 0,
+    last_motion_ms: 0, error: null, calibrationFrames: 0, over: 0, clock: Date.now() };
+}
+resetPresenceCsi();
 let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
 let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [], settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
 let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null };
@@ -263,7 +271,8 @@ function sentinelState() {
   return { active: sentinel.active, scanning: false, started: sentinel.started, device_count: sentinel.devices.length, devices: sentinel.devices, error: null };
 }
 function presenceState() {
-  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history, error: null };
+  const { calibrationFrames, over, clock, ...csi } = presenceCsi;
+  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history, error: null, csi };
 }
 function fido2State() {
   return { available: fido2.available, state: fido2.state, credentials: fido2.credentials, error: fido2.available ? null : 'Simulated FIDO2 transport is disabled' };
@@ -1069,6 +1078,41 @@ async function toolsRoute(req, res, url, path) {
     if (j?.reset) { fido2.creds = []; fido2.credentials = 0; }
     return ok(res);
   }
+  if (DEV && path === '/api/_dev/presence-csi' && m === 'POST') {
+    const j = await readJSON(req);
+    if (!presenceCsi.active) return fail(res, 409, 'conflict', 'start CSI sensing first');
+    const pattern = j?.pattern || 'stable', count = j?.count ?? 1, advance = j?.advance_ms || 0;
+    if (!['stable', 'motion'].includes(pattern)) return fail(res, 400, 'bad_request', 'pattern must be stable or motion');
+    if (!Number.isInteger(count) || count < 0 || count > 500 || !Number.isFinite(advance) || advance < 0 || advance > 600000)
+      return fail(res, 400, 'bad_request', 'count: 0-500; advance_ms: 0-600000');
+    const oldPresent = presenceCsi.present;
+    for (let frame = 0; frame < count; frame++) {
+      const wasCalibrating = presenceCsi.calibrating, wasMotion = presenceCsi.motion;
+      presenceCsi.samples++;
+      presenceCsi.clock += 20;
+      presenceCsi.rssi = Number(j?.rssi ?? -50);
+      if (presenceCsi.calibrating) {
+        presenceCsi.calibrationFrames++;
+        presenceCsi.score = 0;
+        if (presenceCsi.calibrationFrames >= 32) { presenceCsi.calibrating = false; presenceCsi.state = 'clear'; }
+      } else {
+        presenceCsi.motion = pattern === 'motion' && ++presenceCsi.over >= 3;
+        if (pattern !== 'motion') presenceCsi.over = 0;
+        presenceCsi.score = pattern === 'motion' ? Math.min(1, 0.4 + frame / 20) : 0.01;
+        presenceCsi.level = pattern === 'motion' ? presenceCsi.score * 0.08 : 0.004;
+        if (presenceCsi.motion) { presenceCsi.present = true; presenceCsi.last_motion_ms = presenceCsi.clock; }
+        presenceCsi.state = presenceCsi.motion ? 'motion' : presenceCsi.present ? 'present' : 'clear';
+      }
+      if (wasCalibrating !== presenceCsi.calibrating) publish('presence.csi', { event: 'calibrated', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
+      if (wasMotion !== presenceCsi.motion) publish('presence.csi', { event: presenceCsi.motion ? 'motion' : 'still', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
+    }
+    presenceCsi.clock += advance;
+    presenceCsi.rate = count;
+    if (presenceCsi.present && !presenceCsi.motion && presenceCsi.clock - presenceCsi.last_motion_ms > 10000) presenceCsi.present = false;
+    presenceCsi.state = presenceCsi.calibrating ? 'calibrating' : presenceCsi.motion ? 'motion' : presenceCsi.present ? 'present' : 'clear';
+    if (oldPresent !== presenceCsi.present) publish('presence.csi', { event: presenceCsi.present ? 'present' : 'clear', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
+    return ok(res);
+  }
   if (DEV && path === '/api/_dev/presence' && m === 'POST') {
     const j = await readJSON(req);
     if (!presence.active) return fail(res, 409, 'conflict', 'start discovery first');
@@ -1184,10 +1228,23 @@ async function toolsRoute(req, res, url, path) {
   if (path === '/api/sentinel/start' && m === 'POST') { sentinel.active = true; sentinel.started = nowEpoch(); sentinel.devices = []; return ok(res); }
   if (path === '/api/sentinel/stop' && m === 'POST') { sentinel.active = false; return ok(res); }
 
-  // Presence
+  // Presence: Wi-Fi CSI sensing plus nearby ESP-NOW peers
   if (path === '/api/presence' && m === 'GET') return json(res, 200, presenceState());
   if (path === '/api/presence/start' && m === 'POST') { presence.active = true; presence.started = nowEpoch(); presence.peers = []; presence.history = []; presence.peers_ever = 0; return ok(res); }
   if (path === '/api/presence/stop' && m === 'POST') { presence.active = false; return ok(res); }
+  if (path === '/api/presence/csi/start' && m === 'POST') {
+    const j = await readJSON(req), threshold = j?.threshold ?? 0.35;
+    if (typeof threshold !== 'number' || threshold < 0.05 || threshold > 0.95) return fail(res, 400, 'bad_request', 'threshold: 0.05-0.95');
+    resetPresenceCsi(true, threshold);
+    return ok(res);
+  }
+  if (path === '/api/presence/csi/stop' && m === 'POST') { presenceCsi.active = false; presenceCsi.state = 'stopped'; presenceCsi.calibrating = presenceCsi.motion = presenceCsi.present = false; presenceCsi.score = presenceCsi.rate = 0; return ok(res); }
+  if (path === '/api/presence/csi/calibrate' && m === 'POST') {
+    if (!presenceCsi.active) return fail(res, 409, 'conflict', 'start CSI sensing first');
+    const threshold = presenceCsi.threshold;
+    resetPresenceCsi(true, threshold);
+    return ok(res);
+  }
 
   // FIDO2 (explicit simulator fake, unavailable until its dev hook enables it)
   if (path === '/api/fido2' && m === 'GET') return json(res, 200, fido2State());

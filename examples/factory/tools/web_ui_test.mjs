@@ -587,14 +587,26 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     check('Sentinel explains heuristic, not proof', await js('return /does not prove stalking/.test(document.querySelector(".sentinel").textContent);'));
     await call('POST', '/api/sentinel/stop', {});
   }
-  if (has('presence.peers')) {
-    console.log('P9 nearby peers');
+  if (has('presence.peers') || has('presence.csi')) {
+    console.log('P9 CSI presence and nearby peers');
     await call('POST', '/api/presence/stop', {});
+    await call('POST', '/api/presence/csi/stop', {});
     await go('#app=presence');
-    check('Nearby Peers opens with CSI limitation explained', await waitFor('document.querySelector(".presence") && /not detect people or motion/.test(document.querySelector(".presence").textContent)'));
+    check('Presence opens with CSI limitations explained', await waitFor('document.querySelector(".presence") && /not a camera, person counter/.test(document.querySelector(".presence").textContent)'));
+    if (has('presence.csi')) {
+      await js(`$t('.presence .btn', 'Start sensing').click();`);
+      await call('POST', '/api/_dev/presence-csi', { pattern: 'stable', count: 64 });
+      check('CSI stable calibration renders clear', await waitFor('/CLEAR/.test(document.querySelector(".presence")?.textContent || "")'));
+      await call('POST', '/api/_dev/presence-csi', { pattern: 'motion', count: 64 });
+      check('CSI motion renders live score and presence', await waitFor('/MOTION/.test(document.querySelector(".presence")?.textContent || "") && /Motion score/.test(document.querySelector(".presence")?.textContent || "")'));
+      await call('POST', '/api/_dev/presence-csi', { pattern: 'stable', count: 64 });
+      check('CSI UI shows latched presence after motion', await waitFor('/PRESENT/.test(document.querySelector(".presence")?.textContent || "")'));
+      await js(`$t('.presence .btn', 'Stop sensing').click();`);
+      await waitFor(`!$t('.presence .btn', 'Start discovery')?.disabled && !$t('.presence .btn', 'Start sensing')?.disabled`);
+    }
     await js(`$t('.presence .btn', 'Start discovery').click();`);
     await call('POST', '/api/_dev/presence', { mac: '02:00:00:00:00:0b', name: 'Lab Watch' });
-    check('Nearby peer appears in list', await waitFor('/Lab Watch/.test(document.querySelector(".presence")?.textContent || "")'));
+    check('Nearby peer appears in separate list', await waitFor('/Lab Watch/.test(document.querySelector(".presence")?.textContent || "")'));
     await call('POST', '/api/presence/stop', {});
   }
   if (has('fido2')) {

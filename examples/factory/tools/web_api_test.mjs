@@ -492,7 +492,7 @@ if (caps.includes('ota')) {
 if (DEV) {
   console.log('P9 security tools');
   // Start from a clean slate even if an earlier interrupted run left a tool active.
-  for (const p of ['/api/sniffer/stop', '/api/airspace/stop', '/api/sentinel/stop', '/api/presence/stop', '/api/evilportal/stop', '/api/deauthflood/stop', '/api/beaconspam/stop']) await call('POST', p, {});
+  for (const p of ['/api/sniffer/stop', '/api/airspace/stop', '/api/sentinel/stop', '/api/presence/stop', '/api/presence/csi/stop', '/api/evilportal/stop', '/api/deauthflood/stop', '/api/beaconspam/stop']) await call('POST', p, {});
 
   console.log('sniffer');
   r = await call('POST', '/api/sniffer/start', { channel: 0 });
@@ -602,6 +602,44 @@ if (DEV) {
   check('sentinel reports tracker kind and persistence', r.json?.device_count === 1 && tracked?.kind === 'Find My' && tracked.sightings === 4 && tracked.stalking === true, tracked);
   check('sentinel persistent alert event', msgs.some(m => m.t === 'sentinel' && m.d?.type === 'stalking' && m.d?.kind === 'Find My'), msgs.filter(m => m.t === 'sentinel').slice(-2));
   await call('POST', '/api/sentinel/stop', {});
+  if (caps.includes('presence.csi')) {
+    console.log('CSI presence');
+    r = await call('POST', '/api/presence/csi/start', { threshold: 2 });
+    check('CSI presence validates threshold', r.status === 400 && r.json?.error === 'bad_request', r.json);
+    r = await call('POST', '/api/presence/csi/start', { threshold: 0.35 });
+    check('CSI presence starts calibration', r.status === 200, r.json);
+    r = await call('GET', '/api/presence');
+    check('CSI status is nested without breaking peers', r.json?.csi?.active === true && r.json.csi.calibrating === true && Array.isArray(r.json.peers), r.json);
+    if (caps.includes('desktop.install')) {
+      r = await call('POST', '/api/sniffer/start', { channel: 1 });
+      check('CSI radio owner rejects sniffer', r.status === 503 && r.json?.error === 'busy' && /Presence/.test(r.json?.message || ''), r.json);
+    }
+    r = await call('POST', '/api/_dev/presence-csi', { pattern: 'invalid', count: 4 });
+    check('CSI dev hook validates patterns', r.status === 400, r.json);
+    r = await call('POST', '/api/_dev/presence-csi', { pattern: 'stable', count: 64 });
+    check('CSI stable frames feed detector', r.status === 200, r.json);
+    r = await call('GET', '/api/presence');
+    check('CSI stable room finishes calibration clear', r.json?.csi?.calibrating === false && r.json.csi.present === false && r.json.csi.motion === false && r.json.csi.samples >= 64, r.json?.csi);
+    check('CSI calibration event published', msgs.some(m => m.t === 'presence.csi' && m.d?.event === 'calibrated'), msgs.filter(m => m.t === 'presence.csi').slice(-3));
+    r = await call('POST', '/api/_dev/presence-csi', { pattern: 'motion', count: 64 });
+    check('CSI motion frames feed detector', r.status === 200, r.json);
+    r = await call('GET', '/api/presence');
+    check('CSI changing multipath detects motion and presence', r.json?.csi?.motion === true && r.json.csi.present === true && r.json.csi.score >= r.json.csi.threshold, r.json?.csi);
+    check('CSI motion event includes score', msgs.some(m => m.t === 'presence.csi' && m.d?.event === 'motion' && m.d?.present === true && m.d?.score >= 0.35), msgs.filter(m => m.t === 'presence.csi').slice(-4));
+    await call('POST', '/api/_dev/presence-csi', { pattern: 'stable', count: 64 });
+    r = await call('GET', '/api/presence');
+    check('CSI presence holds after motion stops', r.json?.csi?.motion === false && r.json.csi.present === true, r.json?.csi);
+    await call('POST', '/api/_dev/presence-csi', { count: 0, advance_ms: 11000 });
+    r = await call('GET', '/api/presence');
+    check('CSI presence hold expires', r.json?.csi?.present === false && r.json.csi.state === 'clear', r.json?.csi);
+    r = await call('POST', '/api/presence/csi/calibrate', {});
+    check('CSI explicit recalibration resets state', r.status === 200, r.json);
+    r = await call('GET', '/api/presence');
+    check('CSI recalibration is visible', r.json?.csi?.calibrating === true && r.json.csi.present === false, r.json?.csi);
+    r = await call('POST', '/api/presence/csi/stop', {});
+    check('CSI sensing stops', r.status === 200, r.json);
+  }
+  console.log('nearby peers');
   await call('POST', '/api/presence/start', {});
   r = await call('POST', '/api/_dev/presence', { mac: '02:00:00:00:00:0b', name: 'Lab Watch', rssi: -51 });
   if (caps.includes('desktop.install')) check('presence dev hook is reachable', r.status === 200, r.json);

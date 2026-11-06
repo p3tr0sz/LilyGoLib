@@ -282,17 +282,26 @@ BLE anti-stalking: a passive scan that flags BLE devices appearing persistently 
 
 A device flagged as stalking triggers a `sentinel` event: `{type:"stalking", addr, name, rssi, sightings}`. Devices older than 1 hour are automatically forgotten.
 
-### Nearby peers (`presence.peers`)
+### Wi-Fi CSI presence and nearby peers (`presence.csi`, `presence.peers`)
 
-ESP-NOW nearby device discovery — extends the existing Link/ESP-NOW tool with persistent peer tracking, arrival/departure events, and a history log. **This is not NucleoOS's Wi-Fi CSI human-motion Presence detector.**
+Wi-Fi CSI estimates human motion from changes in the normalized subcarrier amplitude profile of frames received from the connected 2.4 GHz access point. It does not identify or count people and does not provide a location. Keep the watch and AP fixed and calibrate while the room is empty and still. Presence is latched for 10 seconds after the latest detected motion. Hardware accuracy, environmental suitability and reconnect behaviour still require on-watch validation.
+
+While active, the watch disables modem sleep, restores the previous power-save mode on stop, and sends an ICMP echo request to its own gateway up to 20 times/second to maintain CSI traffic. It does not inject 802.11 frames. Sniffer, Airspace and the other radio-owned tools must be stopped first.
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/presence` | paired | `{active, started, peers_ever, peers: [{mac, name, rssi, first_seen, last_seen, present}], history: [{ts, mac, name, event}]}` |
-| `POST /api/presence/start` | paired | → `{ok}`. Starts peer discovery with ESP-NOW |
-| `POST /api/presence/stop` | paired | → `{ok}` |
+| `GET /api/presence` | paired | Peer fields below plus `csi: {active, state, calibrating, present, motion, score, level, noise, threshold, samples, rate, drops, rssi, channel, ssid, started, last_motion_ms, error}` |
+| `POST /api/presence/csi/start` | paired | `{threshold?:0.05-0.95}` → `{ok}`. Default 0.35. Starts calibration; at least 32 valid CSI frames are required |
+| `POST /api/presence/csi/stop` | paired | → `{ok}`. Disables CSI/promiscuous mode and restores Wi-Fi power save |
+| `POST /api/presence/csi/calibrate` | paired | → `{ok}`. Clears the learned profile, motion and presence, then recalibrates |
+| `POST /api/presence/start` | paired | → `{ok}`. Starts separate ESP-NOW peer discovery |
+| `POST /api/presence/stop` | paired | → `{ok}`. Stops peer discovery only |
 
-`event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A `presence` event is published on arrival and departure and includes `event`, `mac`, `name` and `rssi`.
+CSI `state` is `stopped`, `calibrating`, `clear`, `motion` or `present`. `score` is normalized 0–1, `rate` is accepted frames in the last second, `drops` counts raw samples lost when the analysis queue was full, and `last_motion_ms` is device uptime, not UTC. Start can return `503 busy`, `503 wifi_required` or `503 csi_unavailable` with a readable `message`.
+
+`presence.csi` events report `{event:"calibrated"|"motion"|"still"|"present"|"clear", state, present, motion, score}` on state transitions.
+
+The original peer fields are `{active, started, peers_ever, peers: [{mac, name, rssi, first_seen, last_seen, present}], history: [{ts, mac, name, event}], error}`. Peer `event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A separate `presence` event is published on arrival and departure and includes `event`, `mac`, `name` and `rssi`.
 
 ### FIDO2 security key (`fido2`, simulator only)
 
@@ -376,7 +385,8 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | `sniffer` | `{active, reason?}`, capture state changes | P9 |
 | `airspace` | `{type, detail, bssid, rssi}`, alerts for detected attacks | P9 |
 | `sentinel` | `{type:"stalking", addr, name, rssi, sightings}`, a device flagged | P9 |
-| `presence` | peer arrival/departure | P9 |
+| `presence` | ESP-NOW peer arrival/departure | P9 |
+| `presence.csi` | CSI calibration, motion and presence transitions | P9 |
 
 ## Static files
 
@@ -416,6 +426,7 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | `airspace` | `GET /api/airspace`, `POST /api/airspace/start|stop`, events `airspace` | P9 |
 | `sentinel` | `GET /api/sentinel`, `POST /api/sentinel/start|stop`, events `sentinel` | P9 |
 | `presence.peers` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
+| `presence.csi` | `GET /api/presence`, `POST /api/presence/csi/start|stop|calibrate`, events `presence.csi` | P9 |
 | `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; not advertised on current watch hardware | P9 |
 | `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|stop|clear`, `GET /api/evilportal/captures` | P9 |
 | `deauth.flood` | `GET /api/deauthflood`, `POST /api/deauthflood/start|stop` | P9 |
@@ -439,6 +450,8 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/hid` | `{available}`: pretend the USB keyboard is or is not enumerated by a host |
 | `POST /api/_dev/fido2` | `{available, reset?}`: enable the fake transport or clear fake credentials |
 | `POST /api/_dev/sniffer` | `{count?}` injects fake beacon frames while capturing; `{kind:"beacon"\|"probe"\|"deauth"\|"management"\|"data"\|"eapol", msg?:1-4, count?}` injects typed frames for the filter and EAPOL handshake checks |
+| `POST /api/_dev/presence-csi` | `{pattern:"stable"\|"motion", count?:0-500, advance_ms?:0-600000, rssi?}` drives the real simulator detector with synthetic CSI profiles; `advance_ms` tests the presence hold timer |
+| `POST /api/_dev/presence` | `{mac?, name?, rssi?}` injects a nearby ESP-NOW peer while peer discovery is active |
 
 The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, playback that lasts as long as the file, a fake watch in range for the link, a USB host for the keyboard, and an OTA write that progresses but never reboots.
 
