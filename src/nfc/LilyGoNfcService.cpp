@@ -12,7 +12,22 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <demo_ce.h>
+
+/* Card emulation (T4T/T3T responder) is driven by ST's RFAL "demo_ce" sources,
+ * which are not part of the ST25R3916/RFAL fork this project depends on. When
+ * the header is on the include path the emulation path builds and works; when
+ * it is absent (the current state) the reader still builds and runs, and
+ * beginEmulation() fails cleanly with "not available in this build". Drop
+ * demo_ce.{h,c} onto the include path to enable tag emulation. */
+#if defined(__has_include)
+#  if __has_include(<demo_ce.h>)
+#    include <demo_ce.h>
+#    define LILYGO_NFC_HAS_CE 1
+#  endif
+#endif
+#ifndef LILYGO_NFC_HAS_CE
+#  define LILYGO_NFC_HAS_CE 0
+#endif
 
 extern RfalNfcClass NFCReader;
 
@@ -668,6 +683,16 @@ bool LilyGoNfcService::beginEmulation(const LilyGoNfcEmulationConfig &config)
 {
     stop();
 
+#if !LILYGO_NFC_HAS_CE
+    /* No card-emulation backend compiled in (demo_ce absent); the reader is
+     * unaffected. Report a clear error instead of starting a dead emulation. */
+    _mode = LILYGO_NFC_MODE_IDLE;
+    setEmulationError(ST_ERR_NOTSUPP, "Card emulation not available in this build");
+    _emulationStatus.state = LILYGO_NFC_STATE_ERROR;
+    emitEmulation(LILYGO_NFC_EVENT_START_FAILED);
+    return false;
+#else
+
     _mode = LILYGO_NFC_MODE_EMULATION;
     _emulationConfig = config;
     if (_emulationConfig.discoveryDurationMs == 0U) {
@@ -744,6 +769,7 @@ bool LilyGoNfcService::beginEmulation(const LilyGoNfcEmulationConfig &config)
     _emulationStatus.state = LILYGO_NFC_STATE_EMULATING;
     emitEmulation(LILYGO_NFC_EVENT_EMULATION_STARTED);
     return true;
+#endif /* LILYGO_NFC_HAS_CE */
 }
 
 void LilyGoNfcService::loop()
@@ -1071,10 +1097,14 @@ void LilyGoNfcService::handleEmulationDataExchangeDone()
                            (dev->rfInterface == RFAL_NFC_INTERFACE_RF);
 
     if (isNfcaT4t) {
+#if LILYGO_NFC_HAS_CE
         outLen = demoCeT4T(_emulationRxData, inLen, _emulationTxBuf, sizeof(_emulationTxBuf));
+#endif
     } else if (isNfcfT3t) {
         inLen = rfalConvBitsToBytes(inLen);
+#if LILYGO_NFC_HAS_CE
         outLen = demoCeT3T(_emulationRxData, inLen, _emulationTxBuf, sizeof(_emulationTxBuf));
+#endif
     } else {
         setEmulationError(ST_ERR_NOTSUPP, "Unsupported reader interface");
         NFCReader.rfalNfcDeactivate(true);
