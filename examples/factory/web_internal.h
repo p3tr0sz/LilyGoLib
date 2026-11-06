@@ -43,6 +43,7 @@ struct web_req_t {
 void web_resp_json(web_req_t *r, int status, const std::string &json, const char *headers = NULL);
 void web_resp_error(web_req_t *r, int status, const char *code, const char *message = NULL, const char *extra_json = NULL);
 void web_resp_ok(web_req_t *r, const char *extra_json = NULL);   /* {"ok":true,<extra>} */
+void web_resp_html(web_req_t *r, int status, const char *html);  /* text/html response */
 
 /* Query parameter, percent-decoded. false when absent. */
 bool web_query_get(const web_req_t *r, const char *name, char *out, size_t out_len);

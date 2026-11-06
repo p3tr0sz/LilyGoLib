@@ -283,6 +283,14 @@ void web_resp_ok(web_req_t *r, const char *extra_json)
     web_resp_json(r, 200, j);
 }
 
+void web_resp_html(web_req_t *r, int status, const char *html)
+{
+    const char *h = "Cache-Control: no-store\r\n";
+    (void)r->begin(r, status, "text/html; charset=utf-8", h, (long long)strlen(html));
+    r->write(r, html, strlen(html));
+    r->end(r);
+}
+
 static int hexval(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';

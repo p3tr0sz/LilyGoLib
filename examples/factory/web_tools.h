@@ -241,19 +241,57 @@ bool web_hw_ota_rollback(void);                             /* boot the other sl
  * Beacon spam   — flood fake SSIDs into the airspace (security audit)
  */
 
-/* Evil portal — rogue AP + captive portal */
+/* Evil portal — rogue AP + captive portal (three modes: standalone, evil-twin, KARMA lure) */
+
+/* Portal operating modes */
+#define EP_MODE_STANDALONE  0   /* Own AP with chosen SSID */
+#define EP_MODE_TWIN        1   /* Clone real AP + deauth its clients onto us */
+#define EP_MODE_KARMA       2   /* Probe-response: become the SSID devices are looking for */
+
+/* Template: built-in portal page or .html file from /sd/evilportal/portals/ */
+int  web_hw_evilportal_template_count(void);
+const char *web_hw_evilportal_template_name(int idx);
+bool web_hw_evilportal_template_is_builtin(int idx);
+
+/* SSID presets: credible names like "TIM-7AC3F1" (MAC-derived suffix) */
+int  web_hw_evilportal_ssid_count(void);
+const char *web_hw_evilportal_ssid_preset(int idx);
+
+/* Live page cloning: join open_ssid, fetch its captive-portal page, save as cloned.html */
+int  web_hw_evilportal_clone_page(const char *open_ssid);  /* >0 bytes saved, -1 portal running, -2 join failed, -3 no captive */
+bool web_hw_evilportal_cloning(void);
+const char *web_hw_evilportal_clone_name(void);
+
+/* Status */
 typedef struct {
     bool active;
+    int  mode;                      /* EP_MODE_* */
     char ssid[33];
-    char bssid[18];
-    int clients;                    /* connected clients */
-    uint32_t attempts;              /* credential harvest attempts */
+    char bssid[18];                 /* twin: the real AP being cloned */
+    int  channel;                   /* twin: channel of the real AP */
+    bool twin_coherent;             /* twin: matches real WPA2 security (no downgrade) */
+    unsigned long deauth_frames;    /* twin: deauth frames sent at real AP */
+    int  clients;                   /* stations associated */
+    uint32_t attempts;              /* credential submissions */
+    uint32_t confirmed;             /* credentials whose password was re-entered */
     const char *error;
     long long started_epoch;
+    bool dhcps_ok;                  /* false when DHCP server failed → clients stall */
+    int  probes_total;              /* captive-detection HTTP hits */
+    int  vendor_counts[6];          /* client OS: 0=iOS,1=Android,2=Windows,3=macOS,4=Linux,5=Other */
 } web_hw_evilportal_t;
-bool web_hw_evilportal_start(const char *ssid);
+
+/* Start standalone: open AP with ssid, captive DNS, serve template_idx on :80 */
+bool web_hw_evilportal_start(int template_idx, const char *ssid, const char *gateway_ip);
+/* Start evil-twin: clone real AP on its channel, deauth real bssid, serve template */
+bool web_hw_evilportal_start_twin(int template_idx, const char *ssid, const uint8_t bssid[6],
+                                   int channel, int authmode, bool coherent);
+/* Start KARMA: probe-response lure — beacon the SSID devices are probing for */
+bool web_hw_evilportal_start_karma(int template_idx);
 bool web_hw_evilportal_stop(void);
 void web_hw_evilportal_status(web_hw_evilportal_t *out);
+
+/* Credential management */
 typedef struct {
     char mac[18];
     char hostname[64];
@@ -264,9 +302,45 @@ typedef struct {
 } web_hw_evilportal_capture_t;
 bool web_hw_evilportal_captures(std::vector<web_hw_evilportal_capture_t> &out);
 void web_hw_evilportal_clear_captures(void);
+const char *web_hw_evilportal_logpath(void);   /* SD path of this session's loot file */
+
+/* Password redaction modes */
+#define EP_PWD_FULL     0   /* show full password */
+#define EP_PWD_MASKED   1   /* show first+last char, mask middle */
+#define EP_PWD_HIDDEN   2   /* show only "******" */
+#define EP_PWD_LENGTH   3   /* show only length e.g. "8 chars" */
+void web_hw_evilportal_set_pwd_mode(int mode);
+int  web_hw_evilportal_pwd_mode(void);
+
+/* PSK verification (twin mode): verify captured password against real AP */
+void web_hw_evilportal_set_verify(bool on);
+bool web_hw_evilportal_verify_enabled(void);
+int  web_hw_evilportal_verified_ok(void);
+int  web_hw_evilportal_verified_bad(void);
+
+/* Gateway IP selection (before arming) */
+void web_hw_evilportal_set_gateway(const char *ip);
+const char *web_hw_evilportal_gateway(void);
+
+/* Auto-stop: terminate after idle if no clients */
+void web_hw_evilportal_set_auto_stop(uint16_t base_s, uint16_t extended_s);
+
+/* Debug logging to SD (opt-in, no credentials logged) */
+void web_hw_evilportal_set_debug(bool on);
+bool web_hw_evilportal_debug(void);
+
+/* KARMA: probe sniffing for nearby device SSID wishes */
+int  web_hw_evilportal_karma_start(int secs);
+bool web_hw_evilportal_karma_busy(void);
+int  web_hw_evilportal_karma_count(void);
+const char *web_hw_evilportal_karma_ssid(int i);
+int  web_hw_evilportal_karma_hits(int i);
+
 #ifndef ARDUINO
 void web_hw_sim_evilportal_client(const char *mac, const char *hostname);
 void web_hw_sim_evilportal_creds(const char *url, const char *user, const char *pass);
+void web_hw_sim_evilportal_clone(const char *ssid, int bytes);
+void web_hw_sim_evilportal_probe(const char *ssid, int hits);
 #endif
 
 /* Deauth flood — 802.11 deauth injection */

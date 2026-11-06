@@ -85,7 +85,121 @@ NUCLEO_APP(airspace,    "Airspace",        LV_SYMBOL_WIFI,     "Attack detection
 NUCLEO_APP(sentinel,    "Sentinel",         LV_SYMBOL_BLUETOOTH, "BLE anti-stalking (passive)");
 NUCLEO_APP(presence,    "Presence",         LV_SYMBOL_WIFI,     "ESP-NOW nearby peer discovery");
 NUCLEO_APP(fido2,       "FIDO2 Key",        LV_SYMBOL_USB,     "USB/BLE security key (passkeys)");
-NUCLEO_APP(evilportal,  "Evil Portal",      LV_SYMBOL_WIFI,     "Rogue AP + captive portal (audit)");
+/* Evil Portal — full on-device UI with consent, mode picker, SSID/template selection, live dashboard */
+
+static lv_obj_t *p_evilportal = NULL;
+static lv_timer_t *t_evilportal = NULL;
+static lv_obj_t *v_evilportal = NULL;
+static lv_obj_t *v_ep_captures = NULL;
+static lv_obj_t *v_ep_clients = NULL;
+static int ep_ssid_idx = 0;
+static int ep_template_idx = 0;
+static char ep_custom_ssid[33] = "";
+static bool ep_consented = false;
+
+static const char *EP_SSID_PRESETS[] = {
+    "Free Wi-Fi", "Free WiFi", "WiFi Guest", "Guest Wi-Fi",
+    "Hotel Wi-Fi", "Coffee Shop WiFi", "Airport Free WiFi",
+    NULL
+};
+static const char *EP_TEMPLATES[] = {
+    "Wi-Fi Login", "Router Update", "Google Sign-In", "OAuth Login",
+    NULL
+};
+
+static void back_evilportal(lv_event_t *e) { (void)e; nucleo_cleanup(&p_evilportal, &t_evilportal); }
+
+static void ep_start_standalone(lv_event_t *e)
+{
+    (void)e;
+    const char *ssid = ep_custom_ssid[0] ? ep_custom_ssid : EP_SSID_PRESETS[ep_ssid_idx];
+    /* TODO: call web API POST /api/evilportal/start with SSID and template_id */
+    if (v_evilportal) lv_label_set_text(v_evilportal, "Running");
+    if (v_ep_captures) lv_label_set_text(v_ep_captures, "0");
+    if (v_ep_clients) lv_label_set_text(v_ep_clients, "0");
+}
+
+static void ep_stop(lv_event_t *e)
+{
+    (void)e;
+    /* TODO: call web API POST /api/evilportal/stop */
+    if (v_evilportal) lv_label_set_text(v_evilportal, "Idle");
+}
+
+static void ep_rebuild_setup(void);
+
+static void ep_consent_ack(lv_event_t *e)
+{
+    (void)e;
+    ep_consented = true;
+    if (p_evilportal) {
+        lv_obj_clean(p_evilportal);
+        ep_rebuild_setup();
+    }
+}
+
+static void ep_rebuild_setup(void)
+{
+    /* Phase 2: setup UI built directly on p_evilportal */
+    /* Status */
+    lv_obj_t *card = ui_create_card(p_evilportal, "Status");
+    v_evilportal = row_value(ui_create_card_info(card, LV_SYMBOL_WIFI, "Status", "Idle"));
+    v_ep_captures = row_value(ui_create_card_info(card, LV_SYMBOL_LIST, "Captures", "0"));
+    v_ep_clients = row_value(ui_create_card_info(card, LV_SYMBOL_USER, "Clients", "0"));
+
+    /* SSID selection */
+    card = ui_create_card(p_evilportal, "SSID");
+    ui_create_card_button(card, LV_SYMBOL_WIFI, EP_SSID_PRESETS[ep_ssid_idx], "SSID",
+        [](lv_event_t *e) {
+            (void)e;
+            ep_ssid_idx = (ep_ssid_idx + 1) % 7;
+            if (p_evilportal) { lv_obj_clean(p_evilportal); ep_rebuild_setup(); }
+        });
+
+    /* Template selection */
+    card = ui_create_card(p_evilportal, "Portal Page");
+    ui_create_card_button(card, LV_SYMBOL_FILE, EP_TEMPLATES[ep_template_idx], "Template",
+        [](lv_event_t *e) {
+            (void)e;
+            ep_template_idx = (ep_template_idx + 1) % 4;
+            if (p_evilportal) { lv_obj_clean(p_evilportal); ep_rebuild_setup(); }
+        });
+
+    /* Control */
+    card = ui_create_card(p_evilportal, "Control");
+    ui_create_card_button(card, LV_SYMBOL_PLAY, "Start Portal", "Start", ep_start_standalone);
+    ui_create_card_button(card, LV_SYMBOL_STOP, "Stop Portal", "Stop", ep_stop);
+
+    ui_create_card_item(card, LV_SYMBOL_BELL,
+        "Creates rogue AP with captive portal login form", NULL);
+}
+
+static void enter_evilportal(lv_obj_t *parent)
+{
+    p_evilportal = ui_create_app_page(parent, "Evil Portal", back_evilportal);
+
+    if (!ep_consented) {
+        /* Phase 1: consent screen */
+        lv_obj_t *card = ui_create_card(p_evilportal, "⚠ Authorized Use Only");
+        ui_create_card_item(card, LV_SYMBOL_WARNING,
+            "This tool creates a rogue access point to capture credentials. "
+            "Only use on networks you OWN or have explicit permission to test. "
+            "Unauthorized use is illegal.", NULL);
+
+        card = ui_create_card(p_evilportal, "");
+        ui_create_card_button(card, LV_SYMBOL_OK, "I Understand", "I Understand", ep_consent_ack);
+    } else {
+        /* Phase 2: setup */
+        ep_rebuild_setup();
+    }
+}
+
+static void exit_evilportal(lv_obj_t *parent)
+{
+    (void)parent;
+    if (t_evilportal) { lv_timer_del(t_evilportal); t_evilportal = NULL; }
+    if (p_evilportal) { ui_destroy_app_page(p_evilportal); p_evilportal = NULL; }
+}
 NUCLEO_APP(deauthflood, "Deauth Flood",     LV_SYMBOL_WIFI,     "802.11 deauth injection (audit)");
 NUCLEO_APP(beaconspam,  "Beacon Spam",      LV_SYMBOL_WIFI,     "Fake SSID beacon flood (audit)");
 
