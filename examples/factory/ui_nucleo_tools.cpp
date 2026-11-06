@@ -145,7 +145,7 @@ static void ep_rebuild_setup(void)
     lv_obj_t *card = ui_create_card(p_evilportal, "Status");
     v_evilportal = row_value(ui_create_card_info(card, LV_SYMBOL_WIFI, "Status", "Idle"));
     v_ep_captures = row_value(ui_create_card_info(card, LV_SYMBOL_LIST, "Captures", "0"));
-    v_ep_clients = row_value(ui_create_card_info(card, LV_SYMBOL_USER, "Clients", "0"));
+    v_ep_clients = row_value(ui_create_card_info(card, LV_SYMBOL_SETTINGS, "Clients", "0"));
 
     /* SSID selection */
     card = ui_create_card(p_evilportal, "SSID");

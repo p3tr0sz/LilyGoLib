@@ -200,6 +200,7 @@ static esp_err_t http_handler(httpd_req_t *req)
     get_header(req, "Range", r->range, sizeof(r->range));
     get_header(req, "Accept-Encoding", r->accept_encoding, sizeof(r->accept_encoding));
     get_header(req, "If-None-Match", r->if_none_match, sizeof(r->if_none_match));
+    get_header(req, "User-Agent", r->user_agent, sizeof(r->user_agent));
     r->content_length = (long long)req->content_len;
 
     r->ctx = &e;

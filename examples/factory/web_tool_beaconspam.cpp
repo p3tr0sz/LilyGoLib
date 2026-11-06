@@ -236,8 +236,7 @@ static void set_custom_ssids(web_req_t *r)
         *dst = 0;
         if (n > 0) s_custom_count++;
         if (*p == '"') p++;
-        while (*p == ',' || *p == ' ' || *p == '
-' || *p == ']') {
+        while (*p == ',' || *p == ' ' || *p == '\n' || *p == ']') {
             if (*p == ']') { p = ""; break; }
             p++;
         }

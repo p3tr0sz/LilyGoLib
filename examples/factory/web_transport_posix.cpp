@@ -379,6 +379,7 @@ static void conn_thread(std::shared_ptr<sim_conn_t> c)
                 else if (!strcasecmp(k.c_str(), "range")) copy_header(r.range, sizeof(r.range), v);
                 else if (!strcasecmp(k.c_str(), "accept-encoding")) copy_header(r.accept_encoding, sizeof(r.accept_encoding), v);
                 else if (!strcasecmp(k.c_str(), "if-none-match")) copy_header(r.if_none_match, sizeof(r.if_none_match), v);
+                else if (!strcasecmp(k.c_str(), "user-agent")) copy_header(r.user_agent, sizeof(r.user_agent), v);
                 else if (!strcasecmp(k.c_str(), "content-length")) r.content_length = atoll(v.c_str());
                 else if (!strcasecmp(k.c_str(), "upgrade")) upgrade = v;
                 else if (!strcasecmp(k.c_str(), "sec-websocket-key")) ws_key = v;

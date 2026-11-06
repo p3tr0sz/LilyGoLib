@@ -28,6 +28,7 @@ struct web_req_t {
     char range[64];
     char accept_encoding[64];
     char if_none_match[48];
+    char user_agent[128];       /* User-Agent header for fingerprinting (security tools) */
     long long content_length;   /* -1 when unknown */
 
     void *ctx;                  /* transport handle */
