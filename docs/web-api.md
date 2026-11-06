@@ -348,11 +348,14 @@ Whilst the portal is active, non-API HTTP requests from connected clients are in
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/deauthflood` | paired | `{active, target_bssid, target_station, channel, sent, rate_kbps, started}` |
+| `GET /api/deauthflood` | paired | `{active, targetBssid, targetStation, targetSsid, channel, sent, txErrors, ratePps, started, reconnect, campaign, progress, error}`. Aggregate accepted/failed counters equal the sums in `progress` during campaigns |
 | `POST /api/deauthflood/start` | paired | `{bssid, station?, channel?, rate?, authorized:true}` → `{ok}`. `station` defaults to broadcast (`ff:ff:ff:ff:ff:ff`), `channel` 1-13, `rate` 1-100 pkts/s (default 10). Explicit authorization is required |
-| `POST /api/deauthflood/stop` | paired | → `{ok}` |
+| `POST /api/deauthflood/campaign/start` | paired | `{targets:[bssid...], station?, frames:1-100000, rate:1-100, authorized:true}` → `{ok, active}`. Select 1-8 unique BSSIDs from the latest scan. Runs targets sequentially and independently to the accepted-frame goal; 25 consecutive injection failures skip a target. Unsupported channels become per-target errors without blocking others |
+| `POST /api/deauthflood/stop` | paired | → `{ok}`. Also stops a campaign; `/campaign/stop` is an alias |
 
 Requires the Wi-Fi interface to disconnect from any network during the flood.
+
+Campaign `progress` entries contain `{ssid, bssid, station, channel, auth, state, accepted, failed, goal, elapsedMs, pmfLimited, error}`. States are `pending`, `running`, `done`, `error` and `pmf_limited`. WPA3 or WPA2/WPA3 targets finish as `pmf_limited`: radio acceptance is measured, but PMF-protected clients may ignore the frames and no disconnection is claimed. `reconnect` is `{pending, reconnected, attempts, elapsedMs}`; hardware retries up to three times over 20 seconds and reports failure as `reconnected:false`, never fake success.
 
 ### Beacon spam (`beacon.spam`)
 
@@ -360,9 +363,13 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/beaconspam` | paired | `{active, channel, beacons, ssids, prefix, started}` |
+| `GET /api/beaconspam` | paired | `{active, channel, beacons, txErrors, ssids, prefix, started, reconnect, campaign, progress, customSsids, error}` |
 | `POST /api/beaconspam/start` | paired | `{prefix?, count?, channel?, mode?, authorized:true}` → `{ok}`. `prefix` (default "FreeNet"), `count` of unique SSIDs (default 20), `channel` 0 (hop) or 1-13, `mode` `generated` or `custom`. Explicit authorization is required |
-| `POST /api/beaconspam/stop` | paired | → `{ok}` |
+| `POST /api/beaconspam/campaign/start` | paired | `{mode, prefix?, count?:1-64, channel?, framesPerSsid:1-10000, authorized:true}` → `{ok, active}`. Runs each generated/custom SSID to its accepted-frame goal, then stops. Maximum 64 SSIDs; 25 consecutive failures skip only the current SSID |
+| `POST /api/beaconspam/stop` | paired | → `{ok}`. Also stops a campaign; `/campaign/stop` is an alias |
+| `PUT /api/beaconspam/ssids` | paired | JSON array of up to 64 SSIDs, each 1-32 UTF-8 bytes → `{ok, count}` |
+
+Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal, elapsedMs, error}` with states `pending`, `running`, `done` and `error`. `campaign` reports `{active, current, completed, count, framesPerSsid}`. Reconnect telemetry has the same contract as Deauth Flood. Accepted counters count frames accepted by the radio driver, not independently observed on-air frames; real-lab acceptance still requires packet captures.
 
 ## Events
 
@@ -446,7 +453,11 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | `evil.portal.verify` | `PUT /api/evilportal/settings` `verify`; per-capture `verification` and `verifiedOk`/`verifiedBad` counters | P9.3 |
 | `evil.portal.coherentTwin` | `POST /api/evilportal/start-twin` with `coherent:true` and operator-known `psk` | P9.3 |
 | `deauth.flood` | `GET /api/deauthflood`, `POST /api/deauthflood/start|stop` | P9 |
+| `deauth.campaign` | `POST /api/deauthflood/campaign/start|stop`; bounded per-target `progress` | P9.4 |
+| `deauth.health` | accepted/failed counters, PMF-limited outcomes and `reconnect` telemetry | P9.4 |
 | `beacon.spam` | `GET /api/beaconspam`, `POST /api/beaconspam/start|stop` | P9 |
+| `beacon.campaign` | `POST /api/beaconspam/campaign/start|stop`; bounded per-SSID `progress` | P9.4 |
+| `beacon.health` | accepted/failed counters and `reconnect` telemetry | P9.4 |
 
 ## Test hooks (simulator and mock only)
 
@@ -469,6 +480,8 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/presence-csi` | `{pattern:"stable"\|"motion", count?:0-500, advance_ms?:0-600000, rssi?}` drives the real simulator detector with synthetic CSI profiles; `advance_ms` tests the presence hold timer |
 | `POST /api/_dev/presence` | `{mac?, name?, rssi?}` injects a nearby ESP-NOW peer while peer discovery is active |
 | `POST /api/_dev/evilportal` | `{action:"creds"|"client"}` injects portal activity; `{action:"probe", ssid, mac?, hits?:1-100, rssi?, channel?}` injects directed probes; `{action:"clone", ok}` completes a clone; `{action:"verify", valid?, error?}` resolves the pending PSK check |
+| `POST /api/_dev/deauthflood` | `{action:"fail-target"}` fails only the running campaign target |
+| `POST /api/_dev/beaconspam` | `{action:"fail-target"}` fails only the running campaign SSID |
 
 The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, playback that lasts as long as the file, a fake watch in range for the link, a USB host for the keyboard, and an OTA write that progresses but never reboots.
 

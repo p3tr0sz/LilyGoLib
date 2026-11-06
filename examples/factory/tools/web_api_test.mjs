@@ -826,6 +826,33 @@ if (DEV) {
   check('deauth status uses camelCase contract and packet rate', r.json?.active === true && r.json.targetBssid === targets.targets[0].bssid && r.json.ratePps === 10, r.json);
   await call('POST', '/api/deauthflood/stop', {});
 
+  if (DEV) {
+    const normalTarget = targets.targets.find(t => t.channel >= 1 && t.channel <= 13 && !t.auth.includes('wpa3'));
+    const pmfTarget = targets.targets.find(t => t.channel >= 1 && t.channel <= 13 && t.auth.includes('wpa3'));
+    const campaignTargets = [normalTarget.bssid, pmfTarget.bssid];
+    r = await call('POST', '/api/deauthflood/campaign/start', { targets: campaignTargets, frames: 2, rate: 100 });
+    check('deauth campaign requires authorization for every target', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+    r = await call('POST', '/api/deauthflood/campaign/start', { targets: [campaignTargets[0], campaignTargets[0]], frames: 2, rate: 100, authorized: true });
+    check('deauth campaign rejects duplicate targets', r.status === 400, r.json);
+    r = await call('POST', '/api/deauthflood/campaign/start', { targets: campaignTargets, frames: 10000, rate: 1, authorized: true });
+    check('multi-target deauth campaign starts', r.status === 200 && r.json?.active === true, r.json);
+    await call('POST', '/api/_dev/deauthflood', { action: 'fail-target' });
+    r = await call('GET', '/api/deauthflood');
+    check('failed target skips independently with health counters', r.json?.progress?.[0]?.state === 'error' && r.json.progress[0].failed === 1 && r.json.progress[1].state === 'running' && r.json.txErrors === 1, r.json);
+    await call('POST', '/api/deauthflood/stop', {});
+    r = await call('POST', '/api/deauthflood/campaign/start', { targets: campaignTargets, frames: 2, rate: 100, authorized: true });
+    let campaign = null;
+    for (let i = 0; i < 100; i++) {
+      await new Promise(x => setTimeout(x, 100));
+      campaign = (await call('GET', '/api/deauthflood')).json;
+      if (!campaign?.active) break;
+    }
+    check('all deauth targets finish independently', campaign?.campaign?.completed === 2 && campaign.progress?.[0]?.state === 'done' && campaign.progress[0].accepted === 2 && campaign.progress[1].accepted === 2, campaign);
+    check('PMF target reports limited outcome not guaranteed disconnect', campaign?.progress?.[1]?.state === 'pmf_limited' && campaign.progress[1].pmfLimited === true, campaign?.progress?.[1]);
+    check('deauth aggregate and per-target counters agree', campaign?.sent === campaign.progress.reduce((n, t) => n + t.accepted, 0) && campaign.txErrors === campaign.progress.reduce((n, t) => n + t.failed, 0), campaign);
+    check('deauth completion reports reconnect metrics', campaign?.reconnect?.reconnected === true && campaign.reconnect.attempts >= 1 && campaign.reconnect.elapsedMs >= 0, campaign?.reconnect);
+  }
+
   console.log('beacon spam');
   r = await call('PUT', '/api/beaconspam/ssids', '["ok","bad\\q"]', { raw: true });
   check('beacon custom JSON parser rejects bad escapes', r.status === 400, r.json);
@@ -838,6 +865,28 @@ if (DEV) {
   r = await call('GET', '/api/beaconspam');
   check('beacon reports custom mode, SSID count and errors', r.json?.active === true && r.json.mode === 2 && r.json.ssids === 2 && r.json.customSsids?.[0] === 'Lab"Net' && typeof r.json.txErrors === 'number', r.json);
   await call('POST', '/api/beaconspam/stop', {});
+  if (DEV) {
+    r = await call('POST', '/api/beaconspam/campaign/start', { mode: 'custom', channel: 1, framesPerSsid: 2 });
+    check('beacon campaign requires explicit authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+    r = await call('POST', '/api/beaconspam/campaign/start', { mode: 'generated', prefix: 'Lab', count: 65, channel: 1, framesPerSsid: 2, authorized: true });
+    check('beacon campaign enforces bounded 64-SSID progress', r.status === 400, r.json);
+    r = await call('POST', '/api/beaconspam/campaign/start', { mode: 'custom', channel: 1, framesPerSsid: 10000, authorized: true });
+    check('custom beacon campaign starts with per-SSID goals', r.status === 200 && r.json?.active === true, r.json);
+    await call('POST', '/api/_dev/beaconspam', { action: 'fail-target' });
+    r = await call('GET', '/api/beaconspam');
+    check('failed beacon SSID skips independently', r.json?.progress?.[0]?.state === 'error' && r.json.progress[0].failed === 1 && r.json.progress[1].state === 'running' && r.json.txErrors === 1, r.json);
+    await call('POST', '/api/beaconspam/stop', {});
+    r = await call('POST', '/api/beaconspam/campaign/start', { mode: 'custom', channel: 1, framesPerSsid: 2, authorized: true });
+    let campaign = null;
+    for (let i = 0; i < 100; i++) {
+      await new Promise(x => setTimeout(x, 100));
+      campaign = (await call('GET', '/api/beaconspam')).json;
+      if (!campaign?.active) break;
+    }
+    check('beacon campaign completes every custom SSID', campaign?.campaign?.completed === 2 && campaign.progress?.every(t => t.state === 'done' && t.accepted === 2), campaign);
+    check('beacon aggregate and per-SSID counters agree', campaign?.beacons === campaign.progress.reduce((n, t) => n + t.accepted, 0) && campaign.txErrors === campaign.progress.reduce((n, t) => n + t.failed, 0), campaign);
+    check('beacon completion reports reconnect metrics', campaign?.reconnect?.reconnected === true && campaign.reconnect.attempts >= 1 && campaign.reconnect.elapsedMs >= 0, campaign?.reconnect);
+  }
   await call('POST', '/api/_dev/fido2', { available: false });
 }
 

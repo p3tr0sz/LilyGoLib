@@ -59,7 +59,8 @@ const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
-  'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'beacon.spam'];
+  'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'deauth.campaign', 'deauth.health',
+  'beacon.spam', 'beacon.campaign', 'beacon.health'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -134,9 +135,13 @@ let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [
   cloning: false, cloneName: '', cloneBytes: 0, cloneSsid: '', coherent: false,
   karmaScanning: false, karmaTimer: null, karmaProbes: [], html: '', settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
 const BUILTIN_PORTAL_TEMPLATES = ['Default (Wi-Fi Login)', 'Router Update', 'Google Sign-In', 'OAuth / Social Login'];
-let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null };
+let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null,
+  campaign: { active: false, current: 0, completed: 0, count: 0, framesPerTarget: 100 }, progress: [], campaignTimer: null,
+  reconnect: { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 } };
 let deauthScan = { scanning: false, targets: [], error: null, timer: null };
-let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet', mode: 0, txErrors: 0, customSsids: [], error: null };
+let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet', mode: 0, txErrors: 0, customSsids: [], error: null,
+  campaign: { active: false, current: 0, completed: 0, count: 0, framesPerSsid: 10 }, progress: [], campaignTimer: null,
+  reconnect: { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 } };
 
 function pcapGlobalHeader() {
   const b = Buffer.alloc(24);
@@ -345,8 +350,63 @@ function stopPortalClone() {
   evilportal.cloning = false;
   evilportal.cloneSsid = '';
 }
-function deauthfloodState() { return { ...deauthflood }; }
-function beaconspamState() { return { ...beaconspam }; }
+function deauthfloodState() { const { campaignTimer, ...state } = deauthflood; return { ...state }; }
+function beaconspamState() { const { campaignTimer, ...state } = beaconspam; return { ...state }; }
+function mockReconnect(tool) { tool.reconnect = { pending: false, reconnected: true, attempts: 1, elapsedMs: 25 }; }
+function finishDeauthCampaign() {
+  clearInterval(deauthflood.campaignTimer); deauthflood.campaignTimer = null;
+  deauthflood.active = false; deauthflood.campaign.active = false; mockReconnect(deauthflood);
+}
+function advanceDeauthCampaign() {
+  deauthflood.campaign.completed = deauthflood.progress.filter(t => ['done', 'error', 'pmf_limited'].includes(t.state)).length;
+  let next = deauthflood.progress.findIndex(t => t.state === 'pending');
+  deauthflood.campaign.current = next < 0 ? deauthflood.progress.length : next;
+  if (next < 0) return finishDeauthCampaign();
+  const t = deauthflood.progress[next]; t.state = 'running'; t.started = Date.now();
+  deauthflood.targetBssid = t.bssid; deauthflood.targetSsid = t.ssid; deauthflood.targetStation = t.station; deauthflood.channel = t.channel;
+}
+function startMockDeauthCampaign(targets, frames, rate, station) {
+  clearInterval(deauthflood.campaignTimer);
+  deauthflood.progress = targets.map(ap => ({ ssid: ap.ssid, bssid: ap.bssid, station, channel: ap.channel, auth: ap.auth,
+    state: ap.channel < 1 || ap.channel > 13 ? 'error' : 'pending', accepted: 0, failed: 0, goal: frames, elapsedMs: 0,
+    pmfLimited: ap.auth.includes('wpa3'), error: ap.channel < 1 || ap.channel > 13 ? 'Only 2.4 GHz channels 1-13 are supported' : null }));
+  deauthflood.campaign = { active: true, current: 0, completed: 0, count: targets.length, framesPerTarget: frames };
+  Object.assign(deauthflood, { active: true, sent: 0, txErrors: 0, ratePps: rate, started: nowEpoch(), error: null,
+    reconnect: { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 } });
+  advanceDeauthCampaign();
+  deauthflood.campaignTimer = setInterval(() => {
+    const t = deauthflood.progress[deauthflood.campaign.current];
+    if (!deauthflood.active || !t) return;
+    const add = Math.min(t.goal - t.accepted, Math.max(1, Math.floor(deauthflood.ratePps / 20)));
+    t.accepted += add; deauthflood.sent += add; t.elapsedMs = Date.now() - t.started;
+    if (t.accepted >= t.goal) { t.state = t.pmfLimited ? 'pmf_limited' : 'done'; advanceDeauthCampaign(); }
+  }, 25);
+}
+function finishBeaconCampaign() {
+  clearInterval(beaconspam.campaignTimer); beaconspam.campaignTimer = null;
+  beaconspam.active = false; beaconspam.campaign.active = false; mockReconnect(beaconspam);
+}
+function advanceBeaconCampaign() {
+  beaconspam.campaign.completed = beaconspam.progress.filter(t => ['done', 'error'].includes(t.state)).length;
+  const next = beaconspam.progress.findIndex(t => t.state === 'pending');
+  beaconspam.campaign.current = next < 0 ? beaconspam.progress.length : next;
+  if (next < 0) return finishBeaconCampaign();
+  const t = beaconspam.progress[next]; t.state = 'running'; t.started = Date.now();
+}
+function startMockBeaconCampaign(ssids, frames, channel) {
+  clearInterval(beaconspam.campaignTimer);
+  beaconspam.progress = ssids.map(ssid => ({ ssid, state: 'pending', accepted: 0, failed: 0, goal: frames, elapsedMs: 0, error: null }));
+  beaconspam.campaign = { active: true, current: 0, completed: 0, count: ssids.length, framesPerSsid: frames };
+  beaconspam.active = true; beaconspam.beacons = 0; beaconspam.txErrors = 0; beaconspam.channel = channel;
+  beaconspam.reconnect = { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 };
+  advanceBeaconCampaign();
+  beaconspam.campaignTimer = setInterval(() => {
+    const t = beaconspam.progress[beaconspam.campaign.current];
+    if (!beaconspam.active || !t) return;
+    t.accepted++; beaconspam.beacons++; t.elapsedMs = Date.now() - t.started;
+    if (t.accepted >= t.goal) { t.state = 'done'; advanceBeaconCampaign(); }
+  }, 25);
+}
 
 function wsFrame(text) {
   const d = Buffer.from(text), n = d.length;
@@ -1263,10 +1323,24 @@ async function toolsRoute(req, res, url, path) {
     return ok(res);
   }
   if (DEV && path === '/api/_dev/deauthflood' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.action === 'fail-target') {
+      const t = deauthflood.progress[deauthflood.campaign.current];
+      if (!deauthflood.active || !t) return fail(res, 409, 'conflict', 'no campaign target is running');
+      t.failed++; deauthflood.txErrors++; t.state = 'error'; t.error = 'Simulator injection failure'; t.elapsedMs = Date.now() - t.started;
+      advanceDeauthCampaign(); return ok(res);
+    }
     deauthflood.active = true; deauthflood.sent = 100;
     return ok(res);
   }
   if (DEV && path === '/api/_dev/beaconspam' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.action === 'fail-target') {
+      const t = beaconspam.progress[beaconspam.campaign.current];
+      if (!beaconspam.active || !t) return fail(res, 409, 'conflict', 'no campaign SSID is running');
+      t.failed++; beaconspam.txErrors++; t.state = 'error'; t.error = 'Simulator injection failure'; t.elapsedMs = Date.now() - t.started;
+      advanceBeaconCampaign(); return ok(res);
+    }
     beaconspam.active = true; beaconspam.beacons = 200;
     return ok(res);
   }
@@ -1438,12 +1512,29 @@ async function toolsRoute(req, res, url, path) {
     if (!Number.isInteger(b?.channel) || b.channel < 1 || b.channel > 13) return fail(res, 400, 'bad_request', 'channel must be 1-13');
     if (!Number.isInteger(b?.rate) || b.rate < 1 || b.rate > 100) return fail(res, 400, 'bad_request', 'rate must be 1-100 packets/s');
     if (deauthflood.active) return fail(res, 409, 'conflict', 'already running');
+    clearInterval(deauthflood.campaignTimer); deauthflood.campaignTimer = null;
+    deauthflood.campaign = { active: false, current: 0, completed: 0, count: 0, framesPerTarget: 100 }; deauthflood.progress = [];
+    deauthflood.reconnect = { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 };
     deauthflood = { ...deauthflood, active: true, targetBssid: b.bssid, targetStation: b?.station || 'ff:ff:ff:ff:ff:ff',
       targetSsid: deauthScan.targets.find(t => t.bssid === b.bssid)?.ssid || '', channel: b?.channel || 1,
       ratePps: b?.rate || 10, sent: 0, txErrors: 0, started: nowEpoch(), error: null };
     return ok(res);
   }
-  if (path === '/api/deauthflood/stop' && m === 'POST') { deauthflood.active = false; return ok(res); }
+  if (path === '/api/deauthflood/campaign/start' && m === 'POST') {
+    const b = await readJSON(req);
+    if (b?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm every selected lab target is authorized');
+    if (deauthflood.active) return fail(res, 409, 'conflict', 'already running');
+    if (!Array.isArray(b?.targets) || !b.targets.length || b.targets.length > 8 || new Set(b.targets.map(x => x.toLowerCase())).size !== b.targets.length ||
+        b.targets.some(x => !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(x))) return fail(res, 400, 'bad_request', 'Select 1-8 unique target BSSIDs');
+    if (!Number.isInteger(b?.frames) || b.frames < 1 || b.frames > 100000 || !Number.isInteger(b?.rate) || b.rate < 1 || b.rate > 100) return fail(res, 400, 'bad_request', 'frames: 1-100000; rate: 1-100');
+    if (b?.station && !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(b.station)) return fail(res, 400, 'bad_request', 'invalid station MAC');
+    const targets = b.targets.map(mac => deauthScan.targets.find(t => t.bssid.toLowerCase() === mac.toLowerCase()));
+    if (targets.some(t => !t)) return fail(res, 400, 'bad_request', 'Every campaign BSSID must come from the latest scan');
+    if (!targets.some(t => t.channel >= 1 && t.channel <= 13)) return fail(res, 400, 'bad_request', 'No selected target is on a supported 2.4 GHz channel');
+    startMockDeauthCampaign(targets, b.frames, b.rate, b.station || 'ff:ff:ff:ff:ff:ff');
+    return ok(res, { active: deauthflood.campaign.active });
+  }
+  if ((path === '/api/deauthflood/stop' || path === '/api/deauthflood/campaign/stop') && m === 'POST') { clearInterval(deauthflood.campaignTimer); deauthflood.campaignTimer = null; deauthflood.active = false; deauthflood.campaign.active = false; if (deauthflood.progress.length) mockReconnect(deauthflood); return ok(res); }
   if (path === '/api/deauthflood/scan' && m === 'POST') {
     if (deauthflood.active) return fail(res, 409, 'conflict', 'stop before scanning');
     if (!deauthScan.scanning) {
@@ -1452,6 +1543,7 @@ async function toolsRoute(req, res, url, path) {
         deauthScan.targets = [
           { ssid: 'Lab AP', bssid: '02:00:00:00:00:01', channel: 1, rssi: -42, auth: 'wpa2' },
           { ssid: 'Test Guest', bssid: '02:00:00:00:00:02', channel: 6, rssi: -66, auth: 'open' },
+          { ssid: 'Lab PMF', bssid: '02:00:00:00:00:03', channel: 11, rssi: -70, auth: 'wpa3' },
         ];
         deauthScan.scanning = false;
       }, 400);
@@ -1467,8 +1559,11 @@ async function toolsRoute(req, res, url, path) {
     if (b?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this environment');
     if (beaconspam.active) return fail(res, 409, 'conflict', 'already running');
     if (b?.mode === 'custom' && !beaconspam.customSsids.length) return fail(res, 400, 'bad_request', 'add custom SSIDs first');
-    beaconspam.active = true;
     beaconspam.prefix = b?.prefix || 'FreeNet';
+    clearInterval(beaconspam.campaignTimer); beaconspam.campaignTimer = null;
+    beaconspam.campaign = { active: false, current: 0, completed: 0, count: 0, framesPerSsid: 10 }; beaconspam.progress = [];
+    beaconspam.reconnect = { pending: false, reconnected: false, attempts: 0, elapsedMs: 0 };
+    beaconspam.active = true;
     beaconspam.mode = b?.mode === 'custom' ? 2 : 0;
     beaconspam.ssids = beaconspam.mode === 2 ? beaconspam.customSsids.length : (b?.count || 20);
     beaconspam.channel = b?.channel ?? 0;
@@ -1480,7 +1575,22 @@ async function toolsRoute(req, res, url, path) {
     if (!Array.isArray(list) || list.length > 64 || list.some(x => typeof x !== 'string' || !x || Buffer.byteLength(x) > 32)) return fail(res, 400, 'bad_request', 'invalid SSID list');
     beaconspam.customSsids = list; return ok(res, { count: list.length });
   }
-  if (path === '/api/beaconspam/stop' && m === 'POST') { beaconspam.active = false; return ok(res); }
+  if (path === '/api/beaconspam/campaign/start' && m === 'POST') {
+    const b = await readJSON(req);
+    if (b?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm this beacon campaign is authorized');
+    if (beaconspam.active) return fail(res, 409, 'conflict', 'already running');
+    if (!['generated', 'custom'].includes(b?.mode)) return fail(res, 400, 'bad_request', 'mode: generated or custom');
+    if (!Number.isInteger(b?.framesPerSsid) || b.framesPerSsid < 1 || b.framesPerSsid > 10000) return fail(res, 400, 'bad_request', 'framesPerSsid: 1-10000');
+    if (!Number.isInteger(b?.channel) || b.channel < 0 || b.channel > 13) return fail(res, 400, 'bad_request', 'channel: 0-13');
+    if (b.mode === 'generated' && (!Number.isInteger(b?.count) || b.count < 1 || b.count > 64 || typeof b?.prefix !== 'string' || !b.prefix || Buffer.byteLength(b.prefix) > 20)) return fail(res, 400, 'bad_request', 'Campaigns support 1-64 SSIDs and a 1-20 byte prefix');
+    if (b.mode === 'custom' && (!beaconspam.customSsids.length || beaconspam.customSsids.length > 64)) return fail(res, 400, 'bad_request', 'Save 1-64 custom SSIDs first');
+    beaconspam.prefix = b.prefix || 'FreeNet'; beaconspam.mode = b.mode === 'custom' ? 2 : 0;
+    beaconspam.ssids = b.mode === 'custom' ? beaconspam.customSsids.length : b.count;
+    const ssids = b.mode === 'custom' ? [...beaconspam.customSsids] : Array.from({ length: b.count }, (_, i) => `${beaconspam.prefix}${String(i).padStart(4, '0')}`);
+    startMockBeaconCampaign(ssids, b.framesPerSsid, b.channel);
+    return ok(res, { active: beaconspam.campaign.active });
+  }
+  if ((path === '/api/beaconspam/stop' || path === '/api/beaconspam/campaign/stop') && m === 'POST') { clearInterval(beaconspam.campaignTimer); beaconspam.campaignTimer = null; beaconspam.active = false; beaconspam.campaign.active = false; if (beaconspam.progress.length) mockReconnect(beaconspam); return ok(res); }
 
   return null;
 }

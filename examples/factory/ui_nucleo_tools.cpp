@@ -545,7 +545,7 @@ static void exit_evilportal(lv_obj_t *) { exit_native(portal_ui, web_hw_evilport
 static native_page_t deauth_ui;
 static bool deauth_consented = false;
 static lv_obj_t *deauth_target, *deauth_rate, *deauth_state, *deauth_sent, *deauth_error, *deauth_scan_label;
-static lv_obj_t *deauth_start_row, *deauth_stop_row, *deauth_scan_row;
+static lv_obj_t *deauth_start_row, *deauth_campaign_row, *deauth_stop_row, *deauth_scan_row;
 static char deauth_options[1024] = "Scan first";
 static int deauth_options_count = -1;
 static bool deauth_scan_was = false;
@@ -558,11 +558,15 @@ static void deauth_refresh(lv_timer_t *)
     web_hw_deauthflood_status(&st);
     bool scanning = web_hw_deauthflood_scanning();
     int count = web_hw_deauthflood_target_count();
-    label_set(deauth_state, st.active ? "Injecting" : scanning ? "Scanning" : "Stopped");
-    label_set(deauth_sent, "%lu", (unsigned long)st.sent_count);
-    label_set(deauth_error, st.error ? st.error : "WPA3/PMF may ignore deauth");
+    if (st.active && st.campaign_count) label_set(deauth_state, "Campaign %d/%d", st.campaign_completed, st.campaign_count);
+    else label_set(deauth_state, st.active ? "Injecting" : scanning ? "Scanning" : "Stopped");
+    label_set(deauth_sent, "%lu ok / %lu failed", (unsigned long)st.sent_count, (unsigned long)st.tx_errors);
+    if (st.error) label_set(deauth_error, "%s", st.error);
+    else if (!st.active && st.reconnect_attempts) label_set(deauth_error, "Reconnect: %lu ms, %d attempt(s)", (unsigned long)st.reconnect_ms, st.reconnect_attempts);
+    else label_set(deauth_error, "WPA3/PMF may ignore deauth");
     label_set(deauth_scan_label, scanning ? "Scanning channels..." : count ? "Select a target" : "Scan for targets");
     row_disabled(deauth_start_row, st.active || scanning || count == 0);
+    row_disabled(deauth_campaign_row, st.active || scanning || count == 0);
     row_disabled(deauth_stop_row, !st.active);
     row_disabled(deauth_scan_row, st.active || scanning);
     if (scanning) deauth_scan_was = true;
@@ -596,6 +600,13 @@ static void deauth_start(lv_event_t *)
     }
     deauth_refresh(NULL);
 }
+static void deauth_campaign_start(lv_event_t *)
+{
+    static const int rates[] = {1, 5, 10, 20, 50};
+    int rate_idx = deauth_rate ? (int)lv_dropdown_get_selected(deauth_rate) : 2;
+    web_hw_deauthflood_campaign_start_all(50, rates[rate_idx]);
+    deauth_refresh(NULL);
+}
 static void deauth_stop_cb(lv_event_t *) { web_hw_deauthflood_stop(); deauth_refresh(NULL); }
 static void deauth_consent(lv_event_t *) { deauth_consented = true; lv_obj_clean(deauth_ui.page); deauth_build(); }
 static void deauth_build(void)
@@ -609,9 +620,11 @@ static void deauth_build(void)
     deauth_rate = row_value(ui_create_card_dropdown(card, NULL, "Packets/s", "1\n5\n10\n20\n50", 2, NULL));
     deauth_scan_row = action_row(card, LV_SYMBOL_REFRESH, "Scan APs", deauth_scan);
     deauth_scan_label = wrapped_text(card, "Scan for targets");
-    deauth_start_row = action_row(card, LV_SYMBOL_PLAY, "Start test", deauth_start);
+    deauth_start_row = action_row(card, LV_SYMBOL_PLAY, "Start selected test", deauth_start);
+    deauth_campaign_row = action_row(card, LV_SYMBOL_PLAY, "Test first 8 scanned APs", deauth_campaign_start);
     deauth_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop and reconnect", deauth_stop_cb);
     wrapped_text(card, "Broadcast station. Normal Wi-Fi disconnects during the test. Closing this page stops injection.", true);
+    wrapped_text(card, "Campaign uses the first 8 scan rows. Inspect and confirm every one is authorized before starting it.", true);
 }
 static void enter_deauthflood(lv_obj_t *parent)
 {
@@ -634,7 +647,7 @@ static void exit_deauthflood(lv_obj_t *) { exit_native(deauth_ui, web_hw_deauthf
 static native_page_t beacon_ui;
 static bool beacon_consented = false;
 static lv_obj_t *beacon_prefix, *beacon_prefix_text, *beacon_count, *beacon_channel, *beacon_state, *beacon_sent, *beacon_error;
-static lv_obj_t *beacon_start_row, *beacon_stop_row;
+static lv_obj_t *beacon_start_row, *beacon_campaign_row, *beacon_stop_row;
 static void beacon_build(void);
 static void beacon_refresh(lv_timer_t *)
 {
@@ -642,10 +655,15 @@ static void beacon_refresh(lv_timer_t *)
     drive_native(beacon_ui);
     web_hw_beaconspam_t st;
     web_hw_beaconspam_status(&st);
-    label_set(beacon_state, st.active ? "Injecting" : "Stopped");
-    label_set(beacon_sent, "%lu / %lu SSIDs", (unsigned long)st.beacon_count, (unsigned long)st.ssid_count);
-    label_set(beacon_error, st.error ? st.error : "");
+    if (st.active && st.campaign_active) label_set(beacon_state, "Campaign %d/%lu", st.campaign_completed, (unsigned long)st.ssid_count);
+    else label_set(beacon_state, st.active ? "Injecting" : "Stopped");
+    label_set(beacon_sent, "%lu ok / %lu failed · %lu SSIDs", (unsigned long)st.beacon_count,
+              (unsigned long)st.tx_errors, (unsigned long)st.ssid_count);
+    if (st.error) label_set(beacon_error, "%s", st.error);
+    else if (!st.active && st.reconnect_attempts) label_set(beacon_error, "Reconnect: %lu ms, %d attempt(s)", (unsigned long)st.reconnect_ms, st.reconnect_attempts);
+    else label_set(beacon_error, "");
     row_disabled(beacon_start_row, st.active);
+    row_disabled(beacon_campaign_row, st.active);
     row_disabled(beacon_stop_row, !st.active);
 }
 static void beacon_back(lv_event_t *) { close_native(beacon_ui, web_hw_beaconspam_stop, true); }
@@ -657,6 +675,17 @@ static void beacon_start(lv_event_t *)
     const char *manual = beacon_prefix_text ? lv_textarea_get_text(beacon_prefix_text) : "";
     const char *prefix = manual && *manual ? manual : prefixes[lv_dropdown_get_selected(beacon_prefix)];
     web_hw_beaconspam_start(channel, counts[lv_dropdown_get_selected(beacon_count)], prefix);
+    beacon_refresh(NULL);
+}
+static void beacon_campaign_start(lv_event_t *)
+{
+    static const char *prefixes[] = {"FreeNet", "LabTest", "BeaconTest"};
+    static const int counts[] = {20, 50, 64};
+    int channel = beacon_channel ? (int)lv_dropdown_get_selected(beacon_channel) : 0;
+    const char *manual = beacon_prefix_text ? lv_textarea_get_text(beacon_prefix_text) : "";
+    const char *prefix = manual && *manual ? manual : prefixes[lv_dropdown_get_selected(beacon_prefix)];
+    int selected = beacon_count ? (int)lv_dropdown_get_selected(beacon_count) : 0;
+    web_hw_beaconspam_campaign_start(channel, counts[selected], prefix, 10);
     beacon_refresh(NULL);
 }
 static void beacon_stop_cb(lv_event_t *) { web_hw_beaconspam_stop(); beacon_refresh(NULL); }
@@ -673,7 +702,8 @@ static void beacon_build(void)
     beacon_count = row_value(ui_create_card_dropdown(card, NULL, "SSID count", "20\n50\n100", 0, NULL));
     static const char channels[] = "Hop all\nChannel 1\nChannel 2\nChannel 3\nChannel 4\nChannel 5\nChannel 6\nChannel 7\nChannel 8\nChannel 9\nChannel 10\nChannel 11\nChannel 12\nChannel 13";
     beacon_channel = row_value(ui_create_card_dropdown(card, NULL, "Channel", channels, 0, NULL));
-    beacon_start_row = action_row(card, LV_SYMBOL_PLAY, "Start test", beacon_start);
+    beacon_start_row = action_row(card, LV_SYMBOL_PLAY, "Start continuous test", beacon_start);
+    beacon_campaign_row = action_row(card, LV_SYMBOL_PLAY, "Run finite SSID campaign", beacon_campaign_start);
     beacon_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop and reconnect", beacon_stop_cb);
     wrapped_text(card, "Generated SSIDs on watch; manual prefix overrides the preset. Custom lists are configured in the browser. Closing this page stops injection.", true);
 }

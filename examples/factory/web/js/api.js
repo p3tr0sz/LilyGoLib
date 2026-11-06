@@ -159,11 +159,13 @@ export const api = {
   evilportalClone: (ssid) => request('POST', '/api/evilportal/clone', { json: { ssid, authorized: true } }),
   deauthflood: () => request('GET', '/api/deauthflood'),
   deauthfloodStart: (opts) => request('POST', '/api/deauthflood/start', { json: opts }),
+  deauthfloodCampaignStart: (opts) => request('POST', '/api/deauthflood/campaign/start', { json: opts }),
   deauthfloodStop: () => request('POST', '/api/deauthflood/stop'),
   deauthfloodScan: () => request('POST', '/api/deauthflood/scan'),
   deauthfloodTargets: () => request('GET', '/api/deauthflood/targets'),
   beaconspam: () => request('GET', '/api/beaconspam'),
   beaconspamStart: (opts) => request('POST', '/api/beaconspam/start', { json: opts }),
+  beaconspamCampaignStart: (opts) => request('POST', '/api/beaconspam/campaign/start', { json: opts }),
   beaconspamStop: () => request('POST', '/api/beaconspam/stop'),
   beaconspamSetSsids: (ssids) => request('PUT', '/api/beaconspam/ssids', { json: ssids }),
 

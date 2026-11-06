@@ -640,6 +640,7 @@ bool web_hw_wifi_scan(std::vector<web_hw_wifi_t> &out)
         { "LilyGo-AABB0", "a4:cf:12:aa:bb:c0", -42, 6, "wpa2" },
         { "Home Network 5G", "3c:84:6a:10:22:31", -58, 36, "wpa2/wpa3" },
         { "Cafe Guest", "f0:9f:c2:7a:01:9e", -71, 11, "open" },
+        { "Lab PMF", "f0:9f:c2:7a:01:9f", -72, 3, "wpa3" },
         { "Office", "00:1d:7e:55:42:10", -77, 1, "wpa2-ent" },
         { "Neighbour's very long network name", "b0:be:76:43:19:aa", -84, 1, "wpa" },
     };

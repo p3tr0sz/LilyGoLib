@@ -359,12 +359,19 @@ typedef struct {
     char target_ssid[33];           /* human-readable name of target */
     int channel;
     uint32_t sent_count;
+    uint32_t tx_errors;
+    int campaign_count;
+    int campaign_completed;
+    int campaign_current;
+    int reconnect_attempts;
+    uint32_t reconnect_ms;
     uint32_t rate_kbps;
     long long started_epoch;
     const char *error;
 } web_hw_deauthflood_t;
 bool web_hw_deauthflood_start(const char *bssid, const char *station, int channel, int rate);
 bool web_hw_deauthflood_stop(void);
+bool web_hw_deauthflood_campaign_start_all(int frames, int rate);
 void web_hw_deauthflood_status(web_hw_deauthflood_t *out);
 /* Quick list of nearby APs to pick from (from last Wi-Fi scan) */
 int  web_hw_deauthflood_scan_targets(void);
@@ -382,12 +389,18 @@ typedef struct {
     int  mode;                      /* 0=random, 1=from-list, 2=custom */
     int  channel;                   /* 0=hop all */
     uint32_t beacon_count;
+    uint32_t tx_errors;
+    bool campaign_active;
+    int campaign_completed;
+    int reconnect_attempts;
+    uint32_t reconnect_ms;
     uint32_t ssid_count;
     long long started_epoch;
     const char *error;
 } web_hw_beaconspam_t;
 bool web_hw_beaconspam_start(int channel, int count, const char *prefix);
 bool web_hw_beaconspam_stop(void);
+bool web_hw_beaconspam_campaign_start(int channel, int count, const char *prefix, int frames_per_ssid);
 void web_hw_beaconspam_status(web_hw_beaconspam_t *out);
 void web_hw_beaconspam_set_custom_ssids(const char **ssids, int count);
 int  web_hw_beaconspam_custom_count(void);

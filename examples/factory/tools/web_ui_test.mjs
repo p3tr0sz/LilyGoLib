@@ -503,7 +503,8 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await call('POST', '/api/link/enable', { on: false });            // start from off
     await go('#app=link');
     check('Link opens', await waitFor('document.querySelector(".link")'));
-    await js(`$t('.link .btn', 'Link off')?.click();`);
+    await waitFor('$t(".link .btn", "Link off")');
+    await js(`$t('.link .btn', 'Link off').click();`);
     check('Link turns on', await waitFor('$t(".link .btn", "Link on")', 4000));
     await call('POST', '/api/_dev/link', {});                          // a watch appears in range
     check('a peer shows up', await waitFor('document.querySelectorAll(".link .tbl tbody tr").length >= 1', 4000));
@@ -707,6 +708,16 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await js(`$t('.scrim .btn', 'Start test').click();`);
     check('deauth reports injecting', await waitFor('/INJECTING/.test(document.querySelector(".deauthflood")?.textContent || "")'));
     await call('POST', '/api/deauthflood/stop', {});
+    if (has('deauth.campaign')) {
+      await waitFor('/STOPPED/.test(document.querySelector(".deauthflood")?.textContent || "") && !$t(\'.deauthflood .btn\', \'Start selected campaign\').disabled');
+      await js(`document.querySelectorAll('.deauthflood .list button.note')[2].click();
+        $type(document.querySelector('.deauthflood input[aria-label="Frames per campaign target"]'), '2');
+        $t('.deauthflood .btn', 'Start selected campaign').click();`);
+      check('deauth campaign asks authorization for all selected targets', await waitFor('document.querySelector(".scrim") && /multi-target deauthentication campaign/.test(document.querySelector(".scrim").textContent)'));
+      await js(`$t('.scrim .btn', 'Start campaign').click();`);
+      check('deauth campaign renders independent target progress', await waitFor('/2\\/2 complete/.test(document.querySelector(".deauthflood")?.textContent || "") && [...document.querySelectorAll(".deauthflood .list .note")].some(x => /2\\/2 accepted/.test(x.textContent))'));
+      check('deauth campaign completion renders reconnect health', await waitFor('/connected · \\d+ ms · 1 attempt/.test(document.querySelector(".deauthflood")?.textContent || "")'));
+    }
   }
   if (has('beacon.spam')) {
     console.log('P9 beacon spam');
@@ -717,6 +728,16 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await js(`$t('.scrim .btn', 'Start test').click();`);
     check('beacon reports injecting', await waitFor('/INJECTING/.test(document.querySelector(".beaconspam")?.textContent || "")'));
     await call('POST', '/api/beaconspam/stop', {});
+    if (has('beacon.campaign')) {
+      await waitFor('/STOPPED/.test(document.querySelector(".beaconspam")?.textContent || "")');
+      await js(`$type(document.querySelector('.beaconspam input[aria-label="Generated SSID count"]'), '3');
+        $type(document.querySelector('.beaconspam input[aria-label="Beacon frames per SSID"]'), '2');
+        $t('.beaconspam .btn', 'Run finite campaign').click();`);
+      check('beacon campaign asks controlled-environment consent', await waitFor('document.querySelector(".scrim") && /finite beacon campaign/.test(document.querySelector(".scrim").textContent)'));
+      await js(`$t('.scrim .btn', 'Start campaign').click();`);
+      check('beacon campaign renders per-SSID completion', await waitFor('/3\\/3 complete/.test(document.querySelector(".beaconspam")?.textContent || "") && [...document.querySelectorAll(".beaconspam .list .note")].filter(x => /2\\/2 accepted/.test(x.textContent)).length === 3'));
+      check('beacon campaign renders reconnect health', await waitFor('/connected · \\d+ ms · 1 attempt/.test(document.querySelector(".beaconspam")?.textContent || "")'));
+    }
   }
 
   // ---- phone
