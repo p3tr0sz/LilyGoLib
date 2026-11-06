@@ -1097,6 +1097,14 @@ static const struct {
     { "Timer",        "Clock" },
     { "Alarm",        "Clock" },
     { "Clock Tools",  "Clock" },
+    { "WiFi Sniffer", "Security" },
+    { "Airspace",     "Security" },
+    { "Sentinel",     "Security" },
+    { "Presence",     "Security" },
+    { "FIDO2 Key",    "Security" },
+    { "Evil Portal",  "Security" },
+    { "Deauth Flood", "Security" },
+    { "Beacon Spam",  "Security" },
 };
 
 const char *ui_app_category_for(const char *name)
