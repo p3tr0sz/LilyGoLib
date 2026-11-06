@@ -1,243 +1,150 @@
-// Evil Portal: rogue AP + captive portal for credential harvesting (security audit tool).
-// WARNING: Only use on networks you own or have explicit permission to test.
-//
-// Three modes:
-//   standalone — own AP with chosen SSID and portal template
-//   evil-twin  — clone a real AP, deauth its clients onto our twin
-//   karma      — probe-response lure for nearby devices
-import { h, icon, toast, errorText, fmtTime, fmtDuration } from '../../js/ui.js';
+// Authorized captive-portal testing. Unsupported KARMA/cloning/coherent modes are not shown.
+import { h, icon, toast, errorText, fmtTime, fmtDuration, confirmDialog } from '../../js/ui.js';
 
-export function mount(el, ctx) {
-  const { api } = ctx;
-  let alive = true, state = { active: false, captures: [], templates: [], ssidPresets: [], settings: {} };
+export function mount(el, { api, caps: deviceCaps }) {
+  let alive = true, requestSeq = 0, busy = false, mode = 'standalone';
+  let state = { active: false, captures: [], templates: [], ssidPresets: [], settings: {}, error: null };
+  const canTwin = deviceCaps.includes('evil.portal.twin');
 
-  // ── mode selector ──
-  let mode = 'standalone';
-  const modeTabs = h('div', { class: 'tabs' },
-    h('button', { class: 'tab sel', 'data-mode': 'standalone', onclick: pickMode }, 'Standalone AP'),
-    h('button', { class: 'tab', 'data-mode': 'twin', onclick: pickMode }, 'Evil Twin'),
-    h('button', { class: 'tab', 'data-mode': 'karma', onclick: pickMode }, 'KARMA'),
-  );
-
-  // ── SSID input ──
-  const ssidInput = h('input', { class: 'field', placeholder: 'SSID (default: Free Wi-Fi)', 'aria-label': 'SSID' });
-  const ssidPreset = h('select', { class: 'field', onchange: (e) => { ssidInput.value = e.target.value; } },
-    h('option', {}, '— SSID presets —'),
-    ...([]));
-
-  // ── Twin-specific ──
-  const twinBssid = h('input', { class: 'field', placeholder: 'Target BSSID (aa:bb:cc:dd:ee:ff)', 'aria-label': 'Target BSSID' });
-  const twinChannel = h('input', { class: 'field', type: 'number', min: 1, max: 14, value: 1, 'aria-label': 'Channel' });
-  const twinCoherent = h('label', { class: 'check' }, h('input', { type: 'checkbox' }), ' Coherent (match WPA2 — no downgrade)');
-  const twinSection = h('div', { class: 'card' },
-    h('h4', {}, 'Evil-Twin Target'),
-    h('div', { class: 'row gap' }, h('div', { class: 'grow' }, twinBssid), h('div', { style: 'width:80px' }, twinChannel)),
-    twinCoherent);
-
-  // ── Template picker ──
-  const templatePicker = h('select', { class: 'field' }, h('option', { value: '0' }, 'Default (Wi-Fi Login)'));
-
-  // ── Gateway ──
-  const gatewayInput = h('input', { class: 'field', value: '192.168.4.1', placeholder: 'Gateway IP', 'aria-label': 'Gateway IP' });
-
-  // ── Settings ──
-  const pwdModePicker = h('select', { class: 'field' },
-    h('option', { value: '0' }, 'Show full password'),
-    h('option', { value: '1' }, 'Mask middle chars'),
-    h('option', { value: '2' }, 'Hide all'),
-    h('option', { value: '3' }, 'Show length only'));
-  const verifyCheck = h('label', { class: 'check' }, h('input', { type: 'checkbox' }), ' Verify password against real AP (twin only)');
-
-  // ── Buttons ──
-  const startBtn = h('button', { class: 'btn primary', onclick: start }, icon('play'), 'Start Portal');
-  const stopBtn = h('button', { class: 'btn', onclick: stop, disabled: true }, icon('stop'), 'Stop');
-  const clearBtn = h('button', { class: 'btn', onclick: clearCap }, icon('delete'), 'Clear Captures');
-
-  // ── KARMA ──
-  const karmaScanBtn = h('button', { class: 'btn', onclick: karmaScan }, icon('search'), 'Scan for Probes');
-  const karmaList = h('div', { class: 'notes' });
-
-  // ── Status panel ──
-  const info = h('div', { class: 'tool' });
-
-  // ── Captures panel ──
-  const caps = h('div', { class: 'notes' });
-
-  // ── Clone ──
-  const cloneInput = h('input', { class: 'field', placeholder: 'Open network SSID to clone', 'aria-label': 'Clone SSID' });
-  const cloneBtn = h('button', { class: 'btn', onclick: clonePage }, icon('copy'), 'Clone Page');
+  const standaloneTab = h('button', { class: 'tab sel', type: 'button', role: 'tab', 'aria-selected': 'true', 'data-mode': 'standalone', onclick: () => pickMode('standalone') }, 'Standalone AP');
+  const twinTab = canTwin ? h('button', { class: 'tab', type: 'button', role: 'tab', 'aria-selected': 'false', 'data-mode': 'twin', onclick: () => pickMode('twin') }, 'Open Evil Twin') : null;
+  const modeTabs = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Portal mode' }, standaloneTab, twinTab);
+  const ssidInput = h('input', { class: 'field', maxlength: '32', placeholder: 'Free Wi-Fi', 'aria-label': 'Portal SSID', autocomplete: 'off' });
+  const ssidPreset = h('select', { class: 'field', 'aria-label': 'SSID presets', onchange: e => { if (e.target.value) ssidInput.value = e.target.value; } });
+  const twinBssid = h('input', { class: 'field', placeholder: 'aa:bb:cc:dd:ee:ff', 'aria-label': 'Target AP BSSID', autocomplete: 'off' });
+  const twinChannel = h('input', { class: 'field', type: 'number', min: '1', max: '13', value: '1', 'aria-label': 'Target AP channel' });
+  const twinSection = h('div', { class: 'panel' },
+    h('h4', {}, 'Evil-twin target'),
+    h('p', { class: 'muted' }, 'Open twin only. WPA2-coherent cloning and PSK verification are not available in this firmware.'),
+    h('div', { class: 'form' }, h('label', {}, 'Target BSSID', twinBssid), h('label', {}, 'Channel', twinChannel)));
+  const templatePicker = h('select', { class: 'field', 'aria-label': 'Portal template' });
+  const gatewayInput = h('input', { class: 'field', value: '192.168.4.1', inputmode: 'decimal', 'aria-label': 'Captive gateway IPv4 address' });
+  const startBtn = h('button', { class: 'btn danger', type: 'button', onclick: start }, icon('play'), 'Start portal');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+  const clearBtn = h('button', { class: 'btn danger', type: 'button', onclick: clearCaptures }, icon('delete'), 'Clear captures');
+  const info = h('div', {});
+  const capturesEl = h('div', { class: 'list' });
+  const pwdMode = h('select', { class: 'field', 'aria-label': 'Password display mode' },
+    h('option', { value: '2' }, 'Hide all'), h('option', { value: '1' }, 'Mask middle characters'),
+    h('option', { value: '3' }, 'Show length only'), h('option', { value: '0' }, 'Show full password'));
+  const autoBase = h('input', { class: 'field', type: 'number', min: '0', max: '3600', value: '0', 'aria-label': 'Idle auto-stop seconds' });
+  const autoExtended = h('input', { class: 'field', type: 'number', min: '0', max: '3600', value: '0', 'aria-label': 'Active auto-stop seconds' });
+  const debugCheck = h('input', { type: 'checkbox', 'aria-label': 'Write non-credential diagnostics to SD' });
+  const saveSettingsBtn = h('button', { class: 'btn', type: 'button', onclick: saveSettings }, 'Save settings');
 
   el.append(h('div', { class: 'app evilportal' },
     h('div', { class: 'panel' },
-      h('h3', {}, '⚠ Authorized Use Only'),
-      h('p', { class: 'muted' }, 'This tool creates a rogue access point to capture credentials. Only use on networks you OWN or have explicit permission to test. Unauthorized use is illegal in most jurisdictions.')),
+      h('h3', {}, 'Authorized use only'),
+      h('p', { class: 'muted' }, 'Creates a rogue access point and records entered credentials. Use only on networks you own or have explicit permission to test. Captures are sensitive data.')),
     modeTabs,
     h('div', { class: 'panel' },
-      h('h4', {}, 'Configuration'),
-      h('div', { class: 'row gap' },
-        h('div', { class: 'grow' },
-          h('label', { class: 'sub' }, 'SSID'), ssidInput, ssidPreset)),
-      h('div', { class: 'row gap' },
-        h('div', { class: 'grow' }, h('label', { class: 'sub' }, 'Portal Template'), templatePicker),
-        h('div', { style: 'width:160px' }, h('label', { class: 'sub' }, 'Gateway IP'), gatewayInput))),
+      h('div', { class: 'form' },
+        h('label', {}, 'SSID', ssidInput),
+        h('label', {}, 'Preset', ssidPreset),
+        h('label', {}, 'Portal template', templatePicker),
+        h('label', {}, 'Gateway IPv4', gatewayInput))),
     twinSection,
     h('div', { class: 'row gap' }, startBtn, stopBtn),
-    h('div', { class: 'panel' }, h('h3', {}, 'Status'), info),
-    h('div', { class: 'panel' },
-      h('h3', {}, 'Captured Credentials', ' ', clearBtn), caps),
-    h('details', { class: 'panel' },
-      h('summary', {}, 'Settings'),
-      h('div', { class: 'row gap' },
-        h('div', { class: 'grow' }, h('label', { class: 'sub' }, 'Password Display'), pwdModePicker)),
-      verifyCheck),
-    h('details', { class: 'panel' },
-      h('summary', {}, 'KARMA Probe Scanner'),
-      h('div', { class: 'row gap' }, karmaScanBtn),
-      karmaList),
-    h('details', { class: 'panel' },
-      h('summary', {}, 'Live Page Cloning'),
-      h('p', { class: 'muted' }, 'Connect to an open network and clone its captive-portal login page as a new template.'),
-      h('div', { class: 'row gap' },
-        h('div', { class: 'grow' }, cloneInput), cloneBtn))));
+    h('div', { class: 'panel' }, h('h3', {}, 'Portal status'), info),
+    h('div', { class: 'panel' }, h('h3', {}, 'Captured credentials'), clearBtn, capturesEl),
+    h('details', { class: 'panel' }, h('summary', {}, 'Privacy and runtime settings'),
+      h('div', { class: 'form' },
+        h('label', {}, 'Password display', pwdMode),
+        h('label', {}, 'Idle stop (0 = off)', autoBase),
+        h('label', {}, 'Active stop (0 = off)', autoExtended)),
+      h('label', { class: 'check' }, debugCheck, 'Write diagnostics to SD (no credentials)'), saveSettingsBtn)));
 
-  // ── Functions ──
-
-  function pickMode(e) {
-    mode = e.target.dataset.mode;
-    modeTabs.querySelectorAll('.tab').forEach(t => t.classList.toggle('sel', t.dataset.mode === mode));
+  function pickMode(next) {
+    mode = next;
+    for (const tab of [standaloneTab, twinTab].filter(Boolean)) {
+      const selected = tab.dataset.mode === mode;
+      tab.classList.toggle('sel', selected);
+      tab.setAttribute('aria-selected', String(selected));
+    }
     twinSection.style.display = mode === 'twin' ? '' : 'none';
-    render();
   }
-
   function render() {
-    // Mode tabs
-    modeTabs.querySelectorAll('.tab').forEach(t => t.classList.toggle('sel', t.dataset.mode === mode));
-    twinSection.style.display = mode === 'twin' ? '' : 'none';
-
-    startBtn.disabled = state.active;
-    stopBtn.disabled = !state.active;
-
-    // Status
+    startBtn.disabled = busy || state.active;
+    stopBtn.disabled = busy || !state.active;
+    clearBtn.disabled = busy || !(state.captures || []).length;
     if (state.active) {
-      let rows = [
-        h('div', { class: 'srow' }, h('span', {}, 'Status'), h('span', { class: 'tag alert' }, 'ACTIVE')),
-        h('div', { class: 'srow' }, h('span', {}, 'Mode'), h('span', {}, ['standalone', 'twin', 'karma'][state.mode || 0] || '?')),
-        h('div', { class: 'srow' }, h('span', {}, 'SSID'), h('span', { class: 'mono' }, state.ssid || '—')),
-      ];
-      if (state.twinBssid) rows.push(h('div', { class: 'srow' }, h('span', {}, 'Twin BSSID'), h('span', { class: 'mono' }, state.twinBssid)));
-      rows.push(
+      const rows = [
+        h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: 'tag alert' }, 'ACTIVE')),
+        h('div', { class: 'srow' }, h('span', {}, 'Mode / SSID'), h('span', {}, `${state.mode === 1 ? 'Open twin' : 'Standalone'} · ${state.ssid || '—'}`)),
         h('div', { class: 'srow' }, h('span', {}, 'Clients'), h('span', {}, String(state.clients || 0))),
-        h('div', { class: 'srow' }, h('span', {}, 'Attempts'), h('span', {}, String(state.attempts || 0))),
-        h('div', { class: 'srow' }, h('span', {}, 'Confirmed'), h('span', {}, String(state.confirmed || 0))),
-        h('div', { class: 'srow' }, h('span', {}, 'Probes'), h('span', {}, String(state.probesTotal || 0))),
-        h('div', { class: 'srow' }, h('span', {}, 'DHCP'), h('span', { class: state.dhcpsOk !== false ? 'tag ok' : 'tag err' }, state.dhcpsOk !== false ? 'OK' : 'FAIL')),
-        h('div', { class: 'srow' }, h('span', {}, 'Uptime'), h('span', {}, fmtDuration(state.started ? (Date.now()/1000 - state.started) : 0))),
-      );
-      if (state.deauthFrames > 0) rows.push(h('div', { class: 'srow' }, h('span', {}, 'Deauths'), h('span', {}, String(state.deauthFrames))));
-      if (state.vendors) {
-        const vd = [];
-        for (const [k, v] of Object.entries(state.vendors)) { if (v > 0) vd.push(`${k}:${v}`); }
-        if (vd.length) rows.push(h('div', { class: 'srow' }, h('span', {}, 'Clients'), h('span', {}, vd.join(', '))));
-      }
+        h('div', { class: 'srow' }, h('span', {}, 'Attempts / repeated'), h('span', {}, `${state.attempts || 0} / ${state.confirmed || 0}`)),
+        h('div', { class: 'srow' }, h('span', {}, 'DHCP'), h('span', { class: state.dhcpsOk ? 'tag ok' : 'tag alert' }, state.dhcpsOk ? 'RUNNING' : 'CHECK DHCP')),
+        h('div', { class: 'srow' }, h('span', {}, 'Uptime'), h('span', {}, fmtDuration(state.started ? Date.now() / 1000 - state.started : 0))),
+      ];
+      if (state.twinBssid) rows.push(h('div', { class: 'srow' }, h('span', {}, 'Target / accepted deauth'), h('span', { class: 'mono' }, `${state.twinBssid} / ${state.deauthFrames || 0}`)));
       info.replaceChildren(...rows);
-    } else {
-      info.replaceChildren(h('div', { class: 'empty' }, '⚠ Security audit tool. Only use on authorized networks.'));
-    }
+    } else info.replaceChildren(h('p', { class: 'muted' }, 'Portal stopped.'));
+    if (state.error) info.append(h('p', { class: 'inline-error', role: 'alert' }, state.error));
 
-    // Captures
-    caps.replaceChildren(state.captures && state.captures.length
-      ? state.captures.slice(-20).reverse().map((c) => h('div', { class: 'note' },
-          h('div', {}, h('b', {}, c.username || '?'), ' : ', h('code', {}, c.password || '?')),
-          h('div', { class: 'sub' }, c.url || '', ' · ', c.mac ? `${c.mac} · ` : '', fmtTime(c.ts))))
-      : h('p', { class: 'muted' }, 'No credentials captured yet.'));
+    capturesEl.replaceChildren(...((state.captures || []).length
+      ? state.captures.slice(-20).reverse().map(c => h('div', { class: 'note' },
+          h('div', {}, h('b', {}, c.username || '?'), h('p', {}, `${c.password || '?'} · ${c.url || '/login'}`)),
+          h('span', { class: 'when' }, fmtTime(c.ts))))
+      : [h('p', { class: 'muted' }, 'No credentials captured.')]));
 
-    // Templates
-    if (state.templates) {
-      templatePicker.innerHTML = '';
-      state.templates.forEach((t, i) => {
-        templatePicker.append(h('option', { value: String(i) }, t.name));
-      });
-    }
-
-    // SSID presets
-    if (state.ssidPresets) {
-      ssidPreset.innerHTML = '';
-      ssidPreset.append(h('option', {}, '— SSID presets —'));
-      state.ssidPresets.forEach(s => ssidPreset.append(h('option', { value: s }, s)));
-    }
+    const selectedTemplate = templatePicker.value;
+    templatePicker.replaceChildren(...(state.templates || []).map(t => h('option', { value: String(t.id) }, t.name)));
+    if ([...templatePicker.options].some(o => o.value === selectedTemplate)) templatePicker.value = selectedTemplate;
+    ssidPreset.replaceChildren(h('option', { value: '' }, 'Choose a preset'), ...(state.ssidPresets || []).map(s => h('option', { value: s }, s)));
+    const settings = state.settings || {};
+    if (document.activeElement !== gatewayInput) gatewayInput.value = settings.gateway || gatewayInput.value;
+    pwdMode.value = String(settings.pwdMode ?? 2);
+    if (document.activeElement !== autoBase) autoBase.value = String(settings.autoStopBase || 0);
+    if (document.activeElement !== autoExtended) autoExtended.value = String(settings.autoStopExtended || 0);
+    debugCheck.checked = !!settings.debug;
   }
 
+  async function load(showError = true) {
+    const seq = ++requestSeq;
+    try {
+      const [status, captures] = await Promise.all([api.evilportal(), api.evilportalCaptures()]);
+      if (!alive || seq !== requestSeq) return;
+      state = { ...status, captures: captures.captures || [] };
+      render();
+    } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Evil Portal'))); }
+  }
   async function start() {
     const ssid = ssidInput.value.trim() || 'Free Wi-Fi';
-    const templateId = parseInt(templatePicker.value) || 0;
-    const gateway = gatewayInput.value.trim() || '192.168.4.1';
-
+    if (mode === 'twin' && !twinBssid.value.trim()) { toast('Enter the target AP BSSID.', 'error'); return; }
+    if (!await confirmDialog('Start credential-capture portal?', `Start ${mode === 'twin' ? 'an open evil twin of' : 'the portal'} “${ssid}”? Confirm that you own or have written permission to test this network and will protect captured credentials.`, 'I am authorized — start', true)) return;
+    busy = true; render();
     try {
-      if (mode === 'twin') {
-        const bssid = twinBssid.value.trim();
-        const channel = parseInt(twinChannel.value) || 1;
-        const coherent = twinCoherent.querySelector('input').checked;
-        if (!bssid) { toast('BSSID required for evil-twin mode', 'error'); return; }
-        state = await api.evilportalStartTwin(ssid, bssid, channel, coherent, templateId, gateway);
-      } else if (mode === 'karma') {
-        state = await api.evilportalStartKarma(templateId, gateway);
-      } else {
-        state = await api.evilportalStart(ssid, templateId, gateway);
-      }
-      toast('Portal active');
-    } catch (e) { toast(errorText(e, 'Portal'), 'error'); }
-    load();
+      const templateId = Number(templatePicker.value) || 0, gateway = gatewayInput.value.trim();
+      if (mode === 'twin') await api.evilportalStartTwin(ssid, twinBssid.value.trim(), Number(twinChannel.value), false, templateId, gateway);
+      else await api.evilportalStart(ssid, templateId, gateway);
+      toast('Portal started'); await load();
+    } catch (e) { toast(errorText(e, 'Evil Portal'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
-
   async function stop() {
-    try { await api.evilportalStop(); toast('Portal stopped'); } catch (e) { toast(errorText(e), 'error'); }
-    load();
+    busy = true; render();
+    try { await api.evilportalStop(); toast('Portal stopped; Wi-Fi reconnect requested'); await load(); }
+    catch (e) { toast(errorText(e, 'Evil Portal'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
-
-  async function load() {
+  async function clearCaptures() {
+    if (!await confirmDialog('Clear captured credentials?', 'Remove all captures from memory and delete the current SD capture log?', 'Clear captures', true)) return;
+    busy = true; render();
+    try { await api.evilportalClear(); toast('Captures cleared'); await load(); }
+    catch (e) { toast(errorText(e, 'Evil Portal'), 'error'); }
+    finally { busy = false; if (alive) render(); }
+  }
+  async function saveSettings() {
+    busy = true; render();
     try {
-      state = await api.evilportal();
-      const c = await api.evilportalCaptures();
-      if (!alive) return;
-      state.captures = c.captures || [];
-      render();
-    } catch (e) { if (alive) info.replaceChildren(h('div', { class: 'empty error' }, errorText(e))); }
+      await api.evilportalSettings({ pwdMode: Number(pwdMode.value), autoStopBase: Number(autoBase.value), autoStopExtended: Number(autoExtended.value), debug: debugCheck.checked });
+      toast('Settings saved'); await load();
+    } catch (e) { toast(errorText(e, 'Portal settings'), 'error'); }
+    finally { busy = false; if (alive) render(); }
   }
 
-  async function clearCap() { try { await api.evilportalClear(); toast('Captures cleared'); load(); } catch (e) { toast(errorText(e), 'error'); } }
-
-  async function karmaScan() {
-    karmaScanBtn.disabled = true;
-    try {
-      await api.evilportalKarmaScan(30);
-      const k = await api.evilportalKarma();
-      karmaList.replaceChildren(
-        k.probes && k.probes.length
-          ? k.probes.map(p => h('div', { class: 'note', style: 'cursor:pointer', onclick: () => { ssidInput.value = p.ssid; mode = 'karma'; render(); } },
-              h('b', {}, p.ssid), ' (', p.hits, ' hits)'))
-          : h('p', { class: 'muted' }, 'No probes found.')
-      );
-    } catch (e) { toast(errorText(e), 'error'); }
-    karmaScanBtn.disabled = false;
-  }
-
-  async function clonePage() {
-    const ssid = cloneInput.value.trim();
-    if (!ssid) { toast('SSID required', 'error'); return; }
-    cloneBtn.disabled = true;
-    try {
-      await api.evilportalClone(ssid);
-      toast('Page cloned! Refresh to see it in template list.');
-    } catch (e) { toast(errorText(e), 'error'); }
-    cloneBtn.disabled = false;
-  }
-
+  pickMode('standalone');
+  const timer = setInterval(() => { if (state.active) load(false); }, 2000);
   load();
-
-  // Auto-refresh while active
-  let timer = setInterval(() => { if (state.active) load(); }, 2000);
-
-  return {
-    unmount() { alive = false; clearInterval(timer); }
-  };
+  return { unmount() { alive = false; clearInterval(timer); } };
 }

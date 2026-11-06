@@ -150,6 +150,8 @@ void web_desktop_status_line(char *out, size_t n);
 
 /* Tool routes (web_tools.cpp and web_tool_*.cpp, P4; see web_tools.h). true when the path was one of them. */
 bool web_tools_handle(web_req_t *r);
+/* Captive portal interception for non-API requests; called before static files. */
+bool web_evilportal_captive(web_req_t *r);
 /* The tool capabilities this build has ("gnss", "lora", ...), appended to /api/caps. */
 void web_tools_caps(std::vector<const char *> &out);
 void web_tools_start(void);                     /* UI thread, when the server starts */

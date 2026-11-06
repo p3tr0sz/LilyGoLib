@@ -1,54 +1,113 @@
-// Wi-Fi Sniffer: passive 802.11 capture → .pcap file on SD card.
-import { h, icon, toast, errorText, fmtTime } from '../../js/ui.js';
+// Passive Wi-Fi capture to a radiotap PCAP on the watch SD card.
+import { h, icon, toast, errorText } from '../../js/ui.js';
 
-export function mount(el, ctx) {
-  const { api } = ctx;
-  let alive = true, state = { active: false };
+const FILTER_LABELS = {
+  all: 'All frames',
+  management: 'Management only',
+  data: 'Data only',
+  beacons: 'Beacons only',
+  probes: 'Probe requests only',
+  eapol: 'EAPOL / WPA handshake only',
+};
 
-  const chInput = h('input', { class: 'field w3', type: 'number', placeholder: 'Ch', min: '-1', max: '13', value: '-1', 'aria-label': 'Channel (-1=hop all)' });
-  const startBtn = h('button', { class: 'btn primary', onclick: start }, icon('play'), 'Start Capture');
-  const stopBtn = h('button', { class: 'btn', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+export function mount(el, { api, events }) {
+  let alive = true, requestSeq = 0, busy = false;
+  let state = {
+    active: false, channel: null, filter: 'all', packets: 0, drops: 0, bytes: 0,
+    seen: 0, management: 0, control: 0, data: 0, beacons: 0, probes: 0,
+    deauth: 0, eapol: 0, handshakes: 0, aps: [], error: null, file: null,
+  };
+
+  const channel = h('select', { class: 'field', 'aria-label': 'Capture channel' },
+    h('option', { value: '-1' }, 'All channels (hop 1-13)'),
+    ...Array.from({ length: 13 }, (_, i) => h('option', { value: String(i + 1) }, `Channel ${i + 1}`)));
+  const filter = h('select', { class: 'field', 'aria-label': 'Capture filter' },
+    ...Object.entries(FILTER_LABELS).map(([value, label]) => h('option', { value }, label)));
+  const maxBytes = h('input', { class: 'field', type: 'number', min: '0', step: '1', value: '0', 'aria-label': 'Maximum capture bytes; zero means unlimited' });
+  const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: start }, icon('play'), 'Start capture');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop and save');
   const info = h('div', { class: 'tool' });
+  const apList = h('div', { class: 'list' });
 
   el.append(h('div', { class: 'app sniffer' },
     h('div', { class: 'panel' },
-      h('h4', {}, 'Capture Settings'),
-      h('div', { class: 'row gap' },
-        h('label', { class: 'sub' }, 'Channel (-1 = hop all)'), chInput),
+      h('h3', {}, 'Authorized packet capture'),
+      h('p', { class: 'muted' }, 'Passive capture only. Frames can contain private data; capture only networks you may inspect.')),
+    h('div', { class: 'panel' },
+      h('div', { class: 'form' },
+        h('label', {}, 'Channel', channel),
+        h('label', {}, 'Filter', filter),
+        h('label', {}, 'Byte limit (0 = unlimited)', maxBytes)),
       h('div', { class: 'row gap' }, startBtn, stopBtn)),
-    h('div', { class: 'panel' }, h('h3', {}, 'Status'), info)));
+    h('div', { class: 'panel' }, h('h3', {}, 'Capture status'), info),
+    h('div', { class: 'panel' }, h('h3', {}, 'Access points seen'), apList)));
+
+  const countRow = (label, value, warning = false) =>
+    h('div', { class: 'srow' }, h('span', {}, label), h('span', { class: warning ? 'tag alert' : '' }, String(value || 0)));
 
   function render() {
-    startBtn.disabled = state.active;
-    stopBtn.disabled = !state.active;
-    info.replaceChildren(state.active
-      ? h('div', {},
-          h('div', { class: 'srow' }, h('span', {}, 'Status'), h('span', { class: 'tag ok' }, 'CAPTURING')),
-          h('div', { class: 'srow' }, h('span', {}, 'Channel'), h('span', {}, state.channel > 0 ? String(state.channel) : 'hopping')),
-          h('div', { class: 'srow' }, h('span', {}, 'Packets'), h('span', {}, String(state.packets || 0))),
-          h('div', { class: 'srow' }, h('span', {}, 'Bytes'), h('span', {}, String(state.bytes || 0))),
-          state.file ? h('div', { class: 'srow' }, h('span', {}, 'File'), h('span', { class: 'mono' }, state.file)) : null)
-      : h('div', { class: 'empty' }, 'Passive Wi-Fi capture to .pcap. Open in Wireshark.'));
+    startBtn.disabled = busy || state.active;
+    stopBtn.disabled = busy || !state.active;
+    channel.disabled = state.active;
+    filter.disabled = state.active;
+    const rows = [
+      h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: `tag ${state.active ? 'ok' : ''}` }, state.active ? 'CAPTURING' : 'STOPPED')),
+      h('div', { class: 'srow' }, h('span', {}, 'Channel'), h('span', {}, state.channel > 0 ? String(state.channel) : 'Hopping 1-13')),
+      h('div', { class: 'srow' }, h('span', {}, 'Filter'), h('span', {}, FILTER_LABELS[state.filter] || state.filter || 'All frames')),
+      countRow('Frames saved to PCAP', state.packets),
+      countRow('Frames seen', state.seen),
+      countRow('Dropped packets', state.drops, (state.drops || 0) > 0),
+      countRow('Bytes written', state.bytes),
+      countRow('Beacons', state.beacons),
+      countRow('Probe requests', state.probes),
+      countRow('Deauth / disassociation frames', state.deauth, (state.deauth || 0) > 0),
+      countRow('EAPOL frames', state.eapol),
+      countRow('Complete 4-way handshakes', state.handshakes),
+    ];
+    if (state.file) rows.push(h('div', { class: 'srow' }, h('span', {}, 'PCAP file'), h('a', { href: api.contentUrl(state.file), download: '' }, state.file)));
+    if (state.error) rows.push(h('p', { class: 'inline-error', role: 'alert' }, state.error));
+    info.replaceChildren(...rows);
+
+    const aps = Array.isArray(state.aps) ? state.aps.slice(0, 8) : [];
+    apList.replaceChildren(...(aps.length
+      ? aps.map(ap => h('div', { class: 'note' },
+        h('div', {}, h('b', {}, ap.ssid || '(hidden SSID)'), h('p', {}, `${ap.bssid} · channel ${ap.channel || '?'} · ${ap.rssi ?? '?'} dBm`)),
+        h('span', { class: 'when' }, `${ap.beacons || 0} beacon${ap.beacons === 1 ? '' : 's'}`)))
+      : [h('p', { class: 'muted' }, 'No access points seen yet.')]));
+  }
+
+  async function load(showError = true) {
+    const seq = ++requestSeq;
+    try {
+      const next = await api.sniffer();
+      if (!alive || seq !== requestSeq) return;
+      state = { ...state, ...next };
+      render();
+    } catch (e) {
+      if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Sniffer')));
+    }
   }
 
   async function start() {
+    busy = true; render();
     try {
-      state = await api.snifferStart({ channel: Number(chInput.value) || -1 });
+      await api.snifferStart({ channel: Number(channel.value), filter: filter.value, max_bytes: Number(maxBytes.value) || 0 });
       toast('Capture started');
-    } catch (e) { toast(errorText(e, 'Sniffer'), 'error'); }
-    load();
+      await load();
+    } catch (e) { toast(errorText(e, 'Sniffer'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
 
   async function stop() {
-    try { await api.snifferStop(); toast('Capture stopped'); } catch (e) { toast(errorText(e), 'error'); }
-    load();
+    busy = true; render();
+    try { await api.snifferStop(); toast('Capture saved'); await load(); }
+    catch (e) { toast(errorText(e, 'Sniffer'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
 
-  async function load() {
-    try { state = await api.sniffer(); if (!alive) return; render(); } catch (e) { if (alive) info.replaceChildren(h('div', { class: 'empty error' }, errorText(e))); }
-  }
-
+  const off = events.on('sniffer', () => load(false));
+  const timer = setInterval(() => { if (state.active) load(false); }, 2000);
+  render();
   load();
-  let timer = setInterval(() => { if (state.active) load(); }, 3000);
-  return { unmount() { alive = false; clearInterval(timer); } };
+  return { unmount() { alive = false; off(); clearInterval(timer); } };
 }

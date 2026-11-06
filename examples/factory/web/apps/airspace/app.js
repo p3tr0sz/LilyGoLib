@@ -1,49 +1,72 @@
-// Airspace: Wi-Fi attack detection — deauth flood, beacon flood, evil-twin detection.
-import { h, icon, toast, errorText, fmtDuration } from '../../js/ui.js';
+// Airspace: passive Wi-Fi attack detection with explicit, textual alerts.
+import { h, icon, toast, errorText, fmtTime } from '../../js/ui.js';
 
-export function mount(el, ctx) {
-  const { api } = ctx;
-  let alive = true, state = { active: false };
-
-  const startBtn = h('button', { class: 'btn primary', onclick: start }, icon('play'), 'Start Monitor');
-  const stopBtn = h('button', { class: 'btn', onclick: stop, disabled: true }, icon('stop'), 'Stop');
-  const info = h('div', { class: 'tool' });
+export function mount(el, { api, events, notify }) {
+  let alive = true, requestSeq = 0, busy = false;
+  let state = { active: false, deauth_total: 0, beacon_total: 0, deauth_floods: 0, beacon_floods: 0, evil_twins: 0, broadcast_deauth: 0, error: null };
+  const alerts = [];
+  const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: start }, icon('play'), 'Start monitor');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+  const info = h('div', {});
+  const alertList = h('div', { class: 'list' });
 
   el.append(h('div', { class: 'app airspace' },
     h('div', { class: 'panel' },
-      h('h4', {}, 'Attack Detection'),
-      h('div', { class: 'row gap' }, startBtn, stopBtn)),
-    h('div', { class: 'panel' }, h('h3', {}, 'Status'), info)));
+      h('h3', {}, 'Passive Wi-Fi attack detection'),
+      h('p', { class: 'muted' }, 'Listens only; never injects frames. Alerts are indicators to investigate, not proof of an attacker.')),
+    h('div', { class: 'row gap' }, startBtn, stopBtn),
+    h('div', { class: 'panel' }, h('h3', {}, 'Live counters'), info),
+    h('div', { class: 'panel' }, h('h3', {}, 'Recent alerts'), alertList)));
 
+  const countRow = (label, value, warning = false) => h('div', { class: 'srow' }, h('span', {}, label), h('span', { class: warning ? 'tag alert' : '' }, String(value || 0)));
   function render() {
-    startBtn.disabled = state.active;
-    stopBtn.disabled = !state.active;
-    info.replaceChildren(state.active
-      ? h('div', {},
-          h('div', { class: 'srow' }, h('span', {}, 'Status'), h('span', { class: 'tag ok' }, 'MONITORING')),
-          h('div', { class: 'srow' }, h('span', {}, 'Deauth pkts'), h('span', {}, String(state.deauthCount || 0))),
-          h('div', { class: 'srow' }, h('span', {}, 'Beacon pkts'), h('span', {}, String(state.beaconCount || 0))),
-          h('div', { class: 'srow' }, h('span', {}, 'Deauth floods'), h('span', { class: state.deauthFloods > 0 ? 'tag alert' : '' }, String(state.deauthFloods || 0))),
-          h('div', { class: 'srow' }, h('span', {}, 'Beacon floods'), h('span', { class: state.beaconFloods > 0 ? 'tag alert' : '' }, String(state.beaconFloods || 0))),
-          h('div', { class: 'srow' }, h('span', {}, 'Evil twins'), h('span', { class: state.evilTwins > 0 ? 'tag warn' : '' }, String(state.evilTwins || 0))))
-      : h('div', { class: 'empty' }, 'Passive Wi-Fi attack detection. Monitors for deauth floods, beacon floods, and evil-twin APs.'));
+    startBtn.disabled = busy || state.active;
+    stopBtn.disabled = busy || !state.active;
+    info.replaceChildren(
+      h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: `tag ${state.active ? 'ok' : ''}` }, state.active ? 'MONITORING' : 'STOPPED')),
+      countRow('Deauth/disassociation frames', state.deauth_total),
+      countRow('Beacon frames', state.beacon_total),
+      countRow('Deauth flood alerts', state.deauth_floods, state.deauth_floods > 0),
+      countRow('Broadcast deauth alerts', state.broadcast_deauth, state.broadcast_deauth > 0),
+      countRow('Beacon flood alerts', state.beacon_floods, state.beacon_floods > 0),
+      countRow('Possible evil twins', state.evil_twins, state.evil_twins > 0),
+      countRow('Analysis queue drops', state.drops),
+      state.error ? h('p', { class: 'inline-error', role: 'alert' }, state.error) : null);
+    alertList.replaceChildren(...(alerts.length
+      ? alerts.map(a => h('div', { class: 'note' }, h('div', {}, h('b', {}, a.type.replaceAll('_', ' ')), h('p', {}, a.detail || 'Investigate the nearby access points.')), h('span', { class: 'when' }, fmtTime(a.ts))))
+      : [h('p', { class: 'muted' }, 'No alerts in this session.')]));
   }
 
+  async function load(showError = true) {
+    const seq = ++requestSeq;
+    try {
+      const next = await api.airspace();
+      if (!alive || seq !== requestSeq) return;
+      state = { ...state, ...next };
+      render();
+    } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Airspace'))); }
+  }
   async function start() {
-    try { await api.airspaceStart(); toast('Monitoring started'); } catch (e) { toast(errorText(e, 'Airspace'), 'error'); }
-    load();
+    busy = true; render();
+    try { await api.airspaceStart(); toast('Monitoring started'); await load(); }
+    catch (e) { toast(errorText(e, 'Airspace'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
-
   async function stop() {
-    try { await api.airspaceStop(); toast('Stopped'); } catch (e) { toast(errorText(e), 'error'); }
-    load();
+    busy = true; render();
+    try { await api.airspaceStop(); toast('Monitoring stopped'); await load(); }
+    catch (e) { toast(errorText(e, 'Airspace'), 'error'); await load(false); }
+    finally { busy = false; if (alive) render(); }
   }
 
-  async function load() {
-    try { state = await api.airspace(); if (!alive) return; render(); } catch (e) { if (alive) info.replaceChildren(h('div', { class: 'empty error' }, errorText(e))); }
-  }
-
-  load();
-  let timer = setInterval(() => { if (state.active) load(); }, 2000);
-  return { unmount() { alive = false; clearInterval(timer); } };
+  const off = events.on('airspace', d => {
+    if (!alive) return;
+    alerts.unshift({ ...d, ts: Math.floor(Date.now() / 1000) });
+    if (alerts.length > 10) alerts.length = 10;
+    notify('Airspace alert', d.detail || d.type || 'Wi-Fi anomaly detected', 'warn');
+    load(false);
+  });
+  const timer = setInterval(() => { if (state.active) load(false); }, 2000);
+  render(); load();
+  return { unmount() { alive = false; off(); clearInterval(timer); } };
 }

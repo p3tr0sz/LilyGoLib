@@ -1012,6 +1012,11 @@ void web_api_handle(web_req_t *r)
 {
     s_last_request_ms = now_ms();
     if (strncmp(r->path, "/api/", 5) != 0) {
+        if (strcmp(r->method, "GET") && strcmp(r->method, "HEAD") && strcmp(r->method, "POST")) {
+            web_resp_error(r, 405, "bad_request", "GET or POST");
+            return;
+        }
+        if (web_evilportal_captive(r)) return;
         if (strcmp(r->method, "GET") && strcmp(r->method, "HEAD")) {
             web_resp_error(r, 405, "bad_request", "GET");
             return;

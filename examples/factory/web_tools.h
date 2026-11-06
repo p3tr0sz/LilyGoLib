@@ -62,6 +62,11 @@ const char *tools_holder(const char *const *apps);
 /* If one of apps holds the tool, answer 503 busy naming it and return true. */
 bool tools_busy(web_req_t *r, const char *const *apps);
 
+/* P9 Wi-Fi tools share one radio and one promiscuous callback. Claim it before changing
+ * Wi-Fi state; on failure error names the tool to stop. Works for API and native watch UI. */
+bool tools_wifi_claim(const char *owner, std::string &error);
+void tools_wifi_release(const char *owner);
+
 /* ---------------------------------------------------------------- hardware (web_tools_hw.cpp)
  * The watch's hardware on the watch, fakes in the simulator. UI thread unless noted. */
 
@@ -159,7 +164,7 @@ typedef struct {
     bool connectable;
     std::vector<std::string> services;
 } web_hw_ble_t;
-bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out);
+bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out, bool active = true);
 
 /* ---------------------------------------------------------------- P5 hardware (web_tools_hw2.cpp) */
 
@@ -360,6 +365,8 @@ bool web_hw_deauthflood_stop(void);
 void web_hw_deauthflood_status(web_hw_deauthflood_t *out);
 /* Quick list of nearby APs to pick from (from last Wi-Fi scan) */
 int  web_hw_deauthflood_scan_targets(void);
+bool web_hw_deauthflood_scanning(void);
+int  web_hw_deauthflood_target_count(void);
 const char *web_hw_deauthflood_target_ssid(int i);
 const char *web_hw_deauthflood_target_bssid(int i);
 int  web_hw_deauthflood_target_channel(int i);
@@ -388,12 +395,17 @@ int  web_hw_beaconspam_custom_count(void);
 typedef struct {
     bool active;
     int channel;                /* -1 = hop all channels */
+    const char *filter;          /* "all", "management", "data", "beacons", "probes", "eapol" */
     uint32_t packet_count;
+    uint32_t dropped;
     char file[128];             /* .pcap path on the SD */
     uint32_t bytes_written;
+    uint32_t seen;              /* frames observed, including filtered-out ones */
+    uint32_t beacons, probes, eapol, handshakes;
     const char *error;
 } web_hw_sniffer_t;
 bool web_hw_sniffer_start(int channel, uint32_t max_bytes, const char *path);
+bool web_hw_sniffer_start_filter(int channel, uint32_t max_bytes, const char *path, const char *filter);
 bool web_hw_sniffer_stop(void);
 void web_hw_sniffer_status(web_hw_sniffer_t *out);
 #ifndef ARDUINO
@@ -408,7 +420,10 @@ typedef struct {
     uint32_t deauth_floods;     /* deauth flood events (rate > threshold) */
     uint32_t beacon_floods;     /* beacon flood events */
     uint32_t evil_twins;        /* evil-twin AP candidates */
+    uint32_t broadcast_deauth;  /* broadcast deauth/disassociation alerts */
+    uint32_t drops;             /* frames dropped when the analysis queue was full */
     long long started_epoch;
+    const char *error;
 } web_hw_airspace_t;
 bool web_hw_airspace_start(void);
 bool web_hw_airspace_stop(void);
@@ -418,21 +433,49 @@ void web_hw_airspace_status(web_hw_airspace_t *out);
 typedef struct {
     char addr[18];
     char name[64];
+    char kind[24];              /* Find My, Samsung SmartTag, Tile, Chipolo */
     int rssi;
     long long first_seen;
     long long last_seen;
     int sightings;
-    bool stalking;              /* device has appeared multiple times in different locations */
+    bool stalking;              /* persistent-tracker heuristic, not proof of intent */
+    bool separated;             /* Find My separated/lost-mode advertisement */
 } web_hw_sentinel_device_t;
 typedef struct {
     bool active;
+    bool scanning;
     int device_count;
     web_hw_sentinel_device_t devices[24];
     long long started_epoch;
+    const char *error;
 } web_hw_sentinel_t;
 bool web_hw_sentinel_start(void);
 bool web_hw_sentinel_stop(void);
 void web_hw_sentinel_status(web_hw_sentinel_t *out);
+
+/* Nearby peers over ESP-NOW (not the reference project's CSI motion detector). */
+typedef struct {
+    char mac[18];
+    char name[64];
+    int rssi;
+    long long first_seen, last_seen;
+    bool present;
+} web_hw_presence_peer_t;
+typedef struct {
+    long long ts;
+    char mac[18], name[64], event[16];
+} web_hw_presence_history_t;
+typedef struct {
+    bool active;
+    long long started_epoch;
+    int peers_ever, peer_count, history_count;
+    web_hw_presence_peer_t peers[32];
+    web_hw_presence_history_t history[50];
+    const char *error;
+} web_hw_presence_t;
+bool web_hw_presence_start(void);
+bool web_hw_presence_stop(void);
+void web_hw_presence_status(web_hw_presence_t *out);
 
 /* FIDO2 — security key */
 typedef struct {

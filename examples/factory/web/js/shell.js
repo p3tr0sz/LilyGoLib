@@ -19,6 +19,14 @@ const APPS = [
   { id: 'hid', title: 'BadUSB', icon: 'usb', caps: ['usb.hid'], load: () => import('../apps/hid/app.js') },
   { id: 'wifitools', title: 'Net Tools', icon: 'globe', caps: ['wifi.tools'], load: () => import('../apps/wifitools/app.js') },
   { id: 'ota', title: 'Update', icon: 'cpu', caps: ['ota'], load: () => import('../apps/ota/app.js') },
+  { id: 'sniffer', title: 'Wi-Fi Sniffer', icon: 'radar', caps: ['wifi.sniffer'], load: () => import('../apps/sniffer/app.js') },
+  { id: 'airspace', title: 'Airspace', icon: 'shield', caps: ['airspace'], load: () => import('../apps/airspace/app.js') },
+  { id: 'sentinel', title: 'Sentinel', icon: 'bluetooth', caps: ['sentinel'], load: () => import('../apps/sentinel/app.js') },
+  { id: 'presence', title: 'Nearby Peers', icon: 'link', caps: ['presence.peers'], load: () => import('../apps/presence/app.js') },
+  { id: 'fido2', title: 'FIDO2 Key', icon: 'key', caps: ['fido2'], load: () => import('../apps/fido2/app.js') },
+  { id: 'evilportal', title: 'Evil Portal', icon: 'wifi', caps: ['evil.portal'], load: () => import('../apps/evilportal/app.js') },
+  { id: 'deauthflood', title: 'Deauth Flood', icon: 'wifiOff', caps: ['deauth.flood'], load: () => import('../apps/deauthflood/app.js') },
+  { id: 'beaconspam', title: 'Beacon Spam', icon: 'wifi', caps: ['beacon.spam'], load: () => import('../apps/beaconspam/app.js') },
   { id: 'settings', title: 'Settings', icon: 'settings', caps: ['settings'], load: () => import('../apps/settings/app.js') },
 ];
 const allowed = (app) => (app.caps || []).every((c) => state.caps.includes(c)) &&

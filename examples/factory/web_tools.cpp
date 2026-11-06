@@ -122,6 +122,26 @@ void web_tools_stop(void)
 
 /* ---------------------------------------------------------------- who holds a tool */
 
+static std::mutex s_wifi_mx;
+static const char *s_wifi_owner = NULL;
+
+bool tools_wifi_claim(const char *owner, std::string &error)
+{
+    std::lock_guard<std::mutex> lk(s_wifi_mx);
+    if (s_wifi_owner && strcmp(s_wifi_owner, owner)) {
+        error = std::string("Stop ") + s_wifi_owner + " before using " + owner;
+        return false;
+    }
+    s_wifi_owner = owner;
+    return true;
+}
+
+void tools_wifi_release(const char *owner)
+{
+    std::lock_guard<std::mutex> lk(s_wifi_mx);
+    if (s_wifi_owner && !strcmp(s_wifi_owner, owner)) s_wifi_owner = NULL;
+}
+
 const char *tools_current_app(void)
 {
     {

@@ -82,7 +82,7 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
 
 - Run **both** `web_api_test.mjs` and `web_ui_test.mjs` against the **mock** (fast); run them against the
   **simulator** too for anything touching firmware or the shell. Current baselines: `web_ui_test.mjs`
-  **116/116** simulator / **115/115** mock; `web_api_test.mjs` **167/167** simulator / **165/165** mock;
+  **139/139** simulator / **138/138** mock; `web_api_test.mjs` **234/234** simulator / **231/231** mock;
   `web_desktop_test.mjs` **24/24**. A new feature should add checks, not just keep the count.
 - When editing the desktop shell, **keep the selectors the UI test anchors on**: `.bar` (must still show
   the battery % and the SD status text), `.launcher .tile`, `.win` + `.win .back`, `.link-dot.on`, and the

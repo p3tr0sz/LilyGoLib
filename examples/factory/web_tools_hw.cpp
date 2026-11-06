@@ -675,7 +675,7 @@ static std::string hex(const std::string &s, size_t max)
     return o;
 }
 
-bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out)
+bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out, bool active)
 {
     out.clear();
     bool started_stack = false;
@@ -686,7 +686,7 @@ bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out)
     NimBLEScan *scan = NimBLEDevice::getScan();
     if (!scan) return false;
     scan->setScanCallbacks(NULL, false);
-    scan->setActiveScan(true);
+    scan->setActiveScan(active);
     scan->setInterval(100);
     scan->setWindow(100);
     scan->setMaxResults(64);
@@ -710,7 +710,7 @@ bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out)
 
 #else
 
-bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out)
+bool web_hw_ble_scan(int seconds, std::vector<web_hw_ble_t> &out, bool active)
 {
     sleep_ms((uint32_t)seconds * 1000);
     out = {

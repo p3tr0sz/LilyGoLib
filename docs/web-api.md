@@ -252,8 +252,8 @@ Passive promiscuous Wi-Fi capture, writing 802.11 frames to a `.pcap` file on th
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/sniffer` | paired | `{active, channel, packets, bytes, file, error}`. `channel` is `-1` (all), `1-13`, or `null` |
-| `POST /api/sniffer/start` | paired | `{channel?, max_bytes?, path?}` → `{ok}`. `channel` -1 (all, default), 1-13; `max_bytes` 0 (unlimited, default); `path` to the .pcap file, default `/sd/data/sniffer/capture-<timestamp>.pcap` |
+| `GET /api/sniffer` | paired | `{active, channel, filter, packets, drops, bytes, seen, management, control, data, beacons, probes, deauth, eapol, handshakes, aps: [{bssid, ssid, channel, rssi, beacons}], file, error}`. `channel` is `-1` (all), `1-13`, or `null`. `seen` counts observed frames before filtering; `packets` counts frames saved to the PCAP. `handshakes` counts complete WPA/WPA2 four-way handshakes inferred from EAPOL-Key messages |
+| `POST /api/sniffer/start` | paired | `{channel?, filter?, max_bytes?, path?}` → `{ok}`. `channel` -1 (all, default), 1-13; `filter` `all` (default), `management`, `data`, `beacons`, `probes` or `eapol` filters what is written to the PCAP (frame counters and the AP list still observe every frame); `max_bytes` 0 (unlimited, default); `path` to the .pcap file, default `/sd/data/sniffer/capture-<timestamp>.pcap` |
 | `POST /api/sniffer/stop` | paired | → `{ok}` |
 
 When the capture fills `max_bytes` it stops automatically and publishes a `sniffer` event with `{active:false, reason:"max_bytes"}`. A path on a missing card answers `503 sd_missing`.
@@ -282,9 +282,9 @@ BLE anti-stalking: a passive scan that flags BLE devices appearing persistently 
 
 A device flagged as stalking triggers a `sentinel` event: `{type:"stalking", addr, name, rssi, sightings}`. Devices older than 1 hour are automatically forgotten.
 
-### Presence (`presence`)
+### Nearby peers (`presence.peers`)
 
-ESP-NOW nearby device discovery — extends the existing Link/ESP-NOW tool with persistent peer tracking, arrival/departure events, and a history log. Builds on the same ESP-NOW infrastructure.
+ESP-NOW nearby device discovery — extends the existing Link/ESP-NOW tool with persistent peer tracking, arrival/departure events, and a history log. **This is not NucleoOS's Wi-Fi CSI human-motion Presence detector.**
 
 | Route | Auth | Body → answer |
 |---|---|---|
@@ -292,11 +292,11 @@ ESP-NOW nearby device discovery — extends the existing Link/ESP-NOW tool with 
 | `POST /api/presence/start` | paired | → `{ok}`. Starts peer discovery with ESP-NOW |
 | `POST /api/presence/stop` | paired | → `{ok}` |
 
-`event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A `presence` event is published on arrival and departure.
+`event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A `presence` event is published on arrival and departure and includes `event`, `mac`, `name` and `rssi`.
 
-### FIDO2 security key (`fido2`)
+### FIDO2 security key (`fido2`, simulator only)
 
-The watch as a USB/BLE FIDO2/U2F authenticator (passkeys / WebAuthn). Builds on the USB-HID stack (the same transport the BadUSB tool uses). The watch generates ECDSA P-256 keys on-device and stores credentials on the flash.
+**The current watch firmware does not include a CTAP/FIDO transport or credential crypto. It therefore does not advertise this capability and returns `503 fido_unavailable` for mutations. The routes below exist only for desktop development against the simulator/mock; they are not a hardware authenticator.**
 
 | Route | Auth | Body → answer |
 |---|---|---|
@@ -315,7 +315,7 @@ Rogue AP + captive portal for credential harvesting. Security audit tool — onl
 | Route | Auth | Body → answer |
 |---|---|---|
 | `GET /api/evilportal` | paired | `{active, ssid, clients, attempts, started, error}` |
-| `POST /api/evilportal/start` | paired | `{ssid?}` → `{ok, ssid}`. Default SSID: "Free Wi-Fi" |
+| `POST /api/evilportal/start` | paired | `{ssid?, templateId?, gateway?, authorized:true}` → `{ok, ssid}`. Default SSID: "Free Wi-Fi". Explicit authorization is required |
 | `POST /api/evilportal/stop` | paired | → `{ok}`. Stops the AP and DNS server |
 | `GET /api/evilportal/captures` | paired | `{captures: [{mac, hostname, url, username, password, ts}]}` |
 | `POST /api/evilportal/clear` | paired | → `{ok}`. Clears captured credentials |
@@ -329,7 +329,7 @@ Whilst the portal is active, all HTTP requests from connected clients are interc
 | Route | Auth | Body → answer |
 |---|---|---|
 | `GET /api/deauthflood` | paired | `{active, target_bssid, target_station, channel, sent, rate_kbps, started}` |
-| `POST /api/deauthflood/start` | paired | `{bssid, station?, channel?, rate?}` → `{ok}`. `station` defaults to broadcast (`ff:ff:ff:ff:ff:ff`), `channel` 1-13, `rate` in pkts/s (default 10) |
+| `POST /api/deauthflood/start` | paired | `{bssid, station?, channel?, rate?, authorized:true}` → `{ok}`. `station` defaults to broadcast (`ff:ff:ff:ff:ff:ff`), `channel` 1-13, `rate` 1-100 pkts/s (default 10). Explicit authorization is required |
 | `POST /api/deauthflood/stop` | paired | → `{ok}` |
 
 Requires the Wi-Fi interface to disconnect from any network during the flood.
@@ -341,7 +341,7 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | Route | Auth | Body → answer |
 |---|---|---|
 | `GET /api/beaconspam` | paired | `{active, channel, beacons, ssids, prefix, started}` |
-| `POST /api/beaconspam/start` | paired | `{prefix?, count?, channel?}` → `{ok}`. `prefix` (default "FreeNet"), `count` of unique SSIDs (default 20), `channel` 0 (current) or 1-13 |
+| `POST /api/beaconspam/start` | paired | `{prefix?, count?, channel?, mode?, authorized:true}` → `{ok}`. `prefix` (default "FreeNet"), `count` of unique SSIDs (default 20), `channel` 0 (hop) or 1-13, `mode` `generated` or `custom`. Explicit authorization is required |
 | `POST /api/beaconspam/stop` | paired | → `{ok}` |
 
 ## Events
@@ -415,8 +415,8 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | `wifi.sniffer` | `GET /api/sniffer`, `POST /api/sniffer/start|stop`, events `sniffer` | P9 |
 | `airspace` | `GET /api/airspace`, `POST /api/airspace/start|stop`, events `airspace` | P9 |
 | `sentinel` | `GET /api/sentinel`, `POST /api/sentinel/start|stop`, events `sentinel` | P9 |
-| `presence` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
-| `fido2` | `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials` | P9 |
+| `presence.peers` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
+| `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; not advertised on current watch hardware | P9 |
 | `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|stop|clear`, `GET /api/evilportal/captures` | P9 |
 | `deauth.flood` | `GET /api/deauthflood`, `POST /api/deauthflood/start|stop` | P9 |
 | `beacon.spam` | `GET /api/beaconspam`, `POST /api/beaconspam/start|stop` | P9 |
@@ -437,6 +437,8 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/nfc` | `{uid?, type?, text?}`: a tag is held to the reader (while it scans) |
 | `POST /api/_dev/link` | `{peer?}`: a fake watch appears in range (default one), or `{rx:{name,size}}`: a file is sent to this watch |
 | `POST /api/_dev/hid` | `{available}`: pretend the USB keyboard is or is not enumerated by a host |
+| `POST /api/_dev/fido2` | `{available, reset?}`: enable the fake transport or clear fake credentials |
+| `POST /api/_dev/sniffer` | `{count?}` injects fake beacon frames while capturing; `{kind:"beacon"\|"probe"\|"deauth"\|"management"\|"data"\|"eapol", msg?:1-4, count?}` injects typed frames for the filter and EAPOL handshake checks |
 
 The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, playback that lasts as long as the file, a fake watch in range for the link, a USB host for the keyboard, and an OTA write that progresses but never reboots.
 

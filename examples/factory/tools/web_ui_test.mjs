@@ -551,6 +551,104 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await call('POST', '/api/ota/commit', {});                         // reset mock to idle; no reboot
   }
 
+  // ---- P9 security apps ----
+  await call('POST', '/api/_dev/app', { name: 'Files' });  // no security app holds the radio
+  if (has('wifi.sniffer')) {
+    console.log('P9 sniffer');
+    await call('POST', '/api/sniffer/stop', {});
+    await go('#app=sniffer');
+    check('Sniffer opens from launchpad registry', await waitFor('document.querySelector(".sniffer")'));
+    await js(`$t('.sniffer .btn', 'Start capture').click();`);
+    check('Sniffer starts and reports real state', await waitFor('/CAPTURING/.test(document.querySelector(".sniffer")?.textContent || "")'));
+    await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 2 });
+    await call('POST', '/api/_dev/sniffer', { kind: 'eapol', msg: 1, count: 1 });
+    check('Sniffer shows live analysis and AP details', await waitFor('/Beacons/.test(document.querySelector(".sniffer")?.textContent || "") && /TestNet/.test(document.querySelector(".sniffer")?.textContent || "") && /EAPOL/.test(document.querySelector(".sniffer")?.textContent || "")'));
+    await js(`$t('.sniffer .btn', 'Stop and save').click();`);
+    check('Sniffer stops and saves', await waitFor('/STOPPED/.test(document.querySelector(".sniffer")?.textContent || "")'));
+    await shot('22-sniffer');
+  }
+  if (has('airspace')) {
+    console.log('P9 airspace');
+    await call('POST', '/api/airspace/stop', {});
+    await go('#app=airspace');
+    await js(`$t('.airspace .btn', 'Start monitor').click();`);
+    check('Airspace monitors', await waitFor('/MONITORING/.test(document.querySelector(".airspace")?.textContent || "")'));
+    await call('POST', '/api/_dev/airspace', { type: 'deauth_flood', detail: 'Lab flood' });
+    check('Airspace displays textual alert and counters', await waitFor('/deauth flood/i.test(document.querySelector(".airspace")?.textContent || "") && /Lab flood/.test(document.querySelector(".airspace")?.textContent || "")'));
+    await call('POST', '/api/airspace/stop', {});
+  }
+  if (has('sentinel')) {
+    console.log('P9 sentinel');
+    await call('POST', '/api/sentinel/stop', {});
+    await go('#app=sentinel');
+    await js(`$t('.sentinel .btn', 'Start passive scan').click();`);
+    await call('POST', '/api/_dev/sentinel', { addr: '02:00:00:00:00:0a', kind: 'Find My', age_s: 300, sightings: 4 });
+    check('Sentinel shows classified persistent tracker', await waitFor('/Find My/.test(document.querySelector(".sentinel")?.textContent || "") && /Persistent/.test(document.querySelector(".sentinel")?.textContent || "")'));
+    check('Sentinel explains heuristic, not proof', await js('return /does not prove stalking/.test(document.querySelector(".sentinel").textContent);'));
+    await call('POST', '/api/sentinel/stop', {});
+  }
+  if (has('presence.peers')) {
+    console.log('P9 nearby peers');
+    await call('POST', '/api/presence/stop', {});
+    await go('#app=presence');
+    check('Nearby Peers opens with CSI limitation explained', await waitFor('document.querySelector(".presence") && /not detect people or motion/.test(document.querySelector(".presence").textContent)'));
+    await js(`$t('.presence .btn', 'Start discovery').click();`);
+    await call('POST', '/api/_dev/presence', { mac: '02:00:00:00:00:0b', name: 'Lab Watch' });
+    check('Nearby peer appears in list', await waitFor('/Lab Watch/.test(document.querySelector(".presence")?.textContent || "")'));
+    await call('POST', '/api/presence/stop', {});
+  }
+  if (has('fido2')) {
+    console.log('P9 FIDO2');
+    await call('POST', '/api/_dev/fido2', { available: false, reset: true });
+    await go('#app=fido2');
+    check('FIDO2 disables actions while unavailable', await waitFor('document.querySelector(".fido2 .btn.primary")?.disabled === true'));
+    await call('POST', '/api/_dev/fido2', { available: true });
+    check('FIDO2 enables only when transport exists', await waitFor('document.querySelector(".fido2 .btn.primary")?.disabled === false'));
+    await js(`$type(document.querySelector('.fido2 input[aria-label="Relying party hostname"]'), 'example.com');
+              $type(document.querySelector('.fido2 input[aria-label="User name"]'), 'alice');
+              $t('.fido2 .btn', 'Register').click();`);
+    check('FIDO2 registered credential appears', await waitFor('[...document.querySelectorAll(".fido2 .list .note b")].some(x => x.textContent === "example.com")'));
+    await waitFor('[...document.querySelectorAll(".fido2 .btn")].some(x => x.textContent.trim() === "Remove" && !x.disabled)');
+    await js(`$t('.fido2 .btn', 'Remove').click();`);
+    check('credential deletion asks confirmation', await waitFor('document.querySelector(".scrim") && /Remove credential/.test(document.querySelector(".scrim").textContent)'));
+    await js(`document.querySelector('.scrim .btn.danger').click();`);
+    check('credential removed after confirmation', await waitFor('/No credentials registered/.test(document.querySelector(".fido2")?.textContent || "")'));
+    await call('POST', '/api/_dev/fido2', { available: false });
+  }
+  if (has('evil.portal')) {
+    console.log('P9 evil portal');
+    await call('POST', '/api/evilportal/stop', {});
+    await go('#app=evilportal');
+    await js(`$t('.evilportal .btn', 'Start portal').click();`);
+    check('portal start requires consent dialog', await waitFor('document.querySelector(".scrim") && /credential-capture portal/.test(document.querySelector(".scrim").textContent)'));
+    await js(`$t('.scrim .btn', 'I am authorized — start').click();`);
+    check('portal reports active state', await waitFor('/ACTIVE/.test(document.querySelector(".evilportal")?.textContent || "")'));
+    await js(`$t('.evilportal .btn', 'Stop').click();`);
+    check('portal stops', await waitFor('/Portal stopped/.test(document.querySelector(".evilportal")?.textContent || "")'));
+  }
+  if (has('deauth.flood')) {
+    console.log('P9 deauth flood');
+    await call('POST', '/api/deauthflood/stop', {});
+    await go('#app=deauthflood');
+    await js(`$t('.deauthflood .btn', 'Scan APs').click();`);
+    check('deauth scan lists targets', await waitFor('document.querySelectorAll(".deauthflood .list button.note").length > 0', 20000));
+    await js(`document.querySelector('.deauthflood .list button.note').click(); $t('.deauthflood .btn', 'Start test').click();`);
+    check('deauth start asks consent', await waitFor('document.querySelector(".scrim") && /deauthentication test/.test(document.querySelector(".scrim").textContent)'));
+    await js(`$t('.scrim .btn', 'Start test').click();`);
+    check('deauth reports injecting', await waitFor('/INJECTING/.test(document.querySelector(".deauthflood")?.textContent || "")'));
+    await call('POST', '/api/deauthflood/stop', {});
+  }
+  if (has('beacon.spam')) {
+    console.log('P9 beacon spam');
+    await call('POST', '/api/beaconspam/stop', {});
+    await go('#app=beaconspam');
+    await js(`$t('.beaconspam .btn', 'Start test').click();`);
+    check('beacon start asks consent', await waitFor('document.querySelector(".scrim") && /beacon injection/.test(document.querySelector(".scrim").textContent)'));
+    await js(`$t('.scrim .btn', 'Start test').click();`);
+    check('beacon reports injecting', await waitFor('/INJECTING/.test(document.querySelector(".beaconspam")?.textContent || "")'));
+    await call('POST', '/api/beaconspam/stop', {});
+  }
+
   // ---- phone
   console.log('phone layout');
   await S('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });

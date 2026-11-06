@@ -488,6 +488,216 @@ if (caps.includes('ota')) {
   check('POST /api/ota/rollback', r.status === 200 || r.status === 409, r.status);
 }
 
+// ---- P9 security tools (simulator/mock dev hooks drive deterministic hardware fakes) ----
+if (DEV) {
+  console.log('P9 security tools');
+  // Start from a clean slate even if an earlier interrupted run left a tool active.
+  for (const p of ['/api/sniffer/stop', '/api/airspace/stop', '/api/sentinel/stop', '/api/presence/stop', '/api/evilportal/stop', '/api/deauthflood/stop', '/api/beaconspam/stop']) await call('POST', p, {});
+
+  console.log('sniffer');
+  r = await call('POST', '/api/sniffer/start', { channel: 0 });
+  check('sniffer: invalid channel 400', r.status === 400 && r.json?.error === 'bad_request', r.json);
+  r = await call('POST', '/api/sniffer/start', { channel: -1, max_bytes: 200 });
+  check('sniffer starts on SD', r.status === 200 && r.json?.ok === true, r.json);
+  r = await call('GET', '/api/sniffer');
+  const capturePath = r.json?.file;
+  check('sniffer reports active capture and path', r.json?.active === true && /^\/sd\/.*\.pcap$/.test(capturePath || ''), r.json);
+  r = await call('POST', '/api/_dev/sniffer', { count: 3 });
+  check('sniffer dev hook is reachable', r.status === 200, r.json);
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer stops at max_bytes with a useful error', r.json?.active === false && /size limit/i.test(r.json?.error || ''), r.json);
+  check('sniffer max_bytes event', msgs.some(m => m.t === 'sniffer' && m.d?.active === false && m.d?.reason === 'max_bytes'), msgs.filter(m => m.t === 'sniffer').slice(-3));
+  const capResp = await fetch(BASE + `/api/files/content?path=${q(capturePath)}`, { headers: { cookie } });
+  const capBytes = Buffer.from(await capResp.arrayBuffer());
+  check('PCAP file is readable', capResp.status === 200 && capBytes.length >= 24 + 16 + 13 + 36, { status: capResp.status, size: capBytes.length });
+  check('PCAP global header and radiotap fields valid', capBytes.readUInt32LE(0) === 0xa1b2c3d4 && capBytes.readUInt32LE(20) === 127 &&
+    capBytes[42] === 13 && capBytes[44] === 0x28 && capBytes.readUInt16LE(48) === 2412,
+    capBytes.length >= 50 ? { magic: capBytes.readUInt32LE(0).toString(16), link: capBytes.readUInt32LE(20), rtLen: capBytes[42], present: capBytes[44], freq: capBytes.readUInt16LE(48) } : null);
+  r = await call('POST', '/api/sniffer/stop', {});
+  check('sniffer stop after auto-stop is a clean conflict', r.status === 409 && r.json?.error === 'conflict', r.json);
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'bogus' });
+  check('sniffer rejects an unknown filter', r.status === 400 && r.json?.error === 'bad_request', r.json);
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'beacons' });
+  check('sniffer beacon filter starts', r.status === 200 && r.json?.ok === true, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'probe', count: 2 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'data', count: 1 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 3 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer filter saves only selected frame types', r.json?.filter === 'beacons' && r.json.packets === 3 && r.json.seen === 6, r.json);
+  check('sniffer breaks down management and data counters', r.json.management === 5 && r.json.data === 1 && r.json.probes === 2 && r.json.beacons === 3, r.json);
+  check('sniffer lists AP metadata', r.json.aps?.length === 1 && r.json.aps[0].ssid === 'TestNet' && r.json.aps[0].bssid === '02:00:00:00:00:01' && r.json.aps[0].beacons === 3, r.json.aps);
+  await call('POST', '/api/sniffer/stop', {});
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'eapol' });
+  check('sniffer EAPOL filter starts', r.status === 200, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 2 });
+  for (const msg of [1, 2, 3, 4]) await call('POST', '/api/_dev/sniffer', { kind: 'eapol', msg, count: 1 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer EAPOL-only capture', r.json.filter === 'eapol' && r.json.packets === 4 && r.json.eapol === 4 && r.json.seen === 6, r.json);
+  check('sniffer detects a complete four-way handshake', r.json.handshakes === 1, r.json);
+  await call('POST', '/api/sniffer/stop', {});
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'probes' });
+  check('sniffer probe filter starts', r.status === 200, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 1 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'probe', count: 4 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer probes-only capture', r.json.filter === 'probes' && r.json.packets === 4 && r.json.probes === 4 && r.json.seen === 5, r.json);
+  await call('POST', '/api/sniffer/stop', {});
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'management' });
+  check('sniffer management filter starts', r.status === 200, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'data', count: 1 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'deauth', count: 2 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer management-only capture', r.json.filter === 'management' && r.json.packets === 2 && r.json.deauth === 2 && r.json.seen === 3, r.json);
+  await call('POST', '/api/sniffer/stop', {});
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'data' });
+  check('sniffer data filter starts', r.status === 200, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 2 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'data', count: 3 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer data-only capture', r.json.filter === 'data' && r.json.packets === 3 && r.json.data === 3 && r.json.seen === 5, r.json);
+  await call('POST', '/api/sniffer/stop', {});
+
+  r = await call('POST', '/api/sniffer/start', { channel: 1, filter: 'all' });
+  check('sniffer all-frame filter starts', r.status === 200, r.json);
+  await call('POST', '/api/_dev/sniffer', { kind: 'beacon', count: 1 });
+  await call('POST', '/api/_dev/sniffer', { kind: 'data', count: 1 });
+  await new Promise(x => setTimeout(x, 150));
+  r = await call('GET', '/api/sniffer');
+  check('sniffer all-frame capture', r.json.filter === 'all' && r.json.packets === 2 && r.json.seen === 2, r.json);
+  await call('POST', '/api/sniffer/stop', {});
+
+  console.log('airspace');
+  r = await call('POST', '/api/airspace/start', {});
+  check('airspace starts', r.status === 200, r.json);
+  if (caps.includes('desktop.install')) {
+    r = await call('POST', '/api/sniffer/start', { channel: 1 });
+    check('radio owner rejects sniffer while Airspace is active', r.status === 503 && r.json?.error === 'busy' && /Airspace/.test(r.json?.message || ''), r.json);
+  }
+  r = await call('POST', '/api/_dev/airspace', { type: 'deauth_flood', detail: 'Lab flood', bssid: '02:00:00:00:00:01', rssi: -40 });
+  check('airspace dev alert accepted', r.status === 200, r.json);
+  r = await call('GET', '/api/airspace');
+  check('airspace status uses documented counters', r.json?.active === true && r.json.deauth_floods === 1 && r.json.deauth_total >= 50 && typeof r.json.beacon_total === 'number', r.json);
+  check('airspace alert event has detail', msgs.some(m => m.t === 'airspace' && m.d?.type === 'deauth_flood' && m.d?.detail === 'Lab flood'), msgs.filter(m => m.t === 'airspace').slice(-2));
+  r = await call('POST', '/api/airspace/stop', {});
+  check('airspace stops', r.status === 200, r.json);
+
+  console.log('sentinel and nearby peers');
+  await call('POST', '/api/sentinel/start', {});
+  r = await call('POST', '/api/_dev/sentinel', { addr: '02:00:00:00:00:0a', kind: 'Find My', rssi: -55, age_s: 300, sightings: 4 });
+  check('sentinel dev hook is reachable', r.status === 200, r.json);
+  await new Promise(x => setTimeout(x, 200));
+  r = await call('GET', '/api/sentinel');
+  const tracked = r.json?.devices?.[0];
+  check('sentinel reports tracker kind and persistence', r.json?.device_count === 1 && tracked?.kind === 'Find My' && tracked.sightings === 4 && tracked.stalking === true, tracked);
+  check('sentinel persistent alert event', msgs.some(m => m.t === 'sentinel' && m.d?.type === 'stalking' && m.d?.kind === 'Find My'), msgs.filter(m => m.t === 'sentinel').slice(-2));
+  await call('POST', '/api/sentinel/stop', {});
+  await call('POST', '/api/presence/start', {});
+  r = await call('POST', '/api/_dev/presence', { mac: '02:00:00:00:00:0b', name: 'Lab Watch', rssi: -51 });
+  if (caps.includes('desktop.install')) check('presence dev hook is reachable', r.status === 200, r.json);
+  else {
+    // The mock uses the same hook; this is a normal capability check, not an alternate implementation.
+    check('presence dev hook is reachable', r.status === 200, r.json);
+  }
+  r = await call('GET', '/api/presence');
+  check('nearby peers include arrival history', r.json?.peers?.[0]?.name === 'Lab Watch' && r.json.peers[0].present === true && r.json.history?.some(x => x.event === 'appeared'), r.json);
+  check('presence event identifies peer', msgs.some(m => m.t === 'presence' && m.d?.event === 'appeared' && m.d?.mac === '02:00:00:00:00:0b'), msgs.filter(m => m.t === 'presence').slice(-2));
+  await call('POST', '/api/presence/stop', {});
+
+  console.log('FIDO2');
+  await call('POST', '/api/_dev/fido2', { available: false });
+  r = await call('POST', '/api/fido2/register', { rp: 'example.com', user: 'alice' });
+  check('FIDO2 unavailable never fakes registration', r.status === 503 && r.json?.error === 'fido_unavailable', r.json);
+  await call('POST', '/api/_dev/fido2', { available: true });
+  r = await call('POST', '/api/fido2/register', { rp: '', user: '' });
+  check('FIDO2 validates relying party and user', r.status === 400, r.json);
+  r = await call('POST', '/api/fido2/register', { rp: 'example.com', user: 'alice' });
+  check('FIDO2 simulator registers when transport enabled', r.status === 200, r.json);
+  r = await call('POST', '/api/fido2/authenticate', { rp: 'other.example' });
+  check('FIDO2 unknown relying party 404', r.status === 404, r.json);
+  r = await call('POST', '/api/fido2/authenticate', { rp: 'example.com' });
+  check('FIDO2 simulator authenticates known RP', r.status === 200, r.json);
+  r = await call('GET', '/api/fido2/credentials');
+  check('FIDO2 credential list has stable index', r.json?.credentials?.[0]?.index === 0 && r.json.credentials[0].rp === 'example.com', r.json);
+  r = await call('POST', '/api/fido2/remove', { index: 0 });
+  check('FIDO2 credential removal works', r.status === 200, r.json);
+  await call('POST', '/api/_dev/fido2', { available: false });
+
+  console.log('evil portal');
+  r = await call('POST', '/api/evilportal/start', { ssid: 'Lab AP', templateId: 0 });
+  check('portal requires explicit authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+  r = await call('POST', '/api/evilportal/start', { ssid: 'Lab AP', gateway: 'not-an-ip', authorized: true });
+  check('portal rejects invalid gateway', r.status === 400 && /IPv4/i.test(r.json?.message || ''), r.json);
+  const quotedSsid = 'Lab "AP" \\ test';
+  r = await call('POST', '/api/evilportal/start', { ssid: quotedSsid, templateId: 0, authorized: true });
+  check('portal accepts numeric template and escapes SSID JSON', r.status === 200 && r.json?.ssid === quotedSsid, r.json || r.text);
+  r = await call('POST', '/api/evilportal/start', { ssid: 'second', authorized: true });
+  check('portal second start conflicts', r.status === 409, r.json);
+  r = await fetch(BASE + '/login', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'username=alice&password=secret' });
+  const captiveText = await r.text();
+  check('captive login works without operator session', r.status === 200 && /Connected/.test(captiveText), { status: r.status, body: captiveText.slice(0, 80) });
+  r = await call('GET', '/api/evilportal/captures');
+  check('captured password hidden by default', r.json?.captures?.some(c => c.username === 'alice' && c.password === '******'), r.json);
+  r = await call('PUT', '/api/evilportal/settings', { pwdMode: 1 });
+  check('portal redaction setting applies', r.status === 200, r.json);
+  r = await call('GET', '/api/evilportal/captures');
+  check('masked capture preserves only first and last character', r.json?.captures?.some(c => c.username === 'alice' && c.password === 's****t'), r.json);
+  r = await call('PUT', '/api/evilportal/settings', { verify: true });
+  check('unimplemented PSK verification is an explicit error', r.status === 503 && r.json?.error === 'unavailable', r.json);
+  r = await call('POST', '/api/evilportal/karma-scan', { seconds: 5 });
+  check('unimplemented KARMA never fakes success', r.status === 503 && r.json?.error === 'unavailable', r.json);
+  r = await call('POST', '/api/evilportal/clone', { ssid: 'Open AP' });
+  check('unimplemented page cloning never fakes success', r.status === 503 && r.json?.error === 'unavailable', r.json);
+  await call('POST', '/api/evilportal/clear', {});
+  r = await call('GET', '/api/evilportal/captures');
+  check('portal captures clear', r.json?.captures?.length === 0, r.json);
+  await call('POST', '/api/evilportal/stop', {});
+
+  console.log('deauth flood');
+  r = await call('POST', '/api/deauthflood/scan', {});
+  check('deauth scan is asynchronous 202', r.status === 202, r.json);
+  let targets = null;
+  for (let i = 0; i < 30; i++) {
+    await new Promise(x => setTimeout(x, 200));
+    targets = (await call('GET', '/api/deauthflood/targets')).json;
+    if (!targets?.scanning) break;
+  }
+  check('deauth target scan completes with usable APs', targets?.scanning === false && targets.targets?.length > 0 && targets.targets[0].bssid, targets);
+  r = await call('POST', '/api/deauthflood/start', { bssid: targets.targets[0].bssid, channel: targets.targets[0].channel });
+  check('deauth requires authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+  r = await call('POST', '/api/deauthflood/start', { bssid: targets.targets[0].bssid, channel: 14, authorized: true });
+  check('deauth validates channel', r.status === 400, r.json);
+  r = await call('POST', '/api/deauthflood/start', { bssid: targets.targets[0].bssid, channel: targets.targets[0].channel, rate: 10, authorized: true });
+  check('deauth starts with selected target', r.status === 200, r.json);
+  r = await call('GET', '/api/deauthflood');
+  check('deauth status uses camelCase contract and packet rate', r.json?.active === true && r.json.targetBssid === targets.targets[0].bssid && r.json.ratePps === 10, r.json);
+  await call('POST', '/api/deauthflood/stop', {});
+
+  console.log('beacon spam');
+  r = await call('PUT', '/api/beaconspam/ssids', '["ok","bad\\q"]', { raw: true });
+  check('beacon custom JSON parser rejects bad escapes', r.status === 400, r.json);
+  r = await call('PUT', '/api/beaconspam/ssids', ['Lab"Net', 'Test\\u0041']);
+  check('beacon custom list accepts escaped SSIDs', r.status === 200 && r.json?.count === 2, r.json);
+  r = await call('POST', '/api/beaconspam/start', { mode: 'custom', channel: 1 });
+  check('beacon requires authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+  r = await call('POST', '/api/beaconspam/start', { mode: 'custom', channel: 1, authorized: true });
+  check('beacon custom mode starts', r.status === 200, r.json);
+  r = await call('GET', '/api/beaconspam');
+  check('beacon reports custom mode, SSID count and errors', r.json?.active === true && r.json.mode === 2 && r.json.ssids === 2 && r.json.customSsids?.[0] === 'Lab"Net' && typeof r.json.txErrors === 'number', r.json);
+  await call('POST', '/api/beaconspam/stop', {});
+  await call('POST', '/api/_dev/fido2', { available: false });
+}
+
 // ---- one desktop at a time ----
 const ws2 = new WebSocket(wsUrl, { headers: { cookie } });
 await new Promise((done) => { ws2.onopen = done; ws2.onerror = done; setTimeout(done, 3000); });

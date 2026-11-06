@@ -57,7 +57,8 @@ for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
-  'wifi.sniffer', 'airspace', 'sentinel', 'presence', 'fido2', 'evil.portal', 'deauth.flood', 'beacon.spam'];
+  'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'fido2',
+  'evil.portal', 'evil.portal.templates', 'evil.portal.twin', 'evil.portal.settings', 'deauth.flood', 'beacon.spam'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -114,36 +115,169 @@ let seq = 0;
 let desktop = null;
 
 // P9 NucleoOS parity tool state
-let sniffer = { active: false, packets: 0, bytes: 24, channel: null, file: null };
+let sniffer = { active: false, packets: 0, drops: 0, bytes: 24, channel: null, filter: 'all', file: null,
+  seen: 0, management: 0, control: 0, data: 0, beacons: 0, probes: 0, deauth: 0, eapol: 0, handshakes: 0, aps: [], hs: [] };
 let airspace = { active: false, deauth_total: 0, deauth_floods: 0, beacon_total: 0, beacon_floods: 0, evil_twins: 0, started: 0 };
 let sentinel = { active: false, started: 0, device_count: 0, devices: [] };
 let presence = { active: false, started: 0, peers_ever: 0, peers: [], history: [] };
 let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
-let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [] };
-let deauthflood = { active: false, target_bssid: '', target_station: 'ff:ff:ff:ff:ff:ff', channel: 1, sent: 0 };
-let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet' };
+let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [], settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
+let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null };
+let deauthScan = { scanning: false, targets: [], error: null, timer: null };
+let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet', mode: 0, txErrors: 0, customSsids: [], error: null };
+
+function pcapGlobalHeader() {
+  const b = Buffer.alloc(24);
+  b.writeUInt32LE(0xa1b2c3d4, 0); b.writeUInt16LE(2, 4); b.writeUInt16LE(4, 6);
+  b.writeUInt32LE(65535, 16); b.writeUInt32LE(127, 20);
+  return b;
+}
+const SNIFFER_FILTERS = ['all', 'management', 'data', 'beacons', 'probes', 'eapol'];
+
+function snifferFrame(kind = 'beacon', msg = 0) {
+  if (kind === 'probe' || kind === 'management') {
+    const f = Buffer.alloc(24); f[0] = 0x40; f.fill(0xff, 4, 10); f[10] = 2; f[16] = 2; f[21] = 1; return f;
+  }
+  if (kind === 'deauth') {
+    const f = Buffer.alloc(26); f[0] = 0xc0; f.fill(0xff, 4, 10); f[10] = 2; f[16] = 2; f[21] = 1; return f;
+  }
+  if (kind === 'data') {
+    const f = Buffer.alloc(24); f[0] = 0x08; f[1] = 0x01; f[4] = 2; f[10] = 2; f[16] = 2; f[21] = 1; return f;
+  }
+  if (kind === 'eapol') {
+    const f = Buffer.alloc(80); f[0] = 0x08; f[1] = 0x01;
+    f[4] = 2; f[10] = 2; f[16] = 2; f[21] = 1;
+    Buffer.from([0xaa, 0xaa, 0x03, 0, 0, 0, 0x88, 0x8e]).copy(f, 24);
+    f[32] = 2; f[33] = 3; f[34] = 0; f[35] = 44; f[36] = 2;
+    f[37] = msg === 1 ? 0x80 : msg === 2 ? 0x01 : msg === 3 ? 0xc1 : msg === 4 ? 0x03 : 0;
+    return f;
+  }
+  const f = Buffer.alloc(45); f[0] = 0x80; f.fill(0xff, 4, 10);
+  f[10] = 2; f[16] = 2; f[21] = 1;
+  f[36] = 0; f[37] = 7; Buffer.from('TestNet').copy(f, 38);
+  return f;
+}
+
+function pcapRecord(frame) {
+  const b = Buffer.alloc(16 + 13 + frame.length);
+  b.writeUInt32LE(Math.floor(Date.now() / 1000), 0);
+  b.writeUInt32LE(49, 8); b.writeUInt32LE(frame.length + 13, 12);
+  b[18] = 13; b[20] = 0x28; b.writeUInt16LE(2412, 24); b[28] = (256 - 50) & 255;
+  frame.copy(b, 29);
+  return b;
+}
+
+function snifferHeaderLen(f) {
+  if (f.length < 24) return 0;
+  const fc = f[0] | (f[1] << 8), type = (fc >> 2) & 3, subtype = (fc >> 4) & 15;
+  let n = 24;
+  const toDs = !!(fc & 0x0100), fromDs = !!(fc & 0x0200);
+  if (type === 2 && toDs && fromDs) n += 6;
+  if (type === 2 && (subtype & 8)) n += 2;
+  if (fc & 0x8000) n += 4;
+  return n <= f.length ? n : 0;
+}
+function snifferEapol(f, hdr) {
+  if (!hdr || f.length < hdr + 12) return null;
+  const l = f.subarray(hdr);
+  if (l[0] !== 0xaa || l[1] !== 0xaa || l[2] !== 0x03 || l[6] !== 0x88 || l[7] !== 0x8e) return null;
+  if (l[9] !== 3 || f.length < hdr + 15) return null;
+  return { keyInfo: l[13] };
+}
+function snifferMac(f, off) {
+  return [...f.subarray(off, off + 6)].map(x => x.toString(16).padStart(2, '0')).join(':');
+}
+function snifferTrackAp(f, channel, rssi, beacon) {
+  if (f.length < 36) return;
+  const bssid = snifferMac(f, 16);
+  let ssid = '', ds = 0, off = 36;
+  while (off + 2 <= f.length) {
+    const tag = f[off], len = f[off + 1];
+    if (off + 2 + len > f.length) break;
+    if (tag === 0) ssid = f.subarray(off + 2, off + 2 + len).toString('utf8');
+    else if (tag === 3 && len === 1) ds = f[off + 2];
+    off += 2 + len;
+  }
+  let ap = sniffer.aps.find(a => a.bssid === bssid);
+  if (!ap) { ap = { bssid, ssid: '', channel: 0, rssi: 0, beacons: 0 }; sniffer.aps.push(ap); }
+  if (ssid && !ap.ssid) ap.ssid = ssid;
+  if (ds) ap.channel = ds; else if (channel > 0) ap.channel = channel;
+  ap.rssi = rssi;
+  if (beacon) ap.beacons++;
+}
+function snifferAnalyse(f) {
+  if (f.length < 2) return;
+  sniffer.seen++;
+  const fc = f[0] | (f[1] << 8), type = (fc >> 2) & 3, subtype = (fc >> 4) & 15;
+  if (type === 0) {
+    sniffer.management++;
+    if (subtype === 8) { sniffer.beacons++; snifferTrackAp(f, sniffer.channel || 1, -50, true); }
+    else if (subtype === 4) sniffer.probes++;
+    else if (subtype === 5) snifferTrackAp(f, sniffer.channel || 1, -50, false);
+    if (subtype === 10 || subtype === 12) sniffer.deauth++;
+  } else if (type === 1) sniffer.control++;
+  else if (type === 2) {
+    sniffer.data++;
+    const e = snifferEapol(f, snifferHeaderLen(f));
+    if (e) {
+      sniffer.eapol++;
+      const hi = e.keyInfo, ack = !!(hi & 0x80), mic = !!(hi & 0x01), secure = !!(hi & 0x02), install = !!(hi & 0x40);
+      const msg = ack && mic && install ? 3 : ack && mic ? 3 : ack ? 1 : mic && secure ? 4 : mic ? 2 : 0;
+      if (msg) {
+        let a = snifferMac(f, 10), b = snifferMac(f, 4);
+        if (a > b) [a, b] = [b, a];
+        let hs = sniffer.hs.find(x => x.a === a && x.b === b);
+        if (!hs) { hs = { a, b, mask: 0 }; sniffer.hs.push(hs); }
+        hs.mask |= 1 << msg;
+        if ((hs.mask & 0x1e) === 0x1e) { sniffer.handshakes++; hs.mask = 0; }
+      }
+    }
+  }
+}
+function snifferFilterMatch(f) {
+  if (sniffer.filter === 'all') return true;
+  if (f.length < 2) return false;
+  const fc = f[0] | (f[1] << 8), type = (fc >> 2) & 3, subtype = (fc >> 4) & 15;
+  if (sniffer.filter === 'management') return type === 0;
+  if (sniffer.filter === 'data') return type === 2;
+  if (sniffer.filter === 'beacons') return type === 0 && subtype === 8;
+  if (sniffer.filter === 'probes') return type === 0 && subtype === 4;
+  if (sniffer.filter === 'eapol') return type === 2 && !!snifferEapol(f, snifferHeaderLen(f));
+  return true;
+}
+function snifferState() {
+  return { active: sniffer.active === true, channel: sniffer.channel || null, filter: sniffer.filter || 'all',
+    packets: sniffer.packets || 0, drops: sniffer.drops || 0, bytes: sniffer.bytes || 24,
+    seen: sniffer.seen || 0, management: sniffer.management || 0, control: sniffer.control || 0, data: sniffer.data || 0,
+    beacons: sniffer.beacons || 0, probes: sniffer.probes || 0, deauth: sniffer.deauth || 0,
+    eapol: sniffer.eapol || 0, handshakes: sniffer.handshakes || 0,
+    aps: sniffer.aps || [], file: sniffer.file || null, error: sniffer.error || null };
+}
 
 function airspaceState() {
-  return { active: airspace.active, deauth_total: airspace.deauth_total, deauth_floods: airspace.deauth_floods, beacon_total: airspace.beacon_total, beacon_floods: airspace.beacon_floods, evil_twins: airspace.evil_twins, started: airspace.started };
+  return { active: airspace.active, deauth_total: airspace.deauth_total, deauth_floods: airspace.deauth_floods,
+    beacon_total: airspace.beacon_total, beacon_floods: airspace.beacon_floods, evil_twins: airspace.evil_twins,
+    broadcast_deauth: airspace.broadcast_deauth || 0, drops: 0, started: airspace.started, error: null };
 }
 function sentinelState() {
-  return { active: sentinel.active, started: sentinel.started, device_count: sentinel.devices.length, devices: sentinel.devices };
+  return { active: sentinel.active, scanning: false, started: sentinel.started, device_count: sentinel.devices.length, devices: sentinel.devices, error: null };
 }
 function presenceState() {
-  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history };
+  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history, error: null };
 }
 function fido2State() {
-  return { available: true, state: fido2.state, credentials: fido2.credentials };
+  return { available: fido2.available, state: fido2.state, credentials: fido2.credentials, error: fido2.available ? null : 'Simulated FIDO2 transport is disabled' };
 }
 function evilportalState() {
-  return { active: evilportal.active, ssid: evilportal.ssid, clients: evilportal.clients, attempts: evilportal.attempts, started: nowEpoch() };
+  return { active: evilportal.active, mode: evilportal.mode || 0, ssid: evilportal.ssid, twinBssid: evilportal.twinBssid,
+    channel: evilportal.channel || 1, coherent: false, deauthFrames: evilportal.deauthFrames || 0,
+    clients: evilportal.clients, attempts: evilportal.attempts, confirmed: evilportal.confirmed || 0,
+    started: evilportal.started || 0, dhcpsOk: true, probesTotal: evilportal.probesTotal || 0, error: evilportal.error || null,
+    templates: [0, 1, 2, 3].map(id => ({ id, name: ['Default (Wi-Fi Login)', 'Router Update', 'Google Sign-In', 'OAuth / Social Login'][id], builtin: true })),
+    ssidPresets: ['Free Wi-Fi', 'WiFi Guest', 'Hotel Wi-Fi'], settings: evilportal.settings };
 }
-function deauthfloodState() {
-  return { active: deauthflood.active, target_bssid: deauthflood.target_bssid, target_station: deauthflood.target_station, channel: deauthflood.channel, sent: deauthflood.sent };
-}
-function beaconspamState() {
-  return { active: beaconspam.active, channel: beaconspam.channel, beacons: beaconspam.beacons, ssids: beaconspam.ssids, prefix: beaconspam.prefix };
-}
+function deauthfloodState() { return { ...deauthflood }; }
+function beaconspamState() { return { ...beaconspam }; }
 
 function wsFrame(text) {
   const d = Buffer.from(text), n = d.length;
@@ -928,22 +1062,71 @@ async function toolsRoute(req, res, url, path) {
   }
 
   // P9 dev hooks
+  if (DEV && path === '/api/_dev/fido2' && m === 'POST') {
+    const j = await readJSON(req);
+    fido2.available = j?.available !== false;
+    fido2.state = fido2.available ? 'idle' : 'unavailable';
+    if (j?.reset) { fido2.creds = []; fido2.credentials = 0; }
+    return ok(res);
+  }
+  if (DEV && path === '/api/_dev/presence' && m === 'POST') {
+    const j = await readJSON(req);
+    if (!presence.active) return fail(res, 409, 'conflict', 'start discovery first');
+    const mac = j?.mac || '02:00:00:00:00:01';
+    let peer = presence.peers.find(p => p.mac === mac);
+    if (!peer) {
+      peer = { mac, name: j?.name || 'Test Watch', rssi: j?.rssi || -50, first_seen: nowEpoch(), last_seen: nowEpoch(), present: true };
+      presence.peers.push(peer); presence.peers_ever++;
+    } else { peer.present = true; peer.last_seen = nowEpoch(); }
+    presence.history.push({ ts: nowEpoch(), mac, name: peer.name, event: 'appeared' });
+    publish('presence', { event: 'appeared', mac, name: peer.name, rssi: peer.rssi });
+    return ok(res);
+  }
   if (DEV && path === '/api/_dev/evilportal' && m === 'POST') {
     const j = await readJSON(req);
     if (j?.action === 'creds') {
+      if (!evilportal.active) return fail(res, 409, 'conflict', 'start the portal first');
       evilportal.captures.push({ mac: j.mac || '00:00:00:00:00:01', hostname: '', url: j.url || '/login', username: j.username || 'user', password: j.password || 'pass', ts: nowEpoch() });
-      evilportal.attempts = evilportal.captures.length;
+      evilportal.attempts++;
     }
     return ok(res);
   }
   if (DEV && path === '/api/_dev/sentinel' && m === 'POST') {
     const j = await readJSON(req);
-    sentinel.devices.push({ addr: j?.addr || '00:00:00:00:00:01', name: j?.name || 'Phone', rssi: j?.rssi || -60, first_seen: nowEpoch(), last_seen: nowEpoch(), sightings: 3, stalking: false });
+    if (!sentinel.active) return fail(res, 409, 'conflict', 'start monitoring first');
+    const addr = j?.addr || '00:00:00:00:00:01';
+    let device = sentinel.devices.find(d => d.addr === addr);
+    if (!device) {
+      device = { addr, name: j?.name || '', kind: j?.kind || 'Find My', rssi: j?.rssi || -60,
+        first_seen: nowEpoch() - (j?.age_s || 0), last_seen: nowEpoch(), sightings: Math.max(0, (j?.sightings || 1) - 1), stalking: false, separated: !!j?.separated };
+      sentinel.devices.push(device);
+    }
+    device.sightings++;
+    device.last_seen = nowEpoch();
+    if (device.sightings >= 4 && nowEpoch() - device.first_seen >= (device.separated ? 150 : 300)) device.stalking = true;
     sentinel.device_count = sentinel.devices.length;
+    if (device.stalking) publish('sentinel', { type: 'stalking', addr, kind: device.kind, detail: `Persistent ${device.kind} tracker nearby`, sightings: device.sightings });
     return ok(res);
   }
   if (DEV && path === '/api/_dev/sniffer' && m === 'POST') {
-    sniffer.packets += 50; sniffer.bytes += 10000;
+    if (!sniffer.active) return fail(res, 409, 'conflict', 'start a capture first');
+    const j = await readJSON(req);
+    const count = Math.min(100, Math.max(1, j?.count || 50));
+    const kind = j?.kind || 'beacon';
+    const msg = j?.msg || 0;
+    for (let i = 0; i < count && sniffer.active; i++) {
+      const frame = snifferFrame(kind, msg);
+      snifferAnalyse(frame);
+      if (!snifferFilterMatch(frame)) continue;
+      const record = pcapRecord(frame);
+      if (sniffer.maxBytes && sniffer.bytes + record.length > sniffer.maxBytes) {
+        sniffer.active = false; sniffer.error = 'Capture size limit reached';
+        publish('sniffer', { active: false, reason: 'max_bytes' });
+        break;
+      }
+      await fsp.appendFile(join(ROOTS.sd, 'data', 'sniffer', 'capture.pcap'), record);
+      sniffer.packets++; sniffer.bytes += record.length;
+    }
     return ok(res);
   }
   if (DEV && path === '/api/_dev/deauthflood' && m === 'POST') {
@@ -956,25 +1139,44 @@ async function toolsRoute(req, res, url, path) {
   }
   if (DEV && path === '/api/_dev/airspace' && m === 'POST') {
     const j = await readJSON(req);
+    if (!airspace.active) return fail(res, 409, 'conflict', 'start monitoring first');
     if (j?.type === 'deauth_flood') { airspace.deauth_floods++; airspace.deauth_total += 100; }
-    if (j?.type === 'evil_twin') { airspace.evil_twins++; }
+    else if (j?.type === 'beacon_flood') { airspace.beacon_floods++; airspace.beacon_total += 100; }
+    else if (j?.type === 'evil_twin') { airspace.evil_twins++; }
+    else if (j?.type === 'broadcast_deauth') { airspace.broadcast_deauth = (airspace.broadcast_deauth || 0) + 1; airspace.deauth_total++; }
+    else return fail(res, 400, 'bad_request', 'unknown alert type');
+    publish('airspace', { type: j.type, detail: j?.detail || 'Injected simulator alert', bssid: j?.bssid || '', rssi: j?.rssi || 0 });
     return ok(res);
   }
 
   // === P9 NucleoOS parity tools ===
   // Wi-Fi Sniffer
-  if (path === '/api/sniffer' && m === 'GET') return json(res, 200, { active: sniffer.active === true, channel: sniffer.channel || null, packets: sniffer.packets || 0, bytes: sniffer.bytes || 24, file: sniffer.file || null });
+  if (path === '/api/sniffer' && m === 'GET') return json(res, 200, snifferState());
   if (path === '/api/sniffer/start' && m === 'POST') {
+    const j = await readJSON(req);
     if (sniffer.active) return fail(res, 409, 'conflict', 'already capturing');
-    sniffer = { active: true, packets: 0, bytes: 24, channel: null, file: '/sd/data/sniffer/capture.pcap' };
-    setTimeout(() => { sniffer.packets++; sniffer.bytes += 200; }, 500);
+    if (j?.channel === 0 || j?.channel > 13 || j?.channel < -1) return fail(res, 400, 'bad_request', 'channel -1 or 1-13');
+    const filter = j?.filter || 'all';
+    if (!SNIFFER_FILTERS.includes(filter)) return fail(res, 400, 'bad_request', 'filter must be all, management, data, beacons, probes or eapol');
+    sniffer = { active: true, packets: 0, drops: 0, bytes: 24, channel: j?.channel > 0 ? j.channel : null,
+      filter, maxBytes: j?.max_bytes || 0, file: '/sd/data/sniffer/capture.pcap', error: null,
+      seen: 0, management: 0, control: 0, data: 0, beacons: 0, probes: 0, deauth: 0, eapol: 0, handshakes: 0, aps: [], hs: [] };
+    await fsp.mkdir(join(ROOTS.sd, 'data', 'sniffer'), { recursive: true });
+    await fsp.writeFile(join(ROOTS.sd, 'data', 'sniffer', 'capture.pcap'), pcapGlobalHeader());
+    publish('sniffer', { active: true, filter });
     return ok(res);
   }
-  if (path === '/api/sniffer/stop' && m === 'POST') { sniffer.active = false; return ok(res); }
+  if (path === '/api/sniffer/stop' && m === 'POST') {
+    if (!sniffer.active) return fail(res, 409, 'conflict', 'not capturing');
+    sniffer.active = false; publish('sniffer', { active: false, filter: sniffer.filter }); return ok(res);
+  }
 
   // Airspace
   if (path === '/api/airspace' && m === 'GET') return json(res, 200, airspaceState());
-  if (path === '/api/airspace/start' && m === 'POST') { airspace.active = true; airspace.started = nowEpoch(); return ok(res); }
+  if (path === '/api/airspace/start' && m === 'POST') {
+    airspace = { active: true, deauth_total: 0, deauth_floods: 0, beacon_total: 0, beacon_floods: 0, evil_twins: 0, broadcast_deauth: 0, started: nowEpoch() };
+    return ok(res);
+  }
   if (path === '/api/airspace/stop' && m === 'POST') { airspace.active = false; return ok(res); }
 
   // Sentinel
@@ -984,46 +1186,109 @@ async function toolsRoute(req, res, url, path) {
 
   // Presence
   if (path === '/api/presence' && m === 'GET') return json(res, 200, presenceState());
-  if (path === '/api/presence/start' && m === 'POST') { presence.active = true; presence.started = nowEpoch(); presence.peers = []; presence.history = []; return ok(res); }
+  if (path === '/api/presence/start' && m === 'POST') { presence.active = true; presence.started = nowEpoch(); presence.peers = []; presence.history = []; presence.peers_ever = 0; return ok(res); }
   if (path === '/api/presence/stop' && m === 'POST') { presence.active = false; return ok(res); }
 
-  // FIDO2
+  // FIDO2 (explicit simulator fake, unavailable until its dev hook enables it)
   if (path === '/api/fido2' && m === 'GET') return json(res, 200, fido2State());
-  if (path === '/api/fido2/register' && m === 'POST') { const j = await readJSON(req); fido2.creds.push({ rp: j?.rp || '?', user: j?.user || '?' }); fido2.credentials = fido2.creds.length; return ok(res); }
-  if (path === '/api/fido2/authenticate' && m === 'POST') { return ok(res); }
+  if (path === '/api/fido2/register' && m === 'POST') {
+    const j = await readJSON(req);
+    if (!fido2.available) return fail(res, 503, 'fido_unavailable', 'Enable the simulated FIDO2 transport first');
+    if (!j?.rp || !j?.user) return fail(res, 400, 'bad_request', 'rp and user are required');
+    fido2.creds.push({ rp: j.rp, user: j.user }); fido2.credentials = fido2.creds.length; return ok(res);
+  }
+  if (path === '/api/fido2/authenticate' && m === 'POST') {
+    const j = await readJSON(req);
+    if (!fido2.available) return fail(res, 503, 'fido_unavailable', 'Enable the simulated FIDO2 transport first');
+    if (!fido2.creds.some(c => c.rp === j?.rp)) return fail(res, 404, 'not_found', 'no credential for this RP');
+    return ok(res);
+  }
   if (path === '/api/fido2/credentials' && m === 'GET') return json(res, 200, { credentials: fido2.creds.map((c,i) => ({ index: i, rp: c.rp, user: c.user })) });
-  if (path === '/api/fido2/remove' && m === 'POST') { const i = (await readJSON(req))?.index; if (i >= 0 && i < fido2.creds.length) { fido2.creds.splice(i, 1); fido2.credentials = fido2.creds.length; } return ok(res); }
+  if (path === '/api/fido2/remove' && m === 'POST') {
+    const i = (await readJSON(req))?.index;
+    if (!Number.isInteger(i) || i < 0 || i >= fido2.creds.length) return fail(res, 400, 'bad_request', 'invalid credential index');
+    fido2.creds.splice(i, 1); fido2.credentials = fido2.creds.length; return ok(res);
+  }
 
   // Evil Portal
   if (path === '/api/evilportal' && m === 'GET') return json(res, 200, evilportalState());
-  if (path === '/api/evilportal/start' && m === 'POST') { const j = await readJSON(req); evilportal.active = true; evilportal.ssid = j?.ssid || 'Free Wi-Fi'; return ok(res); }
-  if (path === '/api/evilportal/stop' && m === 'POST') { evilportal.active = false; return ok(res); }
-  if (path === '/api/evilportal/captures' && m === 'GET') return json(res, 200, { captures: evilportal.captures });
-  if (path === '/api/evilportal/clear' && m === 'POST') { evilportal.captures = []; return ok(res); }
+  if ((path === '/api/evilportal/start' || path === '/api/evilportal/start-twin') && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
+    if (j?.gateway && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(j.gateway)) return fail(res, 400, 'bad_request', 'Gateway must be a valid IPv4 address');
+    if (evilportal.active) return fail(res, 409, 'conflict', 'already running');
+    if (j?.coherent) return fail(res, 503, 'unavailable', 'WPA2-coherent twin mode is not implemented');
+    evilportal.active = true; evilportal.mode = path.endsWith('twin') ? 1 : 0;
+    evilportal.ssid = j?.ssid || 'Free Wi-Fi'; evilportal.twinBssid = j?.bssid || '';
+    evilportal.channel = j?.channel || 1; evilportal.started = nowEpoch(); evilportal.attempts = 0;
+    if (j?.gateway) evilportal.settings.gateway = j.gateway;
+    return ok(res, { ssid: evilportal.ssid, mode: evilportal.mode ? 'twin' : 'standalone' });
+  }
+  if (path === '/api/evilportal/start-karma' && m === 'POST') return fail(res, 503, 'unavailable', 'KARMA probe capture is not implemented');
+  if (path === '/api/evilportal/karma-scan' && m === 'POST') return fail(res, 503, 'unavailable', 'KARMA probe scanning is not implemented');
+  if (path === '/api/evilportal/clone' && m === 'POST') return fail(res, 503, 'unavailable', 'Live page cloning is not implemented');
+  if (path === '/api/evilportal/settings' && m === 'PUT') {
+    const j = await readJSON(req);
+    if (j?.verify) return fail(res, 503, 'unavailable', 'PSK verification is not implemented');
+    evilportal.settings = { ...evilportal.settings, ...j }; return ok(res);
+  }
+  if (path === '/api/evilportal/stop' && m === 'POST') { evilportal.active = false; evilportal.clients = 0; return ok(res); }
+  if (path === '/api/evilportal/captures' && m === 'GET') return json(res, 200, { captures: evilportal.captures.map(c => {
+    const mode = evilportal.settings.pwdMode, p = c.password;
+    return { ...c, password: mode === 2 ? '******' : mode === 1 && p.length > 2 ? p[0] + '*'.repeat(p.length - 2) + p.at(-1) : p };
+  }) });
+  if (path === '/api/evilportal/clear' && m === 'POST') { evilportal.captures = []; evilportal.attempts = 0; return ok(res); }
 
   // Deauth flood
   if (path === '/api/deauthflood' && m === 'GET') return json(res, 200, deauthfloodState());
   if (path === '/api/deauthflood/start' && m === 'POST') {
     const b = await readJSON(req);
-    deauthflood.active = true;
-    deauthflood.target_bssid = b?.bssid || '';
-    deauthflood.target_station = b?.station || 'ff:ff:ff:ff:ff:ff';
-    deauthflood.channel = b?.channel || 1;
-    deauthflood.sent = 0;
+    if (b?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
+    if (!/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(b?.bssid || '')) return fail(res, 400, 'bad_request', 'invalid BSSID format');
+    if (!Number.isInteger(b?.channel) || b.channel < 1 || b.channel > 13) return fail(res, 400, 'bad_request', 'channel must be 1-13');
+    if (!Number.isInteger(b?.rate) || b.rate < 1 || b.rate > 100) return fail(res, 400, 'bad_request', 'rate must be 1-100 packets/s');
+    if (deauthflood.active) return fail(res, 409, 'conflict', 'already running');
+    deauthflood = { ...deauthflood, active: true, targetBssid: b.bssid, targetStation: b?.station || 'ff:ff:ff:ff:ff:ff',
+      targetSsid: deauthScan.targets.find(t => t.bssid === b.bssid)?.ssid || '', channel: b?.channel || 1,
+      ratePps: b?.rate || 10, sent: 0, txErrors: 0, started: nowEpoch(), error: null };
     return ok(res);
   }
   if (path === '/api/deauthflood/stop' && m === 'POST') { deauthflood.active = false; return ok(res); }
+  if (path === '/api/deauthflood/scan' && m === 'POST') {
+    if (deauthflood.active) return fail(res, 409, 'conflict', 'stop before scanning');
+    if (!deauthScan.scanning) {
+      deauthScan.scanning = true; deauthScan.error = null;
+      deauthScan.timer = setTimeout(() => {
+        deauthScan.targets = [
+          { ssid: 'Lab AP', bssid: '02:00:00:00:00:01', channel: 1, rssi: -42, auth: 'wpa2' },
+          { ssid: 'Test Guest', bssid: '02:00:00:00:00:02', channel: 6, rssi: -66, auth: 'open' },
+        ];
+        deauthScan.scanning = false;
+      }, 400);
+    }
+    return json(res, 202, { ok: true });
+  }
+  if (path === '/api/deauthflood/targets' && m === 'GET') return json(res, 200, { scanning: deauthScan.scanning, error: deauthScan.error, targets: deauthScan.targets });
 
   // Beacon spam
   if (path === '/api/beaconspam' && m === 'GET') return json(res, 200, beaconspamState());
   if (path === '/api/beaconspam/start' && m === 'POST') {
     const b = await readJSON(req);
+    if (b?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this environment');
+    if (beaconspam.active) return fail(res, 409, 'conflict', 'already running');
+    if (b?.mode === 'custom' && !beaconspam.customSsids.length) return fail(res, 400, 'bad_request', 'add custom SSIDs first');
     beaconspam.active = true;
     beaconspam.prefix = b?.prefix || 'FreeNet';
-    beaconspam.ssids = b?.count || 20;
-    beaconspam.channel = b?.channel || 0;
+    beaconspam.mode = b?.mode === 'custom' ? 2 : 0;
+    beaconspam.ssids = beaconspam.mode === 2 ? beaconspam.customSsids.length : (b?.count || 20);
+    beaconspam.channel = b?.channel ?? 0;
     beaconspam.beacons = 0;
     return ok(res);
+  }
+  if (path === '/api/beaconspam/ssids' && m === 'PUT') {
+    const list = await readJSON(req);
+    if (!Array.isArray(list) || list.length > 64 || list.some(x => typeof x !== 'string' || !x || Buffer.byteLength(x) > 32)) return fail(res, 400, 'bad_request', 'invalid SSID list');
+    beaconspam.customSsids = list; return ok(res, { count: list.length });
   }
   if (path === '/api/beaconspam/stop' && m === 'POST') { beaconspam.active = false; return ok(res); }
 
@@ -1039,6 +1304,21 @@ const server = createServer(async (req, res) => {
     if (DEV && path === '/api/_dev/dl' && req.method === 'POST') { dlFault = (await readJSON(req)) || null; return ok(res); }
     if (DEV && path === '/api/_dev/dl-log') return json(res, 200, dlLog);
     if (!path.startsWith('/api/')) {
+      if (evilportal.active) {
+        if (path === '/login' && req.method === 'POST') {
+          const form = new URLSearchParams((await readBody(req)).toString('utf8'));
+          const username = form.get('username') || '', password = form.get('password') || '';
+          if (!username || !password) return json(res, 400, { error: 'bad_request' });
+          evilportal.captures.push({ mac: '', hostname: '', url: '/login', username, password, ts: nowEpoch() });
+          evilportal.attempts++;
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          return res.end('<!doctype html><title>Connected</title><h1>Connected</h1>');
+        }
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          return res.end('<!doctype html><title>Network Login</title><h1>Network Login</h1><form method="post" action="/login"><label>Username<input name="username"></label><label>Password<input type="password" name="password"></label><button>Connect</button></form>');
+        }
+      }
       if (req.method !== 'GET' && req.method !== 'HEAD') return fail(res, 405, 'bad_request', 'GET');
       return staticRoute(req, res, path);
     }

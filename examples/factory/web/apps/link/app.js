@@ -3,7 +3,7 @@ import { h, icon, errorText, notice, toast, fmtBytes, fmtTime } from '../../js/u
 
 export function mount(el, ctx) {
   const { api, events } = ctx;
-  let alive = true, state = null, poll = null;
+  let alive = true, state = null, poll = null, refreshSeq = 0;
 
   const enableBtn = h('button', { class: 'btn', onclick: toggle });
   const peersBox = h('div', { class: 'tool' });
@@ -58,7 +58,13 @@ export function mount(el, ctx) {
         t.state !== 'done' && t.state !== 'error' ? h('button', { class: 'btn ghost', onclick: () => api.linkCancel().catch(() => {}) }, 'Cancel') : null));
   }
 
-  async function refresh() { try { state = await api.link(); if (alive) render(); } catch (e) { if (alive) status.textContent = errorText(e, 'Link'); } }
+  async function refresh() {
+    const seq = ++refreshSeq;
+    try {
+      const next = await api.link();
+      if (alive && seq === refreshSeq) { state = next; render(); }
+    } catch (e) { if (alive && seq === refreshSeq) status.textContent = errorText(e, 'Link'); }
+  }
 
   async function toggle() {
     enableBtn.disabled = true;
@@ -74,7 +80,7 @@ export function mount(el, ctx) {
     catch (e) { toast(errorText(e, 'Link'), 'error'); } finally { sendBtn.disabled = false; }
   }
 
-  const off = events.on('link', (d) => { if (alive) { state = d; render(); } });
+  const off = events.on('link', (d) => { if (alive) { refreshSeq++; state = d; render(); } });
   const offFiles = events.on('files.changed', (d) => { if (d.op === 'write' && d.path && d.path.startsWith('/sd/data/link/')) toast(`Received ${d.path.split('/').pop()}`); });
   refresh();
   poll = setInterval(refresh, 5000);

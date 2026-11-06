@@ -1,18 +1,7 @@
 /**
  * @file      web_tool_beaconspam.cpp
- * @brief     Beacon spam (NucleoOS parity): flood fake SSIDs into the airspace.
- *            Security audit tool — for testing network resilience with permission.
- *
- *            Injects fake 802.11 beacon frames with generated SSIDs to flood the
- *            airspace with visible networks. Each beacon announces a unique SSID
- *            based on a configurable prefix.
- *
- *            The implementation uses esp_wifi 802.11 raw frame injection to broadcast
- *            beacon frames with randomized BSSIDs.
- *
- *            WARNING: Only use in controlled environments you own.
- *            Flooding the airspace with beacons is disruptive and may be illegal
- *            in some jurisdictions without authorization.
+ * @brief     Authorized fake-beacon injection with generated or custom SSIDs.
+ * WARNING: disruptive radio testing only in an environment you control.
  */
 #include "web_tools.h"
 
@@ -22,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
+#include <vector>
 #include <mutex>
 
 #ifdef ARDUINO
@@ -30,139 +20,240 @@
 #include <esp_wifi_types.h>
 #endif
 
-/* ---------------------------------------------------------------- state */
+#define BEACON_RADIO_OWNER "Beacon Spam"
+#define BEACON_FRAME_MAX 128
+#define BEACON_MAX_CUSTOM 64
 
 static bool s_active = false;
-static int s_channel = 1;
-static int s_mode = 0;              /* 0=random prefix, 1=from list, 2=custom */
-static uint32_t s_beacon_count = 0;
-static uint32_t s_ssid_count = 0;
-static char s_prefix_buf[24] = "FreeNet";
-static const char *s_prefix = s_prefix_buf;
+static int s_channel = 0;                 /* 0 = hop 1-13 */
+static int s_mode = 0;                    /* 0 = generated, 2 = custom */
+static uint32_t s_beacon_count = 0, s_tx_errors = 0;
+static uint32_t s_ssid_count = 0, s_ssid_index = 0;
+static char s_prefix[21] = "FreeNet";
 static long long s_started = 0;
-
 static uint32_t s_last_send_ms = 0;
-static uint32_t s_packets_per_tick = 2;
-static uint32_t s_ssid_index = 0;
-
-/* Custom SSID list */
-static char s_custom_ssids[64][33];
+static char s_error[160] = "";
+static char s_custom_ssids[BEACON_MAX_CUSTOM][33];
 static int s_custom_count = 0;
 static std::mutex s_custom_mx;
+#ifdef ARDUINO
+static bool s_reconnect = false;
+static int s_tx_channel = 0;
+#endif
 
-/* ---------------------------------------------------------------- beacon frame builder */
+static void set_error(const char *text)
+{
+    snprintf(s_error, sizeof(s_error), "%s", text ? text : "");
+}
 
-/*
- * 802.11 beacon frame (type 0, subtype 8)
- * Bytes:
- *   0-1: Frame Control (0x80 0x00 = beacon)
- *   2-3: Duration
- *   4-9: Destination (broadcast: FF:FF:FF:FF:FF:FF)
- *  10-15: Source address (random BSSID)
- *  16-21: BSSID
- *  22-23: Sequence control
- *  24-31: Timestamp (8 bytes)
- *  32-33: Beacon interval (typically 100 = ~102.4ms)
- *  34-35: Capabilities
- *  36+: Tagged parameters
- *    tag 0: SSID
- *    tag 1: Supported rates
- *    tag 3: Channel
- */
-
-#define BEACON_MIN_SIZE 50
-#define MAX_SSID_LEN 32
+static void bssid_from_index(uint8_t bssid[6], uint32_t idx)
+{
+    bssid[0] = 0x02; bssid[1] = 0x00; bssid[2] = 0x00;
+    bssid[3] = idx >> 16; bssid[4] = idx >> 8; bssid[5] = idx;
+}
 
 #ifdef ARDUINO
-static uint8_t s_seq = 0;
-
-static void build_beacon(uint8_t *frame, size_t *len, const char *ssid, const uint8_t *bssid, int channel)
+static size_t build_beacon(uint8_t *frame, const char *ssid, const uint8_t *bssid, int channel)
 {
-    memset(frame, 0, BEACON_MIN_SIZE);
-    frame[0] = 0x80;   /* type=0 (management), subtype=8 (beacon) */
-    frame[1] = 0x00;
-    frame[2] = 0x00;   /* duration */
-    frame[3] = 0x00;
-    /* Destination: broadcast */
-    frame[4] = 0xFF; frame[5] = 0xFF; frame[6] = 0xFF;
-    frame[7] = 0xFF; frame[8] = 0xFF; frame[9] = 0xFF;
-    /* Source (BSSID) */
+    memset(frame, 0, BEACON_FRAME_MAX);
+    frame[0] = 0x80;
+    memset(frame + 4, 0xff, 6);
     memcpy(frame + 10, bssid, 6);
-    /* BSSID */
     memcpy(frame + 16, bssid, 6);
-    /* Sequence */
-    frame[22] = s_seq++; frame[23] = 0;
-    /* Timestamp (8 bytes — just use 0 for spam) */
-    memset(frame + 24, 0, 8);
-    /* Beacon interval: 100 (0x64, 0x00) = ~102.4ms */
-    frame[32] = 0x64; frame[33] = 0x00;
-    /* Capabilities: ESS (bit 0) */
-    frame[34] = 0x01; frame[35] = 0x00;
-
-    /* Tagged parameters start at offset 36 */
+    uint16_t seq = (uint16_t)(s_beacon_count & 0x0fff);
+    frame[22] = seq & 0xff;
+    frame[23] = (seq >> 8) & 0x0f;
+    frame[32] = 0x64;                         /* 100 TU */
+    frame[34] = 0x01;                         /* ESS, open network */
     size_t off = 36;
-
-    /* Tag 0: SSID */
-    int ssid_len = strlen(ssid);
-    if (ssid_len > MAX_SSID_LEN) ssid_len = MAX_SSID_LEN;
-    frame[off++] = 0;                           /* tag: SSID */
-    frame[off++] = (uint8_t)ssid_len;           /* length */
+    size_t ssid_len = strlen(ssid);
+    if (ssid_len > 32) ssid_len = 32;
+    frame[off++] = 0;
+    frame[off++] = (uint8_t)ssid_len;
     memcpy(frame + off, ssid, ssid_len);
     off += ssid_len;
+    const uint8_t rates[] = {1, 4, 0x82, 0x84, 0x8b, 0x96}; /* 1, 2, 5.5, 11 Mb/s basic */
+    memcpy(frame + off, rates, sizeof(rates));
+    off += sizeof(rates);
+    frame[off++] = 3;
+    frame[off++] = 1;
+    frame[off++] = (uint8_t)channel;
+    return off;
+}
 
-    /* Tag 1: Supported rates */
-    {
-        frame[off++] = 1;                       /* tag: Supported Rates */
-        frame[off++] = 4;                       /* length */
-        frame[off++] = 0x82;                    /* 12 Mbps (b) */
-        frame[off++] = 0x84;                    /* 24 Mbps (b) */
-        frame[off++] = 0x8B;                    /* 48 Mbps (b) */
-        frame[off++] = 0x96;                    /* 108 Mbps (b) */
+static void send_beacon(const char *ssid, uint32_t index)
+{
+    uint8_t bssid[6], frame[BEACON_FRAME_MAX];
+    bssid_from_index(bssid, index);
+    int channel = s_channel > 0 ? s_channel : (int)(index % 13) + 1;
+    if (channel != s_tx_channel) {
+        esp_err_t rc = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        if (rc != ESP_OK) {
+            s_tx_errors++;
+            set_error("Could not select beacon channel");
+            return;
+        }
+        s_tx_channel = channel;
     }
-
-    /* Tag 3: Channel (for non-802.11b/g) */
-    if (channel > 0) {
-        frame[off++] = 3;                       /* tag: Channel */
-        frame[off++] = 1;                       /* length */
-        frame[off++] = (uint8_t)channel;
+    size_t len = build_beacon(frame, ssid, bssid, channel);
+    esp_err_t rc = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    if (rc == ESP_OK) s_beacon_count++;
+    else {
+        s_tx_errors++;
+        if (s_tx_errors == 1 || s_tx_errors % 20 == 0) {
+            char b[96];
+            snprintf(b, sizeof(b), "Beacon injection failed: %s", esp_err_to_name(rc));
+            set_error(b);
+        }
     }
-
-    *len = off;
 }
 #endif
 
-/* Generate a fake BSSID from an index */
-static void bssid_from_index(uint8_t *bssid, uint32_t idx)
+/* Parse a top-level JSON array of strings, including normal JSON escapes. */
+static bool hex4(const char *p, unsigned &v)
 {
-    bssid[0] = 0x02;
-    bssid[1] = 0x00;
-    bssid[2] = 0x00;
-    bssid[3] = (uint8_t)((idx >> 16) & 0xFF);
-    bssid[4] = (uint8_t)((idx >> 8) & 0xFF);
-    bssid[5] = (uint8_t)(idx & 0xFF);
+    v = 0;
+    for (int i = 0; i < 4; i++) {
+        char c = p[i];
+        if (c >= '0' && c <= '9') v = v * 16 + c - '0';
+        else if (c >= 'a' && c <= 'f') v = v * 16 + c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = v * 16 + c - 'A' + 10;
+        else return false;
+    }
+    return true;
 }
 
-/* ---------------------------------------------------------------- API handler */
+static bool parse_ssid_array(const std::string &body, std::vector<std::string> &out, std::string &error)
+{
+    out.clear();
+    size_t i = 0;
+    auto ws = [&]() { while (i < body.size() && isspace((unsigned char)body[i])) i++; };
+    ws();
+    if (i >= body.size() || body[i++] != '[') { error = "Body must be a JSON array of SSIDs"; return false; }
+    ws();
+    if (i < body.size() && body[i] == ']') { i++; ws(); return i == body.size(); }
+    while (i < body.size()) {
+        if (body[i++] != '"') { error = "Every SSID must be a JSON string"; return false; }
+        std::string value;
+        bool closed = false;
+        while (i < body.size()) {
+            unsigned char c = body[i++];
+            if (c == '"') { closed = true; break; }
+            if (c < 0x20) { error = "Control characters are not allowed in SSIDs"; return false; }
+            if (c != '\\') { value += (char)c; continue; }
+            if (i >= body.size()) break;
+            char esc = body[i++];
+            switch (esc) {
+                case '"': case '\\': case '/': value += esc; break;
+                case 'b': value += '\b'; break;
+                case 'f': value += '\f'; break;
+                case 'n': value += '\n'; break;
+                case 'r': value += '\r'; break;
+                case 't': value += '\t'; break;
+                case 'u': {
+                    if (i + 4 > body.size()) { error = "Bad Unicode escape"; return false; }
+                    unsigned cp;
+                    if (!hex4(body.c_str() + i, cp)) { error = "Bad Unicode escape"; return false; }
+                    i += 4;
+                    if (cp <= 0x7f) value += (char)cp;
+                    else if (cp <= 0x7ff) { value += (char)(0xc0 | (cp >> 6)); value += (char)(0x80 | (cp & 63)); }
+                    else { value += (char)(0xe0 | (cp >> 12)); value += (char)(0x80 | ((cp >> 6) & 63)); value += (char)(0x80 | (cp & 63)); }
+                    break;
+                }
+                default: error = "Bad string escape"; return false;
+            }
+            if (value.size() > 32) { error = "Each SSID must be 1-32 UTF-8 bytes"; return false; }
+        }
+        if (!closed) { error = "Unterminated SSID string"; return false; }
+        if (value.empty() || value.size() > 32) { error = "Each SSID must be 1-32 UTF-8 bytes"; return false; }
+        if (out.size() >= BEACON_MAX_CUSTOM) { error = "At most 64 custom SSIDs"; return false; }
+        out.push_back(value);
+        ws();
+        if (i < body.size() && body[i] == ',') { i++; ws(); continue; }
+        if (i < body.size() && body[i] == ']') { i++; ws(); return i == body.size(); }
+        error = "Expected ',' or ']' after SSID";
+        return false;
+    }
+    error = "Unterminated SSID array";
+    return false;
+}
+
+static int begin_spam(int channel, int count, const char *prefix, bool custom)
+{
+    if (s_active) { set_error("Beacon test already running"); return 409; }
+    if (channel < 0 || channel > 13) { set_error("Channel must be 0 (hop) or 1-13"); return 400; }
+    if (custom) {
+        std::lock_guard<std::mutex> lk(s_custom_mx);
+        if (!s_custom_count) { set_error("Add at least one custom SSID first"); return 400; }
+        s_ssid_count = (uint32_t)s_custom_count;
+    } else {
+        if (count < 1 || count > 10000) { set_error("SSID count must be 1-10000"); return 400; }
+        if (!prefix || !*prefix || strlen(prefix) > 20) { set_error("Prefix must be 1-20 bytes"); return 400; }
+        s_ssid_count = (uint32_t)count;
+        snprintf(s_prefix, sizeof(s_prefix), "%s", prefix);
+    }
+
+    std::string radio_error;
+    if (!tools_wifi_claim(BEACON_RADIO_OWNER, radio_error)) { set_error(radio_error.c_str()); return 503; }
+    set_error("");
+    s_mode = custom ? 2 : 0;
+    s_channel = channel;
+    s_beacon_count = s_tx_errors = 0;
+    s_ssid_index = 0;
+    s_started = tools_epoch();
+    s_last_send_ms = 0;
+#ifdef ARDUINO
+    s_reconnect = WiFi.status() == WL_CONNECTED;
+    WiFi.disconnect(false, false);
+    esp_wifi_set_promiscuous(false);
+    esp_err_t rc = esp_wifi_set_channel(channel > 0 ? channel : 1, WIFI_SECOND_CHAN_NONE);
+    if (rc != ESP_OK) {
+        tools_wifi_release(BEACON_RADIO_OWNER);
+        if (s_reconnect) WiFi.reconnect();
+        set_error("Wi-Fi could not start beacon injection");
+        return 500;
+    }
+    s_tx_channel = channel > 0 ? channel : 1;
+#endif
+    s_active = true;
+    return 0;
+}
+
+static void finish_spam(void)
+{
+    if (!s_active) return;
+    s_active = false;
+    tools_wifi_release(BEACON_RADIO_OWNER);
+#ifdef ARDUINO
+    if (s_reconnect) WiFi.reconnect();
+    s_reconnect = false;
+    s_tx_channel = 0;
+#endif
+}
+
+/* ---------------------------------------------------------------- API */
 
 static const char *const APPS[] = { "Beacon Spam", NULL };
 
 static void status_json(web_req_t *r)
 {
-    std::string j = "{\"active\":" + std::string(s_active ? "true" : "false");
-    if (s_active) {
-        j += ",\"channel\":" + tools_int(s_channel) +
-            ",\"beacons\":" + tools_int(s_beacon_count) +
-            ",\"ssids\":" + tools_int(s_ssid_count) +
-            ",\"prefix\":"; web_json_str(j, s_prefix);
-        j += ",\"mode\":" + tools_int(s_mode) +
-            ",\"started\":" + tools_int(s_started);
-    }
+    std::string j = std::string("{\"active\":") + (s_active ? "true" : "false") +
+        ",\"channel\":" + tools_int(s_channel) +
+        ",\"beacons\":" + tools_int(s_beacon_count) +
+        ",\"txErrors\":" + tools_int(s_tx_errors) +
+        ",\"ssids\":" + tools_int(s_ssid_count) +
+        ",\"mode\":" + tools_int(s_mode) +
+        ",\"started\":" + tools_int(s_started) + ",\"prefix\":";
+    web_json_str(j, s_prefix);
+    j += ",\"error\":";
+    if (s_error[0]) web_json_str(j, s_error); else j += "null";
     j += ",\"customSsids\":[";
-    { std::lock_guard<std::mutex> lk(s_custom_mx);
-      for (int i = 0; i < s_custom_count; i++) {
-        if (i) j += ",";
-        web_json_str(j, s_custom_ssids[i]);
-      }
+    {
+        std::lock_guard<std::mutex> lk(s_custom_mx);
+        for (int i = 0; i < s_custom_count; i++) {
+            if (i) j += ",";
+            web_json_str(j, s_custom_ssids[i]);
+        }
     }
     j += "]}";
     web_resp_json(r, 200, j);
@@ -171,150 +262,130 @@ static void status_json(web_req_t *r)
 static void start_spam(web_req_t *r)
 {
     if (tools_busy(r, APPS)) return;
-    std::string body, prefix;
-    double ch = 0, count = 0;
+    std::string body, prefix = "FreeNet", mode = "generated";
+    double channel = 0, count = 20;
     if (!tools_read_json(r, body)) return;
     web_json_get_str(body, "prefix", prefix);
-    web_json_get_num(body, "channel", &ch);
-    web_json_get_num(body, "count", &count);
-
-    if (s_active) { web_resp_error(r, 409, "conflict", "already running"); return; }
-    if (prefix.empty()) prefix = "FreeNet";
-    if (prefix.size() > 20) { web_resp_error(r, 400, "bad_request", "prefix too long (max 20)"); return; }
-
-    s_active = true;
-    s_channel = (int)ch > 0 ? (int)ch : 0;  /* 0 = current channel */
-    s_ssid_count = (uint32_t)count > 0 ? (uint32_t)count : 20;
-    snprintf(s_prefix_buf, sizeof(s_prefix_buf), "%s", prefix.c_str());
-    s_beacon_count = 0;
-    s_ssid_index = 0;
-    s_started = tools_epoch();
-    s_last_send_ms = 0;
-
-#ifdef ARDUINO
-    /* Disconnect from any AP to free the Wi-Fi interface */
-    WiFi.disconnect(false);
-    if (s_channel > 0) esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
-    wifi_promiscuous_enable(0);  /* Can't recall if needed, but doesn't hurt */
-#endif
-
-    web_resp_ok(r);
+    web_json_get_str(body, "mode", mode);
+    if (web_json_has(body, "channel") && !web_json_get_num(body, "channel", &channel)) {
+        web_resp_error(r, 400, "bad_request", "channel must be a number"); return;
+    }
+    if (web_json_has(body, "count") && !web_json_get_num(body, "count", &count)) {
+        web_resp_error(r, 400, "bad_request", "count must be a number"); return;
+    }
+    if (mode != "generated" && mode != "custom") {
+        web_resp_error(r, 400, "bad_request", "mode: generated or custom"); return;
+    }
+    bool approved = false;
+    if (!web_json_get_bool(body, "authorized", &approved) || !approved) {
+        web_resp_error(r, 400, "authorization_required", "Confirm that you own or may test this environment"); return;
+    }
+    int rc = begin_spam((int)channel, (int)count, prefix.c_str(), mode == "custom");
+    if (rc) web_resp_error(r, rc, rc == 400 ? "bad_request" : rc == 409 ? "conflict" : rc == 503 ? "busy" : "internal", s_error);
+    else web_resp_ok(r);
 }
 
 static void stop_spam(web_req_t *r)
 {
-    if (!s_active) { web_resp_ok(r); return; }
-    s_active = false;
-
-#ifdef ARDUINO
-    /* Reconnection handled by web core */
-#endif
-
+    finish_spam();
     web_resp_ok(r);
 }
 
-/* ── Custom SSID management ── */
-
 static void set_custom_ssids(web_req_t *r)
 {
+    if (s_active) { web_resp_error(r, 409, "conflict", "stop beacon spam before editing SSIDs"); return; }
     std::string body;
-    if (!tools_read_json(r, body)) return;
-    std::lock_guard<std::mutex> lk(s_custom_mx);
-    s_custom_count = 0;
-    /* Parse JSON array of strings. Simple parser for ["a","b","c"] */
-    const char *p = body.c_str();
-    while (*p && *p != '[') p++;
-    if (!*p) { web_resp_ok(r); return; }
-    p++; /* skip '[' */
-    while (*p && s_custom_count < 64) {
-        while (*p && *p != '"') p++;
-        if (!*p) break;
-        p++; /* skip opening '"' */
-        char *dst = s_custom_ssids[s_custom_count];
-        int n = 0;
-        while (*p && *p != '"' && n < 32) { *dst++ = *p++; n++; }
-        *dst = 0;
-        if (n > 0) s_custom_count++;
-        if (*p == '"') p++;
-        while (*p == ',' || *p == ' ' || *p == '\n' || *p == ']') {
-            if (*p == ']') { p = ""; break; }
-            p++;
-        }
+    if (!web_read_body(r, body, 4096)) { web_resp_error(r, 400, "bad_request", "body too large"); return; }
+    std::vector<std::string> values;
+    std::string error;
+    if (!parse_ssid_array(body, values, error)) { web_resp_error(r, 400, "bad_request", error.c_str()); return; }
+    {
+        std::lock_guard<std::mutex> lk(s_custom_mx);
+        s_custom_count = (int)values.size();
+        for (int i = 0; i < s_custom_count; i++) snprintf(s_custom_ssids[i], 33, "%s", values[i].c_str());
     }
-    web_resp_ok(r);
+    web_resp_ok(r, ("\"count\":" + tools_int((long long)values.size())).c_str());
 }
 
 static bool handle(web_req_t *r)
 {
+#ifndef ARDUINO
+    if (tools_is(r, "POST", "/api/_dev/beaconspam")) {
+        std::string body;
+        if (!tools_read_json(r, body)) return true;
+        int rc = begin_spam(1, 20, "FreeNet", false);
+        if (rc) web_resp_error(r, rc, rc == 503 ? "busy" : "conflict", s_error);
+        else web_resp_ok(r);
+        return true;
+    }
+#endif
     if (strcmp(r->path, "/api/beaconspam") && strncmp(r->path, "/api/beaconspam/", 16)) return false;
     if (tools_is(r, "GET", "/api/beaconspam")) status_json(r);
     else if (tools_is(r, "POST", "/api/beaconspam/start")) start_spam(r);
     else if (tools_is(r, "POST", "/api/beaconspam/stop")) stop_spam(r);
     else if (tools_is(r, "PUT", "/api/beaconspam/ssids")) set_custom_ssids(r);
-#ifndef ARDUINO
-    else if (tools_is(r, "POST", "/api/_dev/beaconspam")) {
-        s_active = true;
-        s_beacon_count = 0;
-        std::string body;
-        web_read_body(r, body, 256);
-        (void)body;
-        web_resp_ok(r);
-        return true;
-    }
-#endif
     else web_resp_error(r, 404, "not_found");
     return true;
 }
 
 static void beacon_tick(uint32_t now_ms)
 {
-    if (!s_active) return;
-
-#ifdef ARDUINO
-    if (now_ms - s_last_send_ms < 100) return;  /* ~10 Hz */
+    if (!s_active || now_ms - s_last_send_ms < 100) return;
     s_last_send_ms = now_ms;
-
-    uint8_t frame[128];
-    size_t len = 0;
-
-    for (uint32_t i = 0; i < s_packets_per_tick; i++) {
-        /* Generate SSID */
+    for (int i = 0; i < 2; i++) {
         char ssid[33];
-        snprintf(ssid, sizeof(ssid), "%s%04u", s_prefix, s_ssid_index);
-
-        /* Generate BSSID */
-        uint8_t bssid[6];
-        bssid_from_index(bssid, s_ssid_index);
-
-        /* Set channel for this beacon */
-        int ch = s_channel > 0 ? s_channel : (int)(s_ssid_index % 11) + 1;
-
-        build_beacon(frame, &len, ssid, bssid, ch);
-        if (len > 0) {
-            esp_wifi_80211_tx(frame, len, 0);
-            s_beacon_count++;
+        if (s_mode == 2) {
+            std::lock_guard<std::mutex> lk(s_custom_mx);
+            snprintf(ssid, sizeof(ssid), "%s", s_custom_ssids[s_ssid_index % s_custom_count]);
+        } else {
+            snprintf(ssid, sizeof(ssid), "%s%04u", s_prefix, (unsigned)s_ssid_index);
         }
-
-        s_ssid_index++;
-        if (s_ssid_index >= s_ssid_count) {
-            s_ssid_index = 0;  /* Cycle through SSIDs */
-        }
-    }
+#ifdef ARDUINO
+        send_beacon(ssid, s_ssid_index);
 #else
-    /* Simulator: just count */
-    (void)now_ms;
-    s_beacon_count += s_packets_per_tick;
+        s_beacon_count++;
 #endif
+        s_ssid_index = (s_ssid_index + 1) % s_ssid_count;
+    }
 }
 
-static void beacon_stop(void)
+static void beacon_stop(void) { finish_spam(); }
+
+bool web_hw_beaconspam_start(int channel, int count, const char *prefix)
 {
-    s_active = false;
+    return begin_spam(channel, count, prefix, false) == 0;
+}
+bool web_hw_beaconspam_stop(void) { finish_spam(); return true; }
+void web_hw_beaconspam_status(web_hw_beaconspam_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->active = s_active;
+    out->mode = s_mode;
+    out->channel = s_channel;
+    out->beacon_count = s_beacon_count;
+    out->ssid_count = s_ssid_count;
+    out->started_epoch = s_started;
+    out->error = s_error[0] ? s_error : NULL;
+}
+void web_hw_beaconspam_set_custom_ssids(const char **ssids, int count)
+{
+    std::lock_guard<std::mutex> lk(s_custom_mx);
+    s_custom_count = 0;
+    for (int i = 0; i < count && i < BEACON_MAX_CUSTOM; i++) {
+        if (!ssids[i] || !*ssids[i] || strlen(ssids[i]) > 32) continue;
+        snprintf(s_custom_ssids[s_custom_count++], 33, "%s", ssids[i]);
+    }
+}
+int web_hw_beaconspam_custom_count(void)
+{
+    std::lock_guard<std::mutex> lk(s_custom_mx);
+    return s_custom_count;
 }
 
 static const char *const CAPS[] = { "beacon.spam", NULL };
 const web_tool_t web_tool_beaconspam = { CAPS, handle, beacon_tick, NULL, beacon_stop };
 
-#else /* !FACTORY_WEB */
+#else
 const web_tool_t web_tool_beaconspam = { NULL, NULL, NULL, NULL, NULL };
-#endif /* FACTORY_WEB */
+#endif

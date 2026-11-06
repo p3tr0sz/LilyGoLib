@@ -241,7 +241,12 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .dialog .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
 
 #toasts { position: fixed; right: 16px; bottom: 16px; z-index: 1100; display: flex; flex-direction: column; gap: 8px; max-width: calc(100% - 32px); }
-.toast { padding: 10px 16px; border-radius: var(--radius-s); background: var(--card-hi); border-left: 3px solid var(--accent); box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.toast { display: flex; align-items: flex-start; gap: 12px; max-width: min(520px, calc(100vw - 32px)); padding: 10px 12px 10px 16px; border-radius: var(--radius-s); background: var(--card-hi); border-left: 3px solid var(--accent); box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.toast > span { overflow-wrap: anywhere; }
+.toast-close { flex: none; min-width: 32px; min-height: 32px; margin: -6px -6px -6px 0; border: 0; background: transparent; color: var(--text); font-size: 22px; cursor: pointer; }
+.inline-error { color: var(--warn); white-space: pre-wrap; overflow-wrap: anywhere; }
+.list button.note { display: flex; width: 100%; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.list button.note:hover, .list button.note:focus-visible { background: var(--card-hi); }
 .toast.error { border-left-color: var(--warn); }
 .toast .progress { height: 4px; margin-top: 8px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .toast .progress i { display: block; height: 100%; background: var(--accent); width: 0; }
@@ -404,6 +409,15 @@ textarea.field { min-height: 80px; resize: vertical; }
   .tool { padding: 10px; }
   .tbl .hide-sm { display: none; }
   .bubble { max-width: 90%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+@media (max-width: 720px) {
+  .btn { min-height: 44px; }
+  .field { min-height: 44px; }
 }
 
 /* P5 tools */

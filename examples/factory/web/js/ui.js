@@ -67,6 +67,11 @@ const P = {
   link: '<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
   apps: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l3 3"/>',
+  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+  delete: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   min: '<path d="M6 18h12"/>',
   max: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 };
@@ -120,8 +125,10 @@ export function fmtTime(epochS) {
 
 // ---------------------------------------------------------------- toasts
 
-export function toast(message, kind = 'info', ms = 3500) {
-  const el = h('div', { class: `toast ${kind}` }, message);
+export function toast(message, kind = 'info', ms) {
+  if (ms === undefined) ms = kind === 'error' ? 0 : 3500;
+  const close = h('button', { class: 'toast-close', type: 'button', 'aria-label': 'Dismiss message', onclick: () => el.remove() }, '×');
+  const el = h('div', { class: `toast ${kind}` }, h('span', {}, message), close);
   document.getElementById('toasts').append(el);
   if (ms) setTimeout(() => el.remove(), ms);
   return el;
@@ -140,13 +147,21 @@ export function progressToast(label) {
 
 // ---------------------------------------------------------------- dialogs
 
-export function dialog(build, { wide = false } = {}) {
+export function dialog(build, { wide = false, label = 'Watch dialog' } = {}) {
   return new Promise((resolve) => {
     const prev = document.activeElement;
-    const box = h('div', { class: `dialog${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true' });
+    const box = h('div', { class: `dialog${wide ? ' wide' : ''}`, role: 'dialog', 'aria-modal': 'true', 'aria-label': label });
     const scrim = h('div', { class: 'scrim' }, box);
     const close = (v) => { scrim.remove(); document.removeEventListener('keydown', onKey); if (prev && prev.focus) prev.focus(); resolve(v); };
-    const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { close(null); return; }
+      if (e.key !== 'Tab') return;
+      const items = [...box.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]')];
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) close(null); });
     document.addEventListener('keydown', onKey);
     build(box, close);
@@ -165,7 +180,7 @@ export function confirmDialog(title, text, okLabel = 'OK', danger = false) {
         h('button', { class: 'btn', onclick: () => close(false) }, 'Cancel'),
         h('button', { class: `btn ${danger ? 'danger' : 'primary'}`, onclick: () => close(true) }, okLabel)),
     );
-  }).then((v) => v === true);
+  }, { label: title }).then((v) => v === true);
 }
 
 export function promptDialog(title, value = '', okLabel = 'OK', validate = () => null) {
@@ -184,5 +199,5 @@ export function promptDialog(title, value = '', okLabel = 'OK', validate = () =>
         h('button', { class: 'btn', onclick: () => close(null) }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: submit }, okLabel)));
     setTimeout(() => { input.focus(); const dot = value.lastIndexOf('.'); input.setSelectionRange(0, dot > 0 ? dot : value.length); });
-  });
+  }, { label: title });
 }

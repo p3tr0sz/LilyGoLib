@@ -1,180 +1,93 @@
-# Security Tools — Handoff
+# Security Tools — Audit Remediation Handoff
 
-## What was done (6 commits on `dev`, pushed to origin)
+## Status
 
-### Commits
-1. `03954b5` — Added "Security" filter chip to app list UI
-2. `d7be26c` — Assigned all 8 P9 tools to Security category
-3. `a941471` — Evil Portal: 3 modes, 4 templates, SSID presets, consent screen, web app
-4. `db7c22a` — Deauth Flood target scan, Beacon Spam custom SSID lists
-5. `282fcac` — Rewrote all 8 web desktop apps with proper configuration UIs
-6. `3bd7c0d` — Evil-twin deauth injection, User-Agent fingerprinting, SD credential logging
+The original P9 commits were **not at parity and did not build for T-Watch Ultra**. The follow-up audit repaired the implementation, contracts, native watch controls, desktop apps, simulator fakes and tests.
 
-### Files changed
-- `examples/factory/ui_main.cpp` — Security category mapping
-- `examples/factory/ui_app_list.cpp` — Security chip in filter bar
-- `examples/factory/ui_nucleo_tools.cpp` — Evil Portal on-device UI (consent + setup)
-- `examples/factory/web_internal.h` — `web_req_t.user_agent` field, `web_resp_html()` declaration
-- `examples/factory/web_core.cpp` — `web_resp_html()` implementation
-- `examples/factory/web_tools.h` — Extended all P9 hardware interfaces
-- `examples/factory/web_transport_esp.cpp` — User-Agent header capture
-- `examples/factory/web_transport_posix.cpp` — User-Agent header capture (simulator)
-- `examples/factory/web_tool_evilportal.cpp` — Full rewrite: 3 modes, templates, presets, fingerprinting, deauth, SD logging
-- `examples/factory/web_tool_deauthflood.cpp` — Target AP scan + list endpoints
-- `examples/factory/web_tool_beaconspam.cpp` — Custom SSID list management
-- `examples/factory/web/js/api.js` — All new API client methods
-- `examples/factory/web/apps/evilportal/app.js` — Full config UI
-- `examples/factory/web/apps/deauthflood/app.js` — Scan + picker UI
-- `examples/factory/web/apps/beaconspam/app.js` — Custom SSIDs UI
-- `examples/factory/web/apps/sniffer/app.js` — Enhanced UI
-- `examples/factory/web/apps/airspace/app.js` — Attack detection UI
-- `examples/factory/web/apps/sentinel/app.js` — BLE tag list UI
-- `examples/factory/web/apps/presence/app.js` — Peer discovery UI
-- `examples/factory/web/apps/fido2/app.js` — Credential management UI
+Current state: **builds pass, simulator and mock regression suites pass. Real-radio and on-wrist behaviour still needs hardware validation.**
 
-### Architecture notes
+## What the audit found
 
-The codebase does NOT use the `web_hw_*()` hardware abstraction layer declared in `web_tools.h` for P9 tools. Those declarations exist but are never implemented. Instead, each `web_tool_*.cpp` calls ESP-IDF APIs directly (WiFi.softAG(), esp_wifi_80211_tx(), esp_wifi_set_promiscuous(), etc.). This is the existing pattern — follow it for new hardware code.
+- P9 apps were absent from the web launchpad registry and had no P9 UI tests.
+- Every P9 `/api/_dev/*` hook was unreachable behind its route guard.
+- All native Start/Stop buttons except the portal merely changed labels; no tool started.
+- Promiscuous callback and raw-TX ABIs were wrong; one API no longer existed; `<mutex>` was missing.
+- Static capture queues overflowed DRAM once compilation was fixed.
+- Sniffer could dereference a null request at its byte limit, used the wrong filesystem path and wrote malformed radiotap headers.
+- Airspace discarded simulator alerts and used different JSON names from its desktop.
+- Sentinel treated any nearby BLE device as a stalking tag after a few seconds and used active scans while claiming to be passive.
+- Presence implemented ESP-NOW peer discovery, not NucleoOS's Wi-Fi CSI human-motion detector.
+- FIDO2 returned success on hardware without CTAP, credentials, crypto or a FIDO transport.
+- Portal numeric/boolean JSON settings were read as strings; KARMA, cloning, PSK verification and coherent twin returned fake success.
+- Captive interception ran after static routing and could not serve the portal to unpaired clients.
+- Custom beacon SSIDs were unused; channel hopping changed tags but not the radio channel; deauth rate/validation was wrong.
+- Desktop list rendering passed arrays directly to `replaceChildren`, and initial-load/action-load races left stale state.
 
-## What still needs implementing
+## Remediation delivered
 
-### 1. KARMA probe sniffing (`web_tool_evilportal.cpp`)
-Promiscuous mode callback that parses 802.11 probe request frames (type 0, subtype 4) to discover SSIDs nearby devices are searching for. The `karma_scan()` function currently does nothing.
+### Shared/backend
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — `karma_scan()` function (~line 580)
-**Reference:** `web_tool_airspace.cpp` has a working promiscuous callback + frame parser you can copy
-**Pattern:**
-```cpp
-static void karma_promisc_cb(uint8_t *buf, wifi_promiscuous_pkt_t *pkt) {
-    if (pkt->payload_length < 26) return;
-    uint8_t fc0 = pkt->payload[0];
-    uint8_t type = (fc0 >> 2) & 0x03;
-    uint8_t subtype = (fc0 >> 4) & 0x0F;
-    if (type != 0 || subtype != 4) return; // probe request
-    // Extract SSID from tagged parameters (offset 24 for probe request body)
-    // Store in s_karma_ssids[], increment s_karma_count
-}
-```
+- Added one Wi-Fi owner for Sniffer, Airspace, Evil Portal, Deauth Flood and Beacon Spam. Conflicting starts return `503 busy` naming the tool to stop.
+- Corrected ESP-IDF callback and injection ABIs. Injection counters increment only on accepted frames; failures are reported.
+- Reduced static queue memory; the watch links at about **48.4% RAM / 90.0% flash**.
+- Sniffer now resolves `/sd` paths through `web_fs_resolve`, creates parent directories, writes valid PCAP/radiotap data, reports drops/errors, and stops safely at `max_bytes`. It now also offers typed PCAP filters (`all`, `management`, `data`, `beacons`, `probes`, `eapol`), observed-vs-saved counters, an AP table, and EAPOL/four-way-handshake detection in the API, desktop and watch UI.
+- Airspace reports deauth/beacon/flood/twin/broadcast counters and emits detailed events.
+- Sentinel uses passive scans, classifies Find My/SmartTag/Tile/Chipolo, and requires a persistence window. “Persistent” is explicitly described as a heuristic, not proof of stalking.
+- ESP-NOW Presence is now exposed honestly as `presence.peers` / **Nearby Peers**, with identified arrival/departure events.
+- FIDO2 is simulator-only. Hardware does not advertise `fido2` and returns `503 fido_unavailable`; it never reports fake authentication success.
+- Portal has working standalone and open-twin lifecycles, typed validation, gateway/DNS/DHCP checks, live clients, safe JSON/CSV output, hidden-password default, working redaction and clear-capture consent.
+- Offensive starts require `authorized:true` after UI confirmation. Normal Wi-Fi disconnection and reconnect behaviour is stated to the operator.
+- Deauth scans are asynchronous. Beacon generated/custom modes and real channel hopping work.
 
-### 2. Live page cloning (`web_tool_evilportal.cpp`)
-Connect to an open AP, make an HTTP GET request to any URL (captive portal should intercept), save the response body as a template.
+### Watch UI (`examples/factory/ui_nucleo_tools.cpp`)
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — `clone_page()` function (~line 610)
-**Steps:**
-1. `WiFi.begin(open_ssid)` — connect without password
-2. Wait for IP with timeout (~10s)
-3. Create a TCP connection to any IP on port 80
-4. Send `GET / HTTP/1.1\r\nHost: example.com\r\n\r\n`
-5. Read response, strip HTTP headers
-6. Save body to `/sd/evilportal/portals/cloned_<ssid>.html`
-7. `WiFi.disconnect()`, restore previous network
+- Replaced fake macro pages with real calls into the same tool lifecycle used by HTTP.
+- Added channel/prefix/rate/template/target pickers, live counters and short lists, and readable error text.
+- Added consent screens for Evil Portal, Deauth Flood and Beacon Spam.
+- Closing a radio test stops it and requests Wi-Fi reconnect.
+- FIDO2 shows an explicit unavailable explanation and no misleading controls.
+- Long consent/error text wraps instead of being truncated into card rows.
 
-### 3. PSK verification (`web_tool_evilportal.cpp`)
-When `s_verify` is true and twin mode is active, connect to the real AP with captured credentials to verify them.
+### Web desktop/accessibility
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — add to `handle_captive_request()` after capture
-**Steps:**
-1. `WiFi.begin(s_ssid, cap.password)` 
-2. Wait for connection with timeout (~8s)
-3. If connected → `s_verified_ok++`, else `s_verified_bad++`
-4. Disconnect and restore twin AP
+- Registered all supported P9 apps in `web/js/shell.js`.
+- Fixed API field names, list rendering and latest-request-wins loading in all P9 apps and Link.
+- Added consent dialogs, destructive-action confirmation, visible errors, target buttons and unavailable states.
+- Errors are dismissible instead of disappearing on a timer.
+- Removed whole-app live-region chatter, added toast live region metadata, dialog labels/focus trapping and reduced-motion CSS.
+- Desktop status uses text as well as colour.
 
-### 4. DHCP diagnostics (`web_tool_evilportal.cpp`)
-Detect whether the softAP DHCP server started correctly. Currently `s_dhcps_ok` is always true.
+## Verification
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — `start_standalone()`, `start_twin()`, `start_karma()`
-**Approach:** Check `WiFi.softAPgetStationNum()` after ~3 seconds — if 0 clients connected and 30+ seconds pased, DHCP may have failed. Or check `WiFi.softAPgetDhcpServerStatus()` if available.
+Final successful runs:
 
-### 5. Coherent evil-twin (`web_tool_evilportal.cpp`)
-When `coherent=true`, clone the WPA2 security parameters in beacon frames. Currently only OPEN AP mode is supported.
+- `pio run -e twatch_ultra` — **pass**
+- `pio run -e emulator_watch_ultra` — **pass**
+- `node web_api_test.mjs --dev-pin` — **231/231**
+- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **234/234**
+- `node web_ui_test.mjs` — **138/138**
+- `node web_ui_test.mjs --url http://localhost:8080` — **139/139**
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — `start_twin()`
-**Steps:**
-1. Pass `authmode` parameter to `start_twin` (currently only ssid/bssid/channel)
-2. When coherent, set `wifi_auth_mode_t` on softAP to match real AP
-3. This means clients can't connect without the PSK — but the beacon looks identical
-4. Add `authmode` parameter to `/api/evilportal/start-twin` and the web app
+The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, validation, radio conflicts, alerts, tracker persistence, FIDO unavailable behaviour, authorization, captive POST, redaction, deauth scans and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, consent and credential deletion.
 
-### 6. Debug logging (`web_tool_evilportal.cpp`)
-When `s_debug` is true, write diagnostics to `/sd/evilportal/ep-debug.log` (no credentials, only heap, DHPC state, SSID).
+## Parity with `/Development/firmware` and `/Development/NucleoOs`
 
-**File:** `examples/factory/web_tool_evilportal.cpp`
-**Pattern:** `fprint(f, "timestamp, free_heap: %d, dhcps_ok: %d, ssid: %s\n", ...)` on start and periodically
+**Still not full parity.** Remaining material gaps:
 
-### 7. On-device UIs for remaining 7 tools (`ui_nucleo_tools.cpp`)
-All tools except Evil Portal use the `NUCLEO_APP` macro (just Start/Stop buttons). Each needs:
-- Deauth Flood: AP scan + picker (like evil portal's SSID cycler)
-- Beacon Spam: prefix input, custom SSID textarea
-- Sniffer: channel selector
-- Airspace: live deauth/beacon counts
-- Sentinel: detected tag list
-- Presence: peer list
-- FIDO2: credential list
+- **Presence:** NucleoOS uses Wi-Fi CSI motion/presence sensing. This firmware offers ESP-NOW peer discovery only.
+- **FIDO2:** NucleoOS has a real authenticator with user presence/PIN and credential protection. Here it is only a simulator fake; hardware capability is deliberately hidden.
+- **Sniffer:** filtering, AP discovery and basic WPA four-way-handshake/EAPOL breakdown are implemented and simulator-tested. Real capture correctness, loss rates, channel hopping and encrypted/high-throughput traffic still need radio validation; no specialised reference firmware modes are claimed.
+- **Evil Portal:** no KARMA probe capture, live page cloning, PSK verification, WPA2-coherent twin or custom SD template loading. These routes fail explicitly instead of pretending to work.
+- **Offensive tools:** no reference-equivalent multi-target campaigns, injection-health/reconnect metrics or PMF-aware behaviour.
+- **Radio/on-wrist validation:** actual injection, promiscuous capture, DHCP, reconnect timing, touch layout and outdoor readability remain unverified on hardware.
 
-**File:** `examples/factory/ui_nucleo_tools.cpp`
-**Pattern:** Follow `enter_evilportal()` / `ep_rebuild_setup()` for the two-phase approach (consent → setup)
+Do not restore “full parity” wording until those gaps are closed and tested on a real T-Watch Ultra.
 
-### SD card template loading (`web_tool_evilportal.cpp`)
-Load custom .html templates from `/sd/evilportal/portals/` and add them to the template list. Currently only built-in templates are in `BUILTIN_TEMPLATES[]`.
+## Important API notes
 
-**File:** `examples/factory/web_tool_evilportal.cpp` — `status_json()`, `start_*()`
-**Steps:** Scan `/sd/evilportal/portals/*.html`, add entries with `builtin: false` to the templates array in status, serve from SD when selected.
-
-## How to compile and test
-
-```bash
-# Simulator (native)
-cd /Users/piotrbartkiewicz/Development/LilyGoLib-PlatformIO
-pio run -e emulator_watch_ultra          # compile
-pio run -e emulator_watch_ultra -t exec  # run (interactive, opens GUI)
-
-# ESP32 (T-Watch Ultra)
-pio run -e twatch_ultra                   # compile only
-pio run -e twatch_ultra -t upload         # flash
-
-# Run API tests against simulator
-cd /Users/piotrbartkiewicz/Development/LilyGoLib/examples/factory/tests
-node web_api_test.mjs                    # all API tests
-node web_ui_test.mjs                     # desktop UI tests
-```
-
-## API endpoints added
-
-### Evil Portal
-```
-GET  /api/evilportal                — full status + templates + presets + settings
-POST /api/evilportal/start         — standalone (ssid, templateId, gateway)
-POST /api/evilportal/start-twin    — evil-twin (ssid, bssid, channel, coherent, templateId, gateway)
-POST /api/evilportal/start-karma   — karma (templateId, gateway)
-POST /api/evilportal/stop          — stop portal
-GET  /api/evilportal/captures      — captured credentials (redacted per pwdMode)
-POST /api/evilportal/clear         — clear captures
-PUT  /api/evilportal/settings      — update pwdMode, verify, gateway, debug, autoStopBase/Extended
-POST /api/evilportal/karma-can     — scan for probe requests (seconds)
-GET  /api/evilportal/karma         — list discovered probes
-POST /api/evilportal/clone         — clone page from open AP (ssid)
-POST /api/_dev/evilportal          — simulator test hook
-```
-
-### Deauth Flood
-```
-POST /api/deauthflood/scan         — scan for nearby APs
-GET  /api/deauthflood/targets      — list discovered targets
-```
-
-### Beacon Spam
-```
-PUT  /api/beacospam/ssids          — set custom SSID list
-```
-
-## Key design decisions
-
-1. **No hardware abstraction layer for P9.** The `web_hw_*()` declarations in `web_tools.h` are unused. Tools call ESP-IDF directly. Don't fight this pattern.
-
-2. **Captive portal runs on the web API server.** When evil portal is active, `handle()` intercepts all non-`/api/evilportal` requests and serves captive HTML. The DNS server redirects all domains to the softAP IP. This is simpler than running a separate HTTP server.
-
-3. **Simulator test hooks use `/api/_dev/*`.** All P9 tools have simulator injection endpoints. Use them to test without real hardware.
-
-4. **Web desktop lives on SD card.** Don't add to firmware flash — the firmware only has the rescue page. Desktop is in `examplesefactory/web/` and gets gzipped by `tools/web_build.py`.
-
-5. **Commit granularity.** Stay focused: implement → test-compile → commit one feature at a time. Push after each commit.
+- Capability is `presence.peers`, not `presence`.
+- Hardware omits `fido2` and all KARMA/clone capabilities.
+- Portal start routes, Deauth start and Beacon start require `authorized:true`.
+- Deauth status uses `targetBssid`, `targetStation`, `targetSsid` and `ratePps`.
+- Sniffer/Airspace include `drops`; sniffer adds `filter`, `seen`, frame-type/EAPOL/handshake counters and `aps`; Sentinel includes `kind`, `separated`, `scanning` and `error`.
+- Captive non-API requests are intercepted before static routing; API routes remain authenticated.
