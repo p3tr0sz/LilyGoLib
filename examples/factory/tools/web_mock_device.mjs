@@ -57,7 +57,7 @@ for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
-  'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'fido2',
+  'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
   'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'deauth.campaign', 'deauth.health',
   'beacon.spam', 'beacon.campaign', 'beacon.health'];
@@ -122,12 +122,25 @@ let sniffer = { active: false, packets: 0, drops: 0, bytes: 24, channel: null, f
 let airspace = { active: false, deauth_total: 0, deauth_floods: 0, beacon_total: 0, beacon_floods: 0, evil_twins: 0, started: 0 };
 let sentinel = { active: false, started: 0, device_count: 0, devices: [] };
 let presence = { active: false, started: 0, peers_ever: 0, peers: [], history: [] };
-let presenceCsi = {};
+let presenceCsi = {}, presenceFaroZone = {}, presenceCsiHistory = [], presenceHistoryBucket = 0;
+let presenceFaro = { active: false, channel: null, mac: null, started: 0, realStarted: 0, tx_errors: 0, error: null };
+let presenceAlarm = { state: 'off', stateMs: 0, exit_s: 10, duration_s: 30, triggers: 0, zone: null, error: null };
+function newPresenceZone(active, threshold = 0.35) {
+  return { linked: active, discovered: active, calibrating: active, present: false, motion: false,
+    score: 0, level: 0, noise: 0.005, threshold, samples: 0, rate: 0, drops: 0, rssi: -90,
+    last_motion_ms: 0, last_seen_ms: 0, mac: active ? '02:00:00:00:00:f1' : null,
+    calibrationFrames: 0, over: 0 };
+}
 function resetPresenceCsi(active = false, threshold = 0.35) {
+  const clock = Date.now();
   presenceCsi = { active, state: active ? 'calibrating' : 'stopped', calibrating: active, present: false, motion: false,
     score: 0, level: 0, noise: 0.005, threshold, samples: 0, rate: 0, drops: 0, rssi: -90,
     channel: active ? 1 : null, ssid: active ? 'mock-wifi' : null, started: active ? nowEpoch() : 0,
-    last_motion_ms: 0, error: null, calibrationFrames: 0, over: 0, clock: Date.now() };
+    last_motion_ms: 0, error: null, calibrationFrames: 0, over: 0, clock };
+  presenceFaroZone = newPresenceZone(false, threshold);
+  presenceCsiHistory = [];
+  presenceHistoryBucket = clock;
+  presenceAlarm.state = 'off'; presenceAlarm.zone = null; presenceAlarm.error = null;
 }
 resetPresenceCsi();
 let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
@@ -279,9 +292,73 @@ function airspaceState() {
 function sentinelState() {
   return { active: sentinel.active, scanning: false, started: sentinel.started, device_count: sentinel.devices.length, devices: sentinel.devices, error: null };
 }
+function presenceZoneFresh() {
+  return presenceCsi.active && presenceFaroZone.discovered && presenceCsi.clock - presenceFaroZone.last_seen_ms <= 3000;
+}
+function presenceZoneName(z, linked, stopped = false) {
+  if (stopped) return 'stopped';
+  if (!linked) return z.discovered ? 'absent' : 'waiting';
+  return z.calibrating ? 'calibrating' : z.motion ? 'motion' : z.present ? 'present' : 'clear';
+}
+function presenceZoneJson(z, id) {
+  const linked = id === 'router' ? presenceCsi.active : presenceZoneFresh();
+  const out = { id, linked, calibrating: linked && z.calibrating, present: linked && z.present,
+    motion: linked && z.motion, score: linked ? z.score : 0, level: z.level, noise: z.noise,
+    threshold: z.threshold, samples: z.samples, rate: z.rate, drops: z.drops, rssi: z.rssi,
+    channel: presenceCsi.channel, last_motion_ms: z.last_motion_ms,
+    state: id === 'router' ? presenceCsi.state : presenceZoneName(z, linked, !presenceCsi.active) };
+  if (id === 'faro') Object.assign(out, { discovered: z.discovered, last_seen_ms: z.last_seen_ms, mac: z.mac });
+  return out;
+}
+function presenceAlarmRemaining() {
+  const total = presenceAlarm.state === 'arming' ? presenceAlarm.exit_s : presenceAlarm.state === 'triggered' ? presenceAlarm.duration_s : 0;
+  return total ? Math.max(0, Math.ceil((total * 1000 - (presenceCsi.clock - presenceAlarm.stateMs)) / 1000)) : 0;
+}
+function presenceAlarmEvent(event) {
+  publish('presence.alarm', { event, state: presenceAlarm.state, remaining_s: presenceAlarmRemaining(), triggers: presenceAlarm.triggers, zone: presenceAlarm.zone });
+}
+function presenceStep() {
+  for (const [id, z] of [['router', presenceCsi], ['faro', presenceFaroZone]]) {
+    const linked = id === 'router' ? presenceCsi.active : presenceZoneFresh();
+    if (linked && z.present && !z.motion && presenceCsi.clock - z.last_motion_ms > 10000) {
+      z.present = false;
+      publish('presence.csi', { event: 'clear', zone: id, state: presenceZoneName(z, linked), present: false, motion: z.motion, score: z.score });
+    }
+  }
+  presenceCsi.state = !presenceCsi.active ? 'stopped' : presenceCsi.calibrating ? 'calibrating' : presenceCsi.motion ? 'motion' : presenceCsi.present ? 'present' : 'clear';
+  if (presenceAlarm.state === 'arming' && presenceCsi.clock - presenceAlarm.stateMs >= presenceAlarm.exit_s * 1000) {
+    presenceAlarm.state = 'armed'; presenceAlarm.stateMs = presenceCsi.clock; presenceAlarmEvent('armed');
+  }
+  if (presenceAlarm.state === 'armed' && presenceCsi.clock - presenceAlarm.stateMs >= 1500) {
+    const routerMotion = presenceCsi.active && !presenceCsi.calibrating && presenceCsi.motion;
+    const faroMotion = presenceZoneFresh() && !presenceFaroZone.calibrating && presenceFaroZone.motion;
+    if (routerMotion || faroMotion) {
+      presenceAlarm.state = 'triggered'; presenceAlarm.stateMs = presenceCsi.clock;
+      presenceAlarm.zone = faroMotion && !routerMotion ? 'faro' : 'router'; presenceAlarm.triggers++;
+      presenceAlarmEvent('triggered');
+    }
+  }
+  if (presenceAlarm.state === 'triggered' && presenceCsi.clock - presenceAlarm.stateMs >= presenceAlarm.duration_s * 1000) {
+    presenceAlarm.state = 'off'; presenceAlarm.zone = null; presenceAlarmEvent('timeout');
+  }
+  if (presenceCsi.active) {
+    while (presenceCsi.clock - presenceHistoryBucket >= 500) {
+      presenceHistoryBucket += 500;
+      presenceCsiHistory.push({ t: presenceHistoryBucket, router: Math.round(presenceCsi.score * 100),
+        faro: presenceZoneFresh() ? Math.round(presenceFaroZone.score * 100) : 0 });
+      if (presenceCsiHistory.length > 120) presenceCsiHistory.splice(0, presenceCsiHistory.length - 120);
+    }
+  }
+}
 function presenceState() {
-  const { calibrationFrames, over, clock, ...csi } = presenceCsi;
-  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers, history: presence.history, error: null, csi };
+  const { calibrationFrames, over, clock, ...base } = presenceCsi;
+  const csi = { ...base, zones: [presenceZoneJson(presenceCsi, 'router'), presenceZoneJson(presenceFaroZone, 'faro')], history: presenceCsiHistory };
+  const { stateMs, ...alarm } = presenceAlarm;
+  const sent = presenceFaro.active ? Math.floor((Date.now() - presenceFaro.realStarted) / 10) : presenceFaro.sent || 0;
+  const faro = { active: presenceFaro.active, channel: presenceFaro.channel, mac: presenceFaro.mac,
+    sent, rate: presenceFaro.active ? 100 : 0, tx_errors: presenceFaro.tx_errors, started: presenceFaro.started, error: presenceFaro.error };
+  return { active: presence.active, started: presence.started, peers_ever: presence.peers_ever, peers: presence.peers,
+    history: presence.history, error: null, csi, faro, alarm: { ...alarm, remaining_s: presenceAlarmRemaining() } };
 }
 function fido2State() {
   return { available: fido2.available, state: fido2.state, credentials: fido2.credentials, error: fido2.available ? null : 'Simulated FIDO2 transport is disabled' };
@@ -1201,36 +1278,51 @@ async function toolsRoute(req, res, url, path) {
   if (DEV && path === '/api/_dev/presence-csi' && m === 'POST') {
     const j = await readJSON(req);
     if (!presenceCsi.active) return fail(res, 409, 'conflict', 'start CSI sensing first');
-    const pattern = j?.pattern || 'stable', count = j?.count ?? 1, advance = j?.advance_ms || 0;
+    const pattern = j?.pattern || 'stable', count = j?.count ?? 1, advance = j?.advance_ms || 0, zone = j?.zone || 'router';
     if (!['stable', 'motion'].includes(pattern)) return fail(res, 400, 'bad_request', 'pattern must be stable or motion');
+    if (!['router', 'faro'].includes(zone)) return fail(res, 400, 'bad_request', 'zone must be router or faro');
     if (!Number.isInteger(count) || count < 0 || count > 500 || !Number.isFinite(advance) || advance < 0 || advance > 600000)
       return fail(res, 400, 'bad_request', 'count: 0-500; advance_ms: 0-600000');
-    const oldPresent = presenceCsi.present;
-    for (let frame = 0; frame < count; frame++) {
-      const wasCalibrating = presenceCsi.calibrating, wasMotion = presenceCsi.motion;
-      presenceCsi.samples++;
-      presenceCsi.clock += 20;
-      presenceCsi.rssi = Number(j?.rssi ?? -50);
-      if (presenceCsi.calibrating) {
-        presenceCsi.calibrationFrames++;
-        presenceCsi.score = 0;
-        if (presenceCsi.calibrationFrames >= 32) { presenceCsi.calibrating = false; presenceCsi.state = 'clear'; }
-      } else {
-        presenceCsi.motion = pattern === 'motion' && ++presenceCsi.over >= 3;
-        if (pattern !== 'motion') presenceCsi.over = 0;
-        presenceCsi.score = pattern === 'motion' ? Math.min(1, 0.4 + frame / 20) : 0.01;
-        presenceCsi.level = pattern === 'motion' ? presenceCsi.score * 0.08 : 0.004;
-        if (presenceCsi.motion) { presenceCsi.present = true; presenceCsi.last_motion_ms = presenceCsi.clock; }
-        presenceCsi.state = presenceCsi.motion ? 'motion' : presenceCsi.present ? 'present' : 'clear';
+    let z = zone === 'router' ? presenceCsi : presenceFaroZone;
+    if (zone === 'faro') {
+      const mac = j?.mac || '02:00:00:00:00:f1';
+      if (!z.discovered || z.mac !== mac) {
+        z = presenceFaroZone = newPresenceZone(true, presenceCsi.threshold);
+        z.mac = mac;
       }
-      if (wasCalibrating !== presenceCsi.calibrating) publish('presence.csi', { event: 'calibrated', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
-      if (wasMotion !== presenceCsi.motion) publish('presence.csi', { event: presenceCsi.motion ? 'motion' : 'still', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
+    }
+    const oldPresent = z.present;
+    for (let frame = 0; frame < count; frame++) {
+      const wasCalibrating = z.calibrating, wasMotion = z.motion;
+      z.samples++;
+      presenceCsi.clock += 20;
+      z.rssi = Number(j?.rssi ?? -50);
+      if (zone === 'faro') z.last_seen_ms = presenceCsi.clock;
+      if (z.calibrating) {
+        z.calibrationFrames++;
+        z.score = 0;
+        if (z.calibrationFrames >= 32) z.calibrating = false;
+      } else {
+        z.motion = pattern === 'motion' && ++z.over >= 3;
+        if (pattern !== 'motion') z.over = 0;
+        z.score = pattern === 'motion' ? Math.min(1, 0.4 + frame / 20) : 0.01;
+        z.level = pattern === 'motion' ? z.score * 0.08 : 0.004;
+        if (z.motion) { z.present = true; z.last_motion_ms = presenceCsi.clock; }
+      }
+      const linked = zone === 'router' || presenceZoneFresh();
+      const state = zone === 'router' ? (z.calibrating ? 'calibrating' : z.motion ? 'motion' : z.present ? 'present' : 'clear') : presenceZoneName(z, linked);
+      if (wasCalibrating !== z.calibrating) publish('presence.csi', { event: 'calibrated', zone, state, present: z.present, motion: z.motion, score: z.score });
+      if (wasMotion !== z.motion) publish('presence.csi', { event: z.motion ? 'motion' : 'still', zone, state, present: z.present, motion: z.motion, score: z.score });
+      presenceStep();
     }
     presenceCsi.clock += advance;
-    presenceCsi.rate = count;
-    if (presenceCsi.present && !presenceCsi.motion && presenceCsi.clock - presenceCsi.last_motion_ms > 10000) presenceCsi.present = false;
-    presenceCsi.state = presenceCsi.calibrating ? 'calibrating' : presenceCsi.motion ? 'motion' : presenceCsi.present ? 'present' : 'clear';
-    if (oldPresent !== presenceCsi.present) publish('presence.csi', { event: presenceCsi.present ? 'present' : 'clear', state: presenceCsi.state, present: presenceCsi.present, motion: presenceCsi.motion, score: presenceCsi.score });
+    z.rate = count;
+    presenceStep();
+    if (oldPresent !== z.present) {
+      const linked = zone === 'router' || presenceZoneFresh();
+      publish('presence.csi', { event: z.present ? 'present' : 'clear', zone,
+        state: zone === 'router' ? presenceCsi.state : presenceZoneName(z, linked), present: z.present, motion: z.motion, score: z.score });
+    }
     return ok(res);
   }
   if (DEV && path === '/api/_dev/presence' && m === 'POST') {
@@ -1391,21 +1483,65 @@ async function toolsRoute(req, res, url, path) {
   if (path === '/api/sentinel/start' && m === 'POST') { sentinel.active = true; sentinel.started = nowEpoch(); sentinel.devices = []; return ok(res); }
   if (path === '/api/sentinel/stop' && m === 'POST') { sentinel.active = false; return ok(res); }
 
-  // Presence: Wi-Fi CSI sensing plus nearby ESP-NOW peers
+  // Presence: dual-link Wi-Fi CSI, Faro transmitter, alarm and nearby ESP-NOW peers
   if (path === '/api/presence' && m === 'GET') return json(res, 200, presenceState());
   if (path === '/api/presence/start' && m === 'POST') { presence.active = true; presence.started = nowEpoch(); presence.peers = []; presence.history = []; presence.peers_ever = 0; return ok(res); }
   if (path === '/api/presence/stop' && m === 'POST') { presence.active = false; return ok(res); }
   if (path === '/api/presence/csi/start' && m === 'POST') {
     const j = await readJSON(req), threshold = j?.threshold ?? 0.35;
     if (typeof threshold !== 'number' || threshold < 0.05 || threshold > 0.95) return fail(res, 400, 'bad_request', 'threshold: 0.05-0.95');
+    if (presenceFaro.active) return fail(res, 409, 'conflict', 'stop the Faro transmitter first');
     resetPresenceCsi(true, threshold);
     return ok(res);
   }
-  if (path === '/api/presence/csi/stop' && m === 'POST') { presenceCsi.active = false; presenceCsi.state = 'stopped'; presenceCsi.calibrating = presenceCsi.motion = presenceCsi.present = false; presenceCsi.score = presenceCsi.rate = 0; return ok(res); }
+  if (path === '/api/presence/csi/stop' && m === 'POST') {
+    presenceCsi.active = false; presenceCsi.state = 'stopped'; presenceCsi.calibrating = presenceCsi.motion = presenceCsi.present = false;
+    presenceCsi.score = presenceCsi.rate = 0; presenceFaroZone.motion = presenceFaroZone.present = presenceFaroZone.calibrating = false;
+    if (presenceAlarm.state !== 'off') { presenceAlarm.state = 'off'; presenceAlarm.zone = null; presenceAlarmEvent('sensing_stopped'); }
+    return ok(res);
+  }
   if (path === '/api/presence/csi/calibrate' && m === 'POST') {
     if (!presenceCsi.active) return fail(res, 409, 'conflict', 'start CSI sensing first');
-    const threshold = presenceCsi.threshold;
-    resetPresenceCsi(true, threshold);
+    const j = await readJSON(req), zone = j?.zone || 'all';
+    if (!['router', 'faro', 'all'].includes(zone)) return fail(res, 400, 'bad_request', 'zone must be router, faro or all');
+    if (zone === 'faro' && !presenceZoneFresh()) return fail(res, 409, 'conflict', 'no live Faro link to calibrate');
+    if (zone !== 'faro') {
+      Object.assign(presenceCsi, { state: 'calibrating', calibrating: true, present: false, motion: false,
+        score: 0, level: 0, noise: 0.005, calibrationFrames: 0, over: 0, last_motion_ms: presenceCsi.clock });
+    }
+    if (zone !== 'router' && presenceFaroZone.discovered) {
+      Object.assign(presenceFaroZone, { calibrating: true, present: false, motion: false,
+        score: 0, level: 0, noise: 0.005, calibrationFrames: 0, over: 0, last_motion_ms: presenceCsi.clock });
+    }
+    return ok(res);
+  }
+  if (path === '/api/presence/faro/start' && m === 'POST') {
+    const j = await readJSON(req), channel = j?.channel ?? 1;
+    if (!Number.isInteger(channel) || channel < 1 || channel > 13) return fail(res, 400, 'bad_request', 'channel: 1-13');
+    if (presenceCsi.active) return fail(res, 409, 'conflict', 'stop CSI sensing before enabling the Faro transmitter');
+    if (!presenceFaro.active) presenceFaro = { active: true, channel, mac: '02:00:00:00:00:f0', started: nowEpoch(), realStarted: Date.now(), sent: 0, tx_errors: 0, error: null };
+    return ok(res);
+  }
+  if (path === '/api/presence/faro/stop' && m === 'POST') {
+    presenceFaro.sent = presenceFaro.active ? Math.floor((Date.now() - presenceFaro.realStarted) / 10) : presenceFaro.sent || 0;
+    presenceFaro.active = false;
+    return ok(res);
+  }
+  if (path === '/api/presence/alarm/arm' && m === 'POST') {
+    const j = await readJSON(req), exit_s = j?.exit_s ?? presenceAlarm.exit_s, duration_s = j?.duration_s ?? presenceAlarm.duration_s;
+    if (!Number.isInteger(exit_s) || exit_s < 5 || exit_s > 120 || !Number.isInteger(duration_s) || duration_s < 10 || duration_s > 300)
+      return fail(res, 400, 'bad_request', 'exit_s: 5-120; duration_s: 10-300');
+    if (!presenceCsi.active || presenceCsi.calibrating || presenceFaro.active)
+      return fail(res, 409, 'conflict', 'finish router calibration before arming; Faro transmitters cannot sense');
+    if (presenceAlarm.state !== 'off') return fail(res, 409, 'conflict', 'disarm the alarm before changing its settings');
+    presenceAlarm.exit_s = exit_s; presenceAlarm.duration_s = duration_s; presenceAlarm.state = 'arming';
+    presenceAlarm.stateMs = presenceCsi.clock; presenceAlarm.zone = null; presenceAlarm.error = null;
+    presenceAlarmEvent('arming');
+    return ok(res);
+  }
+  if (path === '/api/presence/alarm/disarm' && m === 'POST') {
+    if (presenceAlarm.state !== 'off') { presenceAlarm.state = 'off'; presenceAlarm.zone = null; presenceAlarmEvent('disarmed'); }
+    presenceAlarm.error = null;
     return ok(res);
   }
 

@@ -169,6 +169,28 @@ left to confirm.
   exception decoder symbolicates the backtrace; the watch recovers on reboot.
 - [ ] Battery drain over an hour with a desktop connected is reasonable.
 
+## 11. P9.5 Presence advanced modes — two real watches
+
+Use two T-Watch Ultras and a fixed 2.4 GHz AP. Keep all devices fixed during calibration. These checks are
+required before marking the Faro/alarm core hardware-validated; synthetic simulator frames do not count.
+
+- [ ] **Router baseline:** calibrate in an empty still room; record actual CSI frames/s, RSSI and false-positive
+      rate. Walk across the router/watch radio path and confirm motion, then confirm the 10-second presence hold.
+- [ ] **Faro setup:** stop sensing on watch B, start its Faro transmitter, and verify channel 1–13 matches watch A's
+      connected AP. Watch A discovers B's real MAC and independently completes 32-frame calibration.
+- [ ] **Independent zones:** cross only the router/A path, then only the B/A path. API, native chart and desktop must
+      identify the corresponding zone without forcing motion in the other. Stop B for over 3 seconds: Faro becomes
+      `absent`; restart it: the link recovers without restarting router sensing.
+- [ ] **Rates/coexistence:** compare Faro's accepted/error counters with observed frames and receiver CSI rate. Check
+      Link/ESP-NOW and normal browser traffic still work. `sent` is driver acceptance, not over-air delivery proof.
+- [ ] **Alarm:** exit delay and 1.5-second grace suppress premature triggers; motion in each zone triggers the correct
+      label, watch vibration and audible beeps. Manual disarm works while arming/armed/triggered. Siren duration
+      automatically returns to `off`; stopping CSI disarms and restores the previous Wi-Fi power-save mode.
+- [ ] **History/restart:** verify 120 buckets / 60 seconds on native and desktop. Reboot: saved timing settings remain,
+      but alarm state and graph are clear (history is intentionally not persisted).
+- [ ] **Reconnect:** drop and restore Wi-Fi during sensing and while triggered. Router recalibrates on reconnect, alarm
+      timeout still expires, no stale Faro remains linked, and no radio-owner/power-save leak follows teardown.
+
 ---
 
 **NFC card emulation is disabled in this build.** `demo_ce.h` (ST's RFAL card-emulation demo glue) is not

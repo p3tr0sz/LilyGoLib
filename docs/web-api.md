@@ -282,24 +282,34 @@ BLE anti-stalking: a passive scan that flags BLE devices appearing persistently 
 
 A device flagged as stalking triggers a `sentinel` event: `{type:"stalking", addr, name, rssi, sightings}`. Devices older than 1 hour are automatically forgotten.
 
-### Wi-Fi CSI presence and nearby peers (`presence.csi`, `presence.peers`)
+### Wi-Fi CSI presence and nearby peers (`presence.csi`, `presence.faro`, `presence.alarm`, `presence.history`, `presence.peers`)
 
 Wi-Fi CSI estimates human motion from changes in the normalized subcarrier amplitude profile of frames received from the connected 2.4 GHz access point. It does not identify or count people and does not provide a location. Keep the watch and AP fixed and calibrate while the room is empty and still. Presence is latched for 10 seconds after the latest detected motion. Hardware accuracy, environmental suitability and reconnect behaviour still require on-watch validation.
 
-While active, the watch disables modem sleep, restores the previous power-save mode on stop, and sends an ICMP echo request to its own gateway up to 20 times/second to maintain CSI traffic. It does not inject 802.11 frames. Sniffer, Airspace and the other radio-owned tools must be stopped first.
+While sensing, the watch disables modem sleep, restores the previous power-save mode on stop, and sends an ICMP echo request to its own gateway up to 20 times/second to maintain CSI traffic. Sensing does not inject raw 802.11 frames. Sniffer, Airspace and the other radio-owned tools must be stopped first.
+
+An optional second watch in **Faro transmitter** mode broadcasts an 8-byte `TWF1` + counter ESP-NOW payload every 10 ms (100 Hz). Both devices must use the same 2.4 GHz channel. The receiver discovers the Faro source MAC from its action frames and runs a second independent detector. A Faro link is absent after 3 seconds without frames. Faro mode transmits instead of sensing; its `sent` counter means accepted by ESP-NOW, not confirmed over the air.
+
+The intrusion alarm follows `off → arming → armed → triggered`. It requires a calibrated router zone, waits the configured exit delay plus a 1.5-second settling grace, and triggers only on live motion in either linked zone—not on the 10-second presence hold. It beeps/vibrates on the watch and automatically returns to `off` after the siren duration. Manual disarm works in every active state; stopping CSI also disarms. Exit/duration settings persist in internal flash; alarm state, trigger counters and graph history are runtime-only.
+
+`csi.zones` contains independent `router` and `faro` objects with `{id, linked, state, calibrating, present, motion, score, level, noise, threshold, samples, rate, drops, rssi, channel, last_motion_ms}`. Faro adds `{discovered, last_seen_ms, mac}` and states `waiting`/`absent`. `csi.history` is newest-last, capped at 120 × 500 ms buckets (60 seconds): `{t, router, faro}`, with scores 0–100. It is deliberately not persisted, so reboot cannot revive stale motion.
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/presence` | paired | Peer fields below plus `csi: {active, state, calibrating, present, motion, score, level, noise, threshold, samples, rate, drops, rssi, channel, ssid, started, last_motion_ms, error}` |
+| `GET /api/presence` | paired | Peer fields below plus `csi` (original fields, `zones`, `history`), `faro: {active, channel, mac, sent, rate, tx_errors, started, error}`, and `alarm: {state, remaining_s, exit_s, duration_s, triggers, zone, error}` |
 | `POST /api/presence/csi/start` | paired | `{threshold?:0.05-0.95}` → `{ok}`. Default 0.35. Starts calibration; at least 32 valid CSI frames are required |
-| `POST /api/presence/csi/stop` | paired | → `{ok}`. Disables CSI/promiscuous mode and restores Wi-Fi power save |
-| `POST /api/presence/csi/calibrate` | paired | → `{ok}`. Clears the learned profile, motion and presence, then recalibrates |
+| `POST /api/presence/csi/stop` | paired | → `{ok}`. Disables CSI/promiscuous mode, restores Wi-Fi power save and disarms the alarm |
+| `POST /api/presence/csi/calibrate` | paired | `{zone?:"router"\|"faro"\|"all"}` → `{ok}`. Default `all`; Faro-only calibration requires a live link |
+| `POST /api/presence/faro/start` | paired | `{channel?:1-13}` → `{ok}`. Starts the 100 Hz transmitter. Defaults to the connected AP channel, or channel 1 when disconnected; a different connected-channel request fails |
+| `POST /api/presence/faro/stop` | paired | → `{ok}`. Stops the timer/ESP-NOW transmission and restores power save |
+| `POST /api/presence/alarm/arm` | paired | `{exit_s?:5-120, duration_s?:10-300}` → `{ok}`. Defaults to saved settings. Requires active, calibrated router sensing |
+| `POST /api/presence/alarm/disarm` | paired | → `{ok}`. Disarms `arming`, `armed` or `triggered` state |
 | `POST /api/presence/start` | paired | → `{ok}`. Starts separate ESP-NOW peer discovery |
 | `POST /api/presence/stop` | paired | → `{ok}`. Stops peer discovery only |
 
 CSI `state` is `stopped`, `calibrating`, `clear`, `motion` or `present`. `score` is normalized 0–1, `rate` is accepted frames in the last second, `drops` counts raw samples lost when the analysis queue was full, and `last_motion_ms` is device uptime, not UTC. Start can return `503 busy`, `503 wifi_required` or `503 csi_unavailable` with a readable `message`.
 
-`presence.csi` events report `{event:"calibrated"|"motion"|"still"|"present"|"clear", state, present, motion, score}` on state transitions.
+`presence.csi` events report `{event:"calibrated"|"motion"|"still"|"present"|"clear"|"faro_found"|"faro_lost", zone:"router"|"faro", state, present, motion, score}` on transitions. `presence.alarm` reports `{event:"arming"|"armed"|"triggered"|"disarmed"|"timeout"|"sensing_stopped", state, remaining_s, triggers, zone}`. `presence.faro` reports transmitter `{active}` on start/stop.
 
 The original peer fields are `{active, started, peers_ever, peers: [{mac, name, rssi, first_seen, last_seen, present}], history: [{ts, mac, name, event}], error}`. Peer `event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A separate `presence` event is published on arrival and departure and includes `event`, `mac`, `name` and `rssi`.
 
@@ -404,7 +414,9 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `airspace` | `{type, detail, bssid, rssi}`, alerts for detected attacks | P9 |
 | `sentinel` | `{type:"stalking", addr, name, rssi, sightings}`, a device flagged | P9 |
 | `presence` | ESP-NOW peer arrival/departure | P9 |
-| `presence.csi` | CSI calibration, motion and presence transitions | P9 |
+| `presence.csi` | CSI calibration, per-zone motion/presence and Faro link transitions | P9/P9.5 |
+| `presence.alarm` | Arming, armed, triggered, disarm and timeout transitions | P9.5 |
+| `presence.faro` | Faro transmitter start/stop | P9.5 |
 
 ## Static files
 
@@ -445,6 +457,9 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `sentinel` | `GET /api/sentinel`, `POST /api/sentinel/start|stop`, events `sentinel` | P9 |
 | `presence.peers` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
 | `presence.csi` | `GET /api/presence`, `POST /api/presence/csi/start|stop|calibrate`, events `presence.csi` | P9 |
+| `presence.faro` | `POST /api/presence/faro/start|stop`; independent Faro zone in `GET /api/presence`, events `presence.faro` | P9.5 |
+| `presence.alarm` | `POST /api/presence/alarm/arm|disarm`, events `presence.alarm` | P9.5 |
+| `presence.history` | bounded 120-bucket `csi.history` in `GET /api/presence` | P9.5 |
 | `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; not advertised on current watch hardware | P9 |
 | `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|start-twin|stop|clear`, `GET /api/evilportal/captures` | P9 |
 | `evil.portal.customTemplates` | `POST /api/evilportal/templates/reload`; validated pages under `/sd/data/evilportal/portals/` | P9.2 |
@@ -477,7 +492,7 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/hid` | `{available}`: pretend the USB keyboard is or is not enumerated by a host |
 | `POST /api/_dev/fido2` | `{available, reset?}`: enable the fake transport or clear fake credentials |
 | `POST /api/_dev/sniffer` | `{count?}` injects fake beacon frames while capturing; `{kind:"beacon"\|"probe"\|"deauth"\|"management"\|"data"\|"eapol", msg?:1-4, count?}` injects typed frames for the filter and EAPOL handshake checks |
-| `POST /api/_dev/presence-csi` | `{pattern:"stable"\|"motion", count?:0-500, advance_ms?:0-600000, rssi?}` drives the real simulator detector with synthetic CSI profiles; `advance_ms` tests the presence hold timer |
+| `POST /api/_dev/presence-csi` | `{zone?:"router"\|"faro", pattern:"stable"\|"motion", count?:0-500, advance_ms?:0-600000, rssi?, mac?}` drives the selected real simulator detector with synthetic CSI profiles; `advance_ms` tests holds, Faro TTL, alarm delays/timeouts and the bounded graph |
 | `POST /api/_dev/presence` | `{mac?, name?, rssi?}` injects a nearby ESP-NOW peer while peer discovery is active |
 | `POST /api/_dev/evilportal` | `{action:"creds"|"client"}` injects portal activity; `{action:"probe", ssid, mac?, hits?:1-100, rssi?, channel?}` injects directed probes; `{action:"clone", ok}` completes a clone; `{action:"verify", valid?, error?}` resolves the pending PSK check |
 | `POST /api/_dev/deauthflood` | `{action:"fail-target"}` fails only the running campaign target |

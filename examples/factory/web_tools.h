@@ -145,6 +145,7 @@ void web_hw_mic_close(void);
 
 /* Speaker. root "sd" or "flash", fs_path the path inside it ("/data/x.wav"), host the host path. */
 bool web_hw_audio_play(const char *root, const char *fs_path, const char *host);
+void web_hw_audio_beep(uint16_t frequency_hz, uint16_t duration_ms);
 void web_hw_audio_stop(void);
 bool web_hw_audio_playing(void);
 int web_hw_audio_volume(void);
@@ -494,6 +495,23 @@ bool web_hw_presence_stop(void);
 void web_hw_presence_status(web_hw_presence_t *out);
 
 typedef struct {
+    bool discovered;
+    bool linked;                /* a Faro frame was processed in the last 3 s */
+    bool calibrating;
+    bool present;
+    bool motion;
+    float score;
+    uint32_t samples;
+    uint32_t rate;
+    int rssi;
+    uint32_t last_seen_ms;
+    char mac[18];
+} web_hw_presence_zone_t;
+typedef struct {
+    uint32_t t;                 /* monotonic milliseconds, 500 ms buckets */
+    uint8_t router, faro;       /* peak motion score in the bucket, 0..100 */
+} web_hw_presence_csi_history_t;
+typedef struct {
     bool active;
     bool calibrating;
     bool present;               /* latched for 10 s after the latest motion */
@@ -508,11 +526,40 @@ typedef struct {
     long long started_epoch;
     char ssid[33];
     const char *error;
+    web_hw_presence_zone_t faro;
+    int history_count;          /* newest last, bounded to 120 points / 60 s */
+    web_hw_presence_csi_history_t history[120];
 } web_hw_csi_presence_t;
 bool web_hw_presence_csi_start(float threshold);
 bool web_hw_presence_csi_stop(void);
 bool web_hw_presence_csi_calibrate(void);
 void web_hw_presence_csi_status(web_hw_csi_presence_t *out);
+
+typedef struct {
+    bool active;
+    int channel;
+    uint32_t sent;              /* accepted by ESP-NOW, not confirmed over the air */
+    uint32_t rate;
+    uint32_t tx_errors;
+    long long started_epoch;
+    char mac[18];
+    const char *error;
+} web_hw_presence_faro_t;
+bool web_hw_presence_faro_start(int channel); /* 0 = connected AP channel, otherwise 1 */
+bool web_hw_presence_faro_stop(void);
+void web_hw_presence_faro_status(web_hw_presence_faro_t *out);
+
+typedef struct {
+    char state[12];             /* off, arming, armed, triggered */
+    int remaining_s;
+    int exit_s, duration_s;
+    uint32_t triggers;
+    char zone[8];
+    const char *error;
+} web_hw_presence_alarm_t;
+bool web_hw_presence_alarm_arm(int exit_s, int duration_s);
+bool web_hw_presence_alarm_disarm(void);
+void web_hw_presence_alarm_status(web_hw_presence_alarm_t *out);
 
 /* FIDO2 — security key */
 typedef struct {

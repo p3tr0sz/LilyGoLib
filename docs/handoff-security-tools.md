@@ -41,6 +41,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - Offensive starts require `authorized:true` after UI confirmation. Normal Wi-Fi disconnection and reconnect behaviour is stated to the operator.
 - Deauth scans are asynchronous. Beacon generated/custom modes and real channel hopping work.
 - P9.4 core adds finite campaigns: up to 8 scanned deauth targets and 64 generated/custom beacon SSIDs, each with independent accepted/failed counters, goal progress and elapsed time. Repeated injection failures skip only the current target. Deauth WPA3/WPA2-transition targets end as `pmf_limited`, explicitly not guaranteed disconnects. Both tools auto-stop at campaign completion and expose reconnect attempts, duration and outcome; hardware retries three times over 20 seconds.
+- P9.5 core adds an optional 100 Hz ESP-NOW Faro transmitter (`TWF1` + counter), source-MAC discovery and a second independent CSI detector. Router/Faro zones calibrate and hold presence separately; silent Faro links expire after 3 seconds. The alarm has exit delay, 1.5-second settle grace, per-zone motion trigger, vibration/beeps, manual disarm and automatic timeout; timing settings persist. A 120 × 500 ms motion graph is bounded to 60 seconds and intentionally runtime-only. Native and desktop controls expose all modes, including accepted/error transmitter counters.
 
 ### Watch UI (`examples/factory/ui_nucleo_tools.cpp`)
 
@@ -65,22 +66,22 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 
 ## Verification
 
-Final successful runs after P9.4 core:
+Final successful runs after P9.5 core:
 
-- `pio run -e twatch_ultra` — **pass** (RAM 54.4%, flash 91.3%)
+- `pio run -e twatch_ultra` — **pass** (RAM 55.0%, flash 91.8%)
 - `pio run -e emulator_watch_ultra` — **pass**
-- `node web_api_test.mjs --dev-pin` — **285/285**
-- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **289/289**
-- `node web_ui_test.mjs` — **161/161**
-- `node web_ui_test.mjs --url http://localhost:8080` — **162/162**
+- `node web_api_test.mjs --dev-pin` — **310/310**
+- `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **314/314**
+- `node web_ui_test.mjs` — **170/170**
+- `node web_ui_test.mjs --url http://localhost:8080` — **171/171**
 
-The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, validation, alerts, tracker persistence, FIDO unavailable behaviour, authorization, custom SD template validation/serving, safe clone success/failure, WPA2 PSK validation, per-capture valid/invalid verification with redaction, passive probe aggregation, selected-SSID KARMA startup, captive POST, deauth scans, independent campaign failure/completion, aggregate/per-target counter consistency, PMF-limited outcomes, reconnect metrics and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, custom template selection, asynchronous cloning, WPA2 twin startup, live PSK verification, probe-discovery consent/results/KARMA startup, multi-target campaign progress and reconnect health.
+The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, independent Faro calibration/motion/holds and TTL, alarm validation/exit/grace/zone trigger/manual disarm/timeout/events, bounded 60-second history, Faro transmitter validation/lifecycle/counters, alerts, tracker persistence, FIDO unavailable behaviour, authorization, custom SD template validation/serving, safe clone success/failure, WPA2 PSK validation, per-capture valid/invalid verification with redaction, passive probe aggregation, selected-SSID KARMA startup, captive POST, deauth scans, independent campaign failure/completion, aggregate/per-target counter consistency, PMF-limited outcomes, reconnect metrics and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, independent Faro motion, graph rendering, alarm arm/trigger/timeout/disarm, Faro transmitter start/stop, custom template selection, asynchronous cloning, WPA2 twin startup, live PSK verification, probe-discovery consent/results/KARMA startup, multi-target campaign progress and reconnect health.
 
 ## Parity with `/Development/firmware` and `/Development/NucleoOs`
 
 **Still not full parity.** Remaining material gaps:
 
-- **Presence:** core single-AP CSI sensing is implemented and simulator-tested. Real-radio accuracy, CSI frame rates, reconnects and environmental false positives remain unvalidated. The reference's optional Faro transmitter/second zone, alarm and history graph are not implemented.
+- **Presence:** dual-zone CSI, optional Faro transmitter, alarm and bounded history are implemented and simulator-tested. Real-radio accuracy, actual 100 Hz Faro delivery/CSI frame rates, two-device same-channel operation, ESP-NOW coexistence, reconnects, alarm audibility and environmental false positives remain unvalidated.
 - **FIDO2:** NucleoOS has a real authenticator with user presence/PIN and credential protection. Here it is only a simulator fake; hardware capability is deliberately hidden.
 - **Sniffer:** filtering, AP discovery and basic WPA four-way-handshake/EAPOL breakdown are implemented and simulator-tested. Real capture correctness, loss rates, channel hopping and encrypted/high-throughput traffic still need radio validation; no specialised reference firmware modes are claimed.
 - **Evil Portal:** custom SD templates, safe-page cloning, per-capture PSK verification, open/WPA2 twins and passive probe discovery/selected-SSID KARMA core are implemented and simulator-tested. Real authorized clone traffic, correct/incorrect PSK association, WPA2 client association, reconnect behavior and probe traffic still need validation. Dynamic per-probe KARMA responses remain unavailable. Cloning deliberately rejects pages that are not already safe self-contained templates; it is not a general active-site copier.
@@ -91,7 +92,7 @@ Do not restore “full parity” wording until those gaps are closed and tested 
 
 ## Important API notes
 
-- Capabilities are `presence.csi` for motion/presence and `presence.peers` for ESP-NOW discovery. The root peer-discovery fields and routes remain compatible; CSI status is nested under `csi` in `GET /api/presence`.
+- Capabilities are `presence.csi` for router/Faro motion/presence, `presence.faro` for the optional second-watch transmitter, `presence.alarm` for the alarm lifecycle, `presence.history` for the bounded runtime graph and `presence.peers` for ESP-NOW discovery. The root peer-discovery fields and routes remain compatible; CSI status, zones and graph are nested under `csi`, transmitter state under `faro`, and alarm state under `alarm` in `GET /api/presence`.
 - Hardware omits `fido2`. `evil.portal.clone`, `evil.portal.verify` and `evil.portal.coherentTwin` advertise implemented contracts, not completed radio validation. `evil.portal.karma` advertises passive discovery + selected-SSID AP startup only; dynamic per-probe response is not implied.
 - Portal start routes, Deauth/Beacon continuous and campaign starts require `authorized:true`.
 - Deauth status uses `targetBssid`, `targetStation`, `targetSsid` and `ratePps`. Campaign capabilities are `deauth.campaign`, `deauth.health`, `beacon.campaign` and `beacon.health`; these advertise implemented contracts, not observed-frame validation.

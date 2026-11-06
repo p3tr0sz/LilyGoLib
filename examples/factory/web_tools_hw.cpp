@@ -502,6 +502,16 @@ void web_hw_mic_close(void) {}
 
 static uint32_t s_play_started = 0;     /* the player starts asynchronously: count as playing for a moment */
 
+void web_hw_audio_beep(uint16_t frequency_hz, uint16_t duration_ms)
+{
+#ifdef ARDUINO
+    hw_audio_beep(frequency_hz, duration_ms);
+#else
+    (void)frequency_hz;
+    (void)duration_ms;
+#endif
+}
+
 #ifdef ARDUINO
 
 static char s_play_path[256];           /* the player keeps the pointer */
