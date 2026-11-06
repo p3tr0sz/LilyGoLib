@@ -103,13 +103,26 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .bar .stat svg { width: 18px; height: 18px; }
 .bar .stat.warn { color: var(--warn); }
 .bar .clock { font-variant-numeric: tabular-nums; color: var(--text); }
+.bar .statuses { display: flex; align-items: center; gap: 16px; padding: 4px 10px; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
+.bar .statuses:hover { background: var(--card); }
+.tray-btn { position: relative; flex: none; }
+.tray-badge {
+  position: absolute; top: 0; right: 0; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--warn); color: #000; font: 700 11px/16px var(--font); text-align: center;
+}
 
 .desk { position: relative; flex: 1; overflow: auto; background: var(--desk); }
-.launcher {
-  display: grid; gap: 14px; padding: 24px;
-  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-  max-width: 900px;
+.launcher { padding: 22px; max-width: 980px; margin: 0 auto; }
+.launcher.hidden { display: none; }
+.lp-head {
+  display: flex; align-items: center; gap: 10px; max-width: 520px; margin: 4px auto 22px;
+  padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--text-2);
 }
+.lp-head svg { width: 18px; height: 18px; flex: none; }
+.lp-search { flex: 1; min-height: 44px; border: 0; background: transparent; }
+.lp-search:focus { outline: none; }
+.lp-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); }
+.lp-empty { padding: 32px; text-align: center; }
 .tile {
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: 18px 8px 14px; border: 1px solid transparent; border-radius: var(--radius);
@@ -149,17 +162,67 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .win-title .t-icon svg { width: 18px; height: 18px; }
 .win-title .t-text { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .win-title .back { display: none; }
+.win-title .win-min, .win-title .win-max { display: inline-flex; }
 .win-body { flex: 1; overflow: auto; position: relative; }
+.win.min { display: none; }
+.win.max { inset: 8px !important; width: auto !important; height: auto !important; resize: none; }
+
+/* ---------------------------------------------------------------- dock (taskbar) */
+
+.dock {
+  flex: none; display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 12px;
+  background: var(--bg); border-top: 1px solid var(--line); overflow-x: auto; scrollbar-width: none;
+}
+.dock::-webkit-scrollbar { display: none; }
+.dock-apps, .dock-task {
+  display: inline-flex; align-items: center; gap: 8px; flex: none; min-height: 40px; padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card); color: var(--text-2); cursor: pointer;
+}
+.dock-apps { color: var(--text); }
+.dock-apps.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.dock-apps svg, .dock-task .t-ic svg { width: 18px; height: 18px; }
+.dock-tasks { display: flex; align-items: center; gap: 6px; }
+.dock-task { max-width: 190px; }
+.dock-task .t-ic { display: flex; color: var(--accent); }
+.dock-task .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-task.active { color: var(--text); border-color: #4a4a4a; background: var(--card-hi); }
+.dock-task.min { opacity: .55; }
+
+/* ---------------------------------------------------------------- popovers (system menu, tray) */
+
+.popover {
+  position: absolute; top: calc(var(--bar-h) + 6px); right: 12px; z-index: 950;
+  width: min(320px, calc(100% - 24px));
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 18px 50px rgba(0,0,0,.6); overflow: hidden;
+}
+.sysmenu { padding: 14px; }
+.sm-grid { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.sm-row { display: flex; justify-content: space-between; gap: 12px; }
+.sm-row span { color: var(--text-2); }
+.sm-row b { font-weight: 600; text-align: right; }
+.sysmenu .btn { width: 100%; }
+.tray-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.tray-list { max-height: 60vh; overflow: auto; padding: 0 14px; }
+.tray-list .note:last-child { border-bottom: 0; }
+.tray-list .empty { padding: 24px; }
 
 /* Phone: one full-screen app at a time. */
 @media (max-width: 720px) {
   .win { inset: 0 !important; width: auto !important; height: auto !important; border-radius: 0; border: 0; resize: none; }
+  .win.max { inset: 0 !important; }
   .win-title { cursor: default; padding-left: 4px; }
   .win-title .back { display: inline-flex; }
-  .win-title .close { display: none; }
+  .win-title .close, .win-title .win-min, .win-title .win-max { display: none; }
   .bar { gap: 10px; padding: 0 12px; }
   .bar .brand span, .bar .stat .label { display: none; }
-  .launcher { padding: 16px; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .bar .statuses { gap: 10px; padding: 4px 6px; }
+  .launcher { padding: 14px; }
+  .lp-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+  .dock { min-height: 50px; }
+  .dock-apps .lbl, .dock-task .lbl { display: none; }
+  .dock-apps, .dock-task { padding: 0 12px; }
+  .popover { right: 8px; left: 8px; width: auto; }
 }
 
 /* ---------------------------------------------------------------- dialogs and toasts */

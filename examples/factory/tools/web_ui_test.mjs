@@ -191,6 +191,40 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('event stream connected', await waitFor('document.querySelector(".link-dot.on")'));
   await shot('2-desktop');
 
+  // ---- OS shell (P8): launchpad search, dock, window chrome, system menu, tray
+  console.log('os shell');
+  check('launchpad shows the app grid', await waitFor('document.querySelectorAll(".launcher .tile").length >= 3 && !document.querySelector(".launcher").classList.contains("hidden")'));
+  await js(`$type(document.querySelector('.lp-search'), 'set');`);
+  check('search narrows the launchpad to Settings', await waitFor('(() => { const v = [...document.querySelectorAll(".launcher .tile")].filter((t) => !t.classList.contains("hidden")); return v.length === 1 && v[0].dataset.id === "settings"; })()'));
+  await js(`$type(document.querySelector('.lp-search'), 'zzzz');`);
+  check('a search with no matches shows the empty note', await waitFor('!document.querySelector(".lp-empty").classList.contains("hidden")'));
+  await js(`$type(document.querySelector('.lp-search'), '');`);
+  await js(`document.querySelector('.launcher .tile[data-id=settings]').click();`);
+  check('clicking a launchpad icon opens the app', await waitFor('document.querySelector(".win .settings")'));
+  check('the dock lists the running app', await waitFor('$t(".dock-task .lbl", "Settings")'));
+  check('the launchpad hides while a window is open', await waitFor('document.querySelector(".launcher").classList.contains("hidden")'));
+  await js(`document.querySelector('.win .win-min').click();`);
+  check('minimize hides the window', await waitFor('document.querySelector(".win").classList.contains("min")'));
+  check('the launchpad returns when nothing is open', await waitFor('!document.querySelector(".launcher").classList.contains("hidden")'));
+  check('the dock marks the app minimized', await waitFor('document.querySelector(".dock-task").classList.contains("min")'));
+  await js(`document.querySelector('.dock-task').click();`);
+  check('clicking the dock restores and focuses the window', await waitFor('!document.querySelector(".win").classList.contains("min") && document.querySelector(".dock-task").classList.contains("active")'));
+  await js(`document.querySelector('.win .win-max').click();`);
+  check('maximize fills the desktop', await waitFor('document.querySelector(".win").classList.contains("max")'));
+  await js(`document.querySelector('.win .win-max').click();`);
+  check('maximize toggles back', await waitFor('!document.querySelector(".win").classList.contains("max")'));
+  await js(`document.querySelector('.win .close').click();`);
+  await waitFor('!document.querySelector(".win")');
+  await js(`document.querySelector('.statuses').click();`);
+  check('the system menu opens with battery detail', await waitFor('document.querySelector(".sysmenu") && /\\d+%/.test(document.querySelector(".sysmenu").textContent)'));
+  await js(`document.querySelector('.statuses').click();`);
+  check('the system menu closes', await waitFor('!document.querySelector(".sysmenu")'));
+  await js(`document.querySelector('.tray-btn').click();`);
+  check('the notifications tray opens', await waitFor('document.querySelector(".tray-panel")'));
+  await js(`document.querySelector('.tray-btn').click();`);
+  check('the notifications tray closes', await waitFor('!document.querySelector(".tray-panel")'));
+  await shot('2b-os-shell');
+
   // ---- files
   console.log('files');
   await go('#app=files');
