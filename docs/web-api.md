@@ -319,17 +319,24 @@ The original peer fields are `{active, started, peers_ever, peers: [{mac, name, 
 
 ### Evil portal (`evil.portal`)
 
-Rogue AP + captive portal for credential harvesting. Security audit tool — only for testing networks you own or have explicit permission to test. Creates a rogue access point with a configurable SSID, serves a captive portal login form, and captures credentials entered by connecting devices.
+Rogue AP + captive portal for credential harvesting. Security audit tool — only for testing networks you own or have explicit permission to test. Every start and probe-discovery request requires `authorized:true`. Closing the native watch page or stopping the web server stops the AP/scan and requests Wi-Fi reconnect.
 
 | Route | Auth | Body → answer |
 |---|---|---|
-| `GET /api/evilportal` | paired | `{active, ssid, clients, attempts, started, error}` |
-| `POST /api/evilportal/start` | paired | `{ssid?, templateId?, gateway?, authorized:true}` → `{ok, ssid}`. Default SSID: "Free Wi-Fi". Explicit authorization is required |
-| `POST /api/evilportal/stop` | paired | → `{ok}`. Stops the AP and DNS server |
-| `GET /api/evilportal/captures` | paired | `{captures: [{mac, hostname, url, username, password, ts}]}` |
-| `POST /api/evilportal/clear` | paired | → `{ok}`. Clears captured credentials |
+| `GET /api/evilportal` | paired | `{active, mode, ssid, clients, attempts, started, templates, templateError, karmaScanning, settings, error}`. `mode`: `0` standalone, `1` open twin, `2` KARMA core. Templates have `{id, name, builtin, source?}`; custom IDs start at 100 |
+| `POST /api/evilportal/start` | paired | `{ssid?, templateId?, gateway?, authorized:true}` → `{ok, ssid}`. Starts a standalone open AP; default SSID `Free Wi-Fi` |
+| `POST /api/evilportal/start-twin` | paired | `{ssid, bssid, channel?, coherent:false, templateId?, gateway?, authorized:true}` → `{ok, ssid}`. WPA2-coherent twin mode still returns `503 unavailable` |
+| `POST /api/evilportal/templates/reload` | paired | `{...}` → `{ok, count, rejected}`. Rescans custom SD templates. Invalid files are omitted, never served |
+| `POST /api/evilportal/karma-scan` | paired | `{seconds?:1-120, authorized:true}` → `202 {ok, scanning, seconds}`. Passively hops channels 1–13 and collects directed probe requests; no frames are injected |
+| `GET /api/evilportal/karma` | paired | `{scanning, probes:[{ssid, hits, clients, rssi, channel, last_seen, lastClient}]}`. Hits aggregate by SSID; `clients` counts unique source MACs retained for that SSID |
+| `POST /api/evilportal/start-karma` | paired | `{ssid?, templateId?, gateway?, channel?, authorized:true}` → `{ok, mode:"karma", ssid}`. Opens an AP using the selected or most-seen discovered SSID. This is KARMA core, not dynamic per-probe response |
+| `POST /api/evilportal/stop` | paired | → `{ok}`. Stops the AP/DNS server or an active probe scan |
+| `GET /api/evilportal/captures` | paired | `{captures: [{mac, hostname, url, username, password, ts}]}`. Password output follows the redaction setting; hidden by default |
+| `POST /api/evilportal/clear` | paired | → `{ok}`. Clears captures after explicit desktop/native confirmation |
 
-Whilst the portal is active, all HTTP requests from connected clients are intercepted and served the captive portal. DNS resolves every domain to the watch's IP.
+Custom templates persist as `.html` files under **`/sd/data/evilportal/portals/`**. Filenames are limited to 6–64 safe ASCII characters (letters, digits, `.`, `_`, `-`), with no `..`; maximum content size is 64 KiB. A template must be self-contained HTML with a `POST /login` form and `username`/`password` fields. Scripts, iframes/objects, external resources and malformed HTML fail closed. Upload through the Files API or the Evil Portal app, then reload the catalog. Files remain available after reboot while the card is present.
+
+Whilst the portal is active, non-API HTTP requests from connected clients are intercepted before static routing and served the selected portal. API routes remain authenticated. DNS resolves every domain to the watch's IP.
 
 ### Deauth flood (`deauth.flood`)
 
@@ -428,7 +435,9 @@ Fake SSID beacon flooding. Security audit tool — only for use in controlled en
 | `presence.peers` | `GET /api/presence`, `POST /api/presence/start|stop`, events `presence` | P9 |
 | `presence.csi` | `GET /api/presence`, `POST /api/presence/csi/start|stop|calibrate`, events `presence.csi` | P9 |
 | `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; not advertised on current watch hardware | P9 |
-| `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|stop|clear`, `GET /api/evilportal/captures` | P9 |
+| `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|start-twin|stop|clear`, `GET /api/evilportal/captures` | P9 |
+| `evil.portal.customTemplates` | `POST /api/evilportal/templates/reload`; validated pages under `/sd/data/evilportal/portals/` | P9.2 |
+| `evil.portal.karma` | `POST /api/evilportal/karma-scan|start-karma`, `GET /api/evilportal/karma` | P9.2 |
 | `deauth.flood` | `GET /api/deauthflood`, `POST /api/deauthflood/start|stop` | P9 |
 | `beacon.spam` | `GET /api/beaconspam`, `POST /api/beaconspam/start|stop` | P9 |
 
@@ -452,6 +461,7 @@ Compiled only without `ARDUINO`; the watch never has them.
 | `POST /api/_dev/sniffer` | `{count?}` injects fake beacon frames while capturing; `{kind:"beacon"\|"probe"\|"deauth"\|"management"\|"data"\|"eapol", msg?:1-4, count?}` injects typed frames for the filter and EAPOL handshake checks |
 | `POST /api/_dev/presence-csi` | `{pattern:"stable"\|"motion", count?:0-500, advance_ms?:0-600000, rssi?}` drives the real simulator detector with synthetic CSI profiles; `advance_ms` tests the presence hold timer |
 | `POST /api/_dev/presence` | `{mac?, name?, rssi?}` injects a nearby ESP-NOW peer while peer discovery is active |
+| `POST /api/_dev/evilportal` | `{action:"creds"|"client"}` injects portal activity; `{action:"probe", ssid, mac?, hits?:1-100, rssi?, channel?}` injects directed probes while KARMA discovery is active |
 
 The simulator and the mock also fake the hardware: a GNSS fix walking slowly around one spot, a slowly turning IMU, Wi-Fi and BLE devices, a LoRa station that answers each packet with `ack: <text>`, a recording of a tone, playback that lasts as long as the file, a fake watch in range for the link, a USB host for the keyboard, and an OTA write that progresses but never reboots.
 

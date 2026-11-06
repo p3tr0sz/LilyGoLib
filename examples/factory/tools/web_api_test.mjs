@@ -672,6 +672,27 @@ if (DEV) {
   await call('POST', '/api/_dev/fido2', { available: false });
 
   console.log('evil portal');
+  const portalDir = '/sd/data/evilportal/portals';
+  const portalLab = portalDir + '/p9-api-lab.html', portalBad = portalDir + '/p9-api-bad.html';
+  await call('DELETE', `/api/files?path=${q(portalLab)}`);
+  await call('DELETE', `/api/files?path=${q(portalBad)}`);
+  const customHtml = '<!doctype html><html><head><title>Lab custom</title></head><body><h1>SD-TEMPLATE-MARKER</h1><form method="post" action="/login"><input name="username"><input type="password" name="password"><button>Connect</button></form></body></html>';
+  r = await call('PUT', `/api/files/content?path=${q(portalLab)}`, customHtml, { raw: true });
+  check('custom portal HTML uploads to fixed SD folder', r.status === 200, r.json);
+  await call('PUT', `/api/files/content?path=${q(portalBad)}`, '<html><script>alert(1)</script></html>', { raw: true });
+  r = await call('PUT', `/api/files/content?path=${q(portalDir + '/../escape.html')}`, customHtml, { raw: true });
+  check('portal template path traversal fails closed', r.status === 400, r.json);
+  r = await call('POST', '/api/evilportal/templates/reload', {});
+  check('portal reload accepts valid template and reports malformed file', r.status === 200 && r.json?.count >= 1 && r.json?.rejected >= 1, r.json);
+  r = await call('GET', '/api/evilportal');
+  const customTemplate = r.json?.templates?.find(t => t.builtin === false && t.name === 'p9-api-lab');
+  check('SD template catalog survives reload with stable custom ID', customTemplate?.id >= 100 && r.json?.templateError, r.json?.templates);
+  r = await call('POST', '/api/evilportal/start', { ssid: 'Custom Lab', templateId: customTemplate?.id, authorized: true });
+  check('custom SD template starts', r.status === 200, r.json);
+  r = await call('GET', '/template-check');
+  check('captive route serves selected SD HTML', r.status === 200 && /SD-TEMPLATE-MARKER/.test(r.text), r.text.slice(0, 100));
+  await call('POST', '/api/evilportal/stop', {});
+
   r = await call('POST', '/api/evilportal/start', { ssid: 'Lab AP', templateId: 0 });
   check('portal requires explicit authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
   r = await call('POST', '/api/evilportal/start', { ssid: 'Lab AP', gateway: 'not-an-ip', authorized: true });
@@ -692,14 +713,40 @@ if (DEV) {
   check('masked capture preserves only first and last character', r.json?.captures?.some(c => c.username === 'alice' && c.password === 's****t'), r.json);
   r = await call('PUT', '/api/evilportal/settings', { verify: true });
   check('unimplemented PSK verification is an explicit error', r.status === 503 && r.json?.error === 'unavailable', r.json);
-  r = await call('POST', '/api/evilportal/karma-scan', { seconds: 5 });
-  check('unimplemented KARMA never fakes success', r.status === 503 && r.json?.error === 'unavailable', r.json);
   r = await call('POST', '/api/evilportal/clone', { ssid: 'Open AP' });
   check('unimplemented page cloning never fakes success', r.status === 503 && r.json?.error === 'unavailable', r.json);
   await call('POST', '/api/evilportal/clear', {});
   r = await call('GET', '/api/evilportal/captures');
   check('portal captures clear', r.json?.captures?.length === 0, r.json);
   await call('POST', '/api/evilportal/stop', {});
+
+  r = await call('POST', '/api/evilportal/karma-scan', { seconds: 1 });
+  check('probe discovery requires explicit authorization', r.status === 400 && r.json?.error === 'authorization_required', r.json);
+  r = await call('POST', '/api/evilportal/karma-scan', { seconds: 0, authorized: true });
+  check('probe discovery validates duration', r.status === 400, r.json);
+  r = await call('POST', '/api/evilportal/karma-scan', { seconds: 10, authorized: true });
+  check('passive probe discovery starts asynchronously', r.status === 202 && r.json?.scanning === true, r.json);
+  if (DEV) {
+    await call('POST', '/api/_dev/evilportal', { action: 'probe', ssid: 'Lab Hidden', mac: '02:00:00:00:00:21', hits: 2, rssi: -48, channel: 6 });
+    await call('POST', '/api/_dev/evilportal', { action: 'probe', ssid: 'Lab Hidden', mac: '02:00:00:00:00:22', hits: 1, rssi: -51, channel: 6 });
+    r = await call('GET', '/api/evilportal/karma');
+    check('probe results aggregate hits and unique clients', r.json?.probes?.[0]?.ssid === 'Lab Hidden' && r.json.probes[0].hits === 3 && r.json.probes[0].clients === 2 && r.json.probes[0].channel === 6, r.json);
+    r = await call('POST', '/api/evilportal/start-karma', { ssid: 'Lab Hidden', templateId: 0, authorized: true });
+    check('KARMA core starts selected discovered SSID', r.status === 200 && r.json?.mode === 'karma' && r.json?.ssid === 'Lab Hidden', r.json);
+    r = await call('GET', '/api/evilportal');
+    check('KARMA active state exposes mode and SSID', r.json?.active === true && r.json?.mode === 2 && r.json?.ssid === 'Lab Hidden' && r.json?.karmaScanning === false, r.json);
+    await call('POST', '/api/evilportal/stop', {});
+    r = await call('POST', '/api/_dev/evilportal', { action: 'probe', ssid: 'Outside Scan' });
+    check('probe injection refused after discovery stops', r.status === 409, r.json);
+  } else {
+    r = await call('GET', '/api/evilportal/karma');
+    check('watch probe discovery exposes scanning state', r.status === 200 && r.json?.scanning === true, r.json);
+    r = await call('POST', '/api/evilportal/stop', {});
+    check('watch probe discovery stops cleanly', r.status === 200, r.json);
+  }
+  await call('DELETE', `/api/files?path=${q(portalLab)}`);
+  await call('DELETE', `/api/files?path=${q(portalBad)}`);
+  await call('POST', '/api/evilportal/templates/reload', {});
 
   console.log('deauth flood');
   r = await call('POST', '/api/deauthflood/scan', {});

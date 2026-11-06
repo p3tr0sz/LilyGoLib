@@ -253,9 +253,11 @@ bool web_hw_ota_rollback(void);                             /* boot the other sl
 #define EP_MODE_TWIN        1   /* Clone real AP + deauth its clients onto us */
 #define EP_MODE_KARMA       2   /* Probe-response: become the SSID devices are looking for */
 
-/* Template: built-in portal page or .html file from /sd/evilportal/portals/ */
+/* Template: built-in page or validated .html from /sd/data/evilportal/portals/.
+ * Dropdown positions and API IDs differ: custom API IDs start at 100. */
 int  web_hw_evilportal_template_count(void);
 const char *web_hw_evilportal_template_name(int idx);
+int  web_hw_evilportal_template_id(int idx);
 bool web_hw_evilportal_template_is_builtin(int idx);
 
 /* SSID presets: credible names like "TIM-7AC3F1" (MAC-derived suffix) */
@@ -291,7 +293,8 @@ bool web_hw_evilportal_start(int template_idx, const char *ssid, const char *gat
 /* Start evil-twin: clone real AP on its channel, deauth real bssid, serve template */
 bool web_hw_evilportal_start_twin(int template_idx, const char *ssid, const uint8_t bssid[6],
                                    int channel, int authmode, bool coherent);
-/* Start KARMA: probe-response lure — beacon the SSID devices are probing for */
+/* Start KARMA core: open an AP using the most frequently discovered SSID.
+ * Dynamic per-probe responses remain a separate hardware-validation gap. */
 bool web_hw_evilportal_start_karma(int template_idx);
 bool web_hw_evilportal_stop(void);
 void web_hw_evilportal_status(web_hw_evilportal_t *out);

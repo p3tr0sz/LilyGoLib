@@ -642,13 +642,33 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   if (has('evil.portal')) {
     console.log('P9 evil portal');
     await call('POST', '/api/evilportal/stop', {});
+    await call('PUT', '/api/files/content?path=%2Fsd%2Fdata%2Fevilportal%2Fportals%2Fuitest.html', '<html><body><form method="post" action="/login"><input name="username"><input type="password" name="password"></form></body></html>', true);
+    await call('POST', '/api/evilportal/templates/reload', {});
     await go('#app=evilportal');
+    check('custom SD template appears in portal picker', await waitFor('[...document.querySelectorAll(".evilportal select[aria-label=\'Portal template\'] option")].some(o => /uitest · SD/.test(o.textContent))'));
     await js(`$t('.evilportal .btn', 'Start portal').click();`);
     check('portal start requires consent dialog', await waitFor('document.querySelector(".scrim") && /credential-capture portal/.test(document.querySelector(".scrim").textContent)'));
     await js(`$t('.scrim .btn', 'I am authorized — start').click();`);
     check('portal reports active state', await waitFor('/ACTIVE/.test(document.querySelector(".evilportal")?.textContent || "")'));
     await js(`$t('.evilportal .btn', 'Stop').click();`);
     check('portal stops', await waitFor('/Portal stopped/.test(document.querySelector(".evilportal")?.textContent || "")'));
+    if (has('evil.portal.karma')) {
+      await js(`$t('.evilportal .tab', 'KARMA').click(); $t('.evilportal .btn', 'Scan probes').click();`);
+      check('probe scan asks authorization', await waitFor('document.querySelector(".scrim") && /Scan nearby probe requests/.test(document.querySelector(".scrim").textContent)'));
+      await js(`$t('.scrim .btn', 'I am authorized — scan').click();`);
+      await waitFor('/Discovering nearby probe requests/.test(document.querySelector(".evilportal")?.textContent || "")');
+      await call('POST', '/api/_dev/evilportal', { action: 'probe', ssid: 'UI Hidden', mac: '02:00:00:00:00:31', hits: 2 });
+      check('discovered probe and client metadata render', await waitFor('[...document.querySelectorAll(".evilportal .list button.note")].some(x => /UI Hidden/.test(x.textContent) && /2 hits · 1 clients/.test(x.textContent))'));
+      await js(`$t('.evilportal .btn', 'Stop').click();`);
+      await waitFor('/Portal stopped/.test(document.querySelector(".evilportal")?.textContent || "")');
+      await js(`[...document.querySelectorAll('.evilportal .list button.note')].find(x => /UI Hidden/.test(x.textContent)).click(); $t('.evilportal .btn', 'Start portal').click();`);
+      await waitFor('document.querySelector(".scrim")');
+      await js(`$t('.scrim .btn', 'I am authorized — start').click();`);
+      check('KARMA UI starts selected discovered SSID', await waitFor('/KARMA core · UI Hidden/.test(document.querySelector(".evilportal")?.textContent || "")'));
+      await js(`$t('.evilportal .btn', 'Stop').click();`);
+    }
+    await call('DELETE', '/api/files?path=%2Fsd%2Fdata%2Fevilportal%2Fportals%2Fuitest.html&recursive=1');
+    await call('POST', '/api/evilportal/templates/reload', {});
   }
   if (has('deauth.flood')) {
     console.log('P9 deauth flood');

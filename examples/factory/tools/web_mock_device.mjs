@@ -58,7 +58,7 @@ for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'fido2',
-  'evil.portal', 'evil.portal.templates', 'evil.portal.twin', 'evil.portal.settings', 'deauth.flood', 'beacon.spam'];
+  'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings', 'deauth.flood', 'beacon.spam'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -129,7 +129,9 @@ function resetPresenceCsi(active = false, threshold = 0.35) {
 }
 resetPresenceCsi();
 let fido2 = { available: false, state: 'idle', credentials: 0, creds: [] };
-let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [], settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
+let evilportal = { active: false, ssid: '', clients: 0, attempts: 0, captures: [], customTemplates: [], templateError: null,
+  karmaScanning: false, karmaTimer: null, karmaProbes: [], html: '', settings: { gateway: '192.168.4.1', pwdMode: 2, verify: false, verifiedOk: 0, verifiedBad: 0, autoStopBase: 0, autoStopExtended: 0, debug: false, logPath: '' } };
+const BUILTIN_PORTAL_TEMPLATES = ['Default (Wi-Fi Login)', 'Router Update', 'Google Sign-In', 'OAuth / Social Login'];
 let deauthflood = { active: false, targetBssid: '', targetStation: 'ff:ff:ff:ff:ff:ff', targetSsid: '', channel: 1, sent: 0, txErrors: 0, ratePps: 10, started: 0, error: null };
 let deauthScan = { scanning: false, targets: [], error: null, timer: null };
 let beaconspam = { active: false, channel: 0, beacons: 0, ssids: 0, prefix: 'FreeNet', mode: 0, txErrors: 0, customSsids: [], error: null };
@@ -282,8 +284,50 @@ function evilportalState() {
     channel: evilportal.channel || 1, coherent: false, deauthFrames: evilportal.deauthFrames || 0,
     clients: evilportal.clients, attempts: evilportal.attempts, confirmed: evilportal.confirmed || 0,
     started: evilportal.started || 0, dhcpsOk: true, probesTotal: evilportal.probesTotal || 0, error: evilportal.error || null,
-    templates: [0, 1, 2, 3].map(id => ({ id, name: ['Default (Wi-Fi Login)', 'Router Update', 'Google Sign-In', 'OAuth / Social Login'][id], builtin: true })),
+    templates: [...BUILTIN_PORTAL_TEMPLATES.map((name, id) => ({ id, name, builtin: true })),
+      ...evilportal.customTemplates.map(({ path, html, ...publicFields }) => publicFields)],
+    templateError: evilportal.templateError, karmaScanning: evilportal.karmaScanning,
     ssidPresets: ['Free Wi-Fi', 'WiFi Guest', 'Hotel Wi-Fi'], settings: evilportal.settings };
+}
+
+function validPortalHtml(html) {
+  const compact = html.toLowerCase().replace(/[\s]/g, '');
+  return compact.includes('<html') && compact.includes('</html>') && compact.includes('<form') &&
+    ["method='post'", 'method="post"', 'method=post'].some(x => compact.includes(x)) &&
+    ["action='/login'", 'action="/login"', 'action=/login'].some(x => compact.includes(x)) &&
+    ["name='username'", 'name="username"', 'name=username'].some(x => compact.includes(x)) &&
+    ["name='password'", 'name="password"', 'name=password'].some(x => compact.includes(x)) &&
+    !['<script', '<iframe', '<object', '<embed', 'src=', 'href=', 'http:', 'https:'].some(x => compact.includes(x));
+}
+async function reloadPortalTemplates() {
+  const dir = join(ROOTS.sd, 'data/evilportal/portals');
+  const found = [];
+  let rejected = 0;
+  let names = [];
+  try { names = await fsp.readdir(dir); } catch {}
+  names.sort();
+  for (const name of names) {
+    if (!/^[A-Za-z0-9_.-]{6,64}$/.test(name) || name.startsWith('.') || name.includes('..') || !name.endsWith('.html') || found.length >= 16) { rejected++; continue; }
+    try {
+      const path = join(dir, name), st = await fsp.stat(path);
+      if (!st.isFile() || st.size < 1 || st.size > 65536) throw new Error('invalid');
+      const html = await fsp.readFile(path, 'utf8');
+      if (!validPortalHtml(html)) throw new Error('invalid');
+      found.push({ id: 100 + found.length, name: name.slice(0, -5), builtin: false, source: 'sd', path, html });
+    } catch { rejected++; }
+  }
+  evilportal.customTemplates = found;
+  evilportal.templateError = rejected ? `${rejected} invalid or unsupported SD template(s) omitted` : null;
+  return { count: found.length, rejected };
+}
+function selectPortalTemplate(id) {
+  if (Number.isInteger(id) && id >= 0 && id < BUILTIN_PORTAL_TEMPLATES.length) return { id, html: '' };
+  return evilportal.customTemplates.find(t => t.id === id) || null;
+}
+function finishKarmaScan() {
+  clearTimeout(evilportal.karmaTimer);
+  evilportal.karmaTimer = null;
+  evilportal.karmaScanning = false;
 }
 function deauthfloodState() { return { ...deauthflood }; }
 function beaconspamState() { return { ...beaconspam }; }
@@ -1132,6 +1176,21 @@ async function toolsRoute(req, res, url, path) {
       if (!evilportal.active) return fail(res, 409, 'conflict', 'start the portal first');
       evilportal.captures.push({ mac: j.mac || '00:00:00:00:00:01', hostname: '', url: j.url || '/login', username: j.username || 'user', password: j.password || 'pass', ts: nowEpoch() });
       evilportal.attempts++;
+    } else if (j?.action === 'probe') {
+      if (!evilportal.karmaScanning) return fail(res, 409, 'conflict', 'start probe discovery first');
+      const ssid = j?.ssid;
+      if (typeof ssid !== 'string' || !ssid || Buffer.byteLength(ssid) > 32) return fail(res, 400, 'bad_request', 'ssid: 1-32 bytes');
+      const hits = Math.max(1, Math.min(100, j?.hits || 1));
+      let probe = evilportal.karmaProbes.find(p => p.ssid === ssid);
+      if (!probe) {
+        if (evilportal.karmaProbes.length >= 32) return fail(res, 409, 'conflict', 'probe list full');
+        probe = { ssid, hits: 0, clients: [], rssi: j?.rssi || -60, channel: j?.channel || 1 };
+        evilportal.karmaProbes.push(probe);
+      }
+      const mac = j?.mac || '02:00:00:00:00:01';
+      probe.hits += hits;
+      if (!probe.clients.includes(mac) && probe.clients.length < 8) probe.clients.push(mac);
+      probe.lastClient = mac; probe.last_seen = nowEpoch();
     }
     return ok(res);
   }
@@ -1273,23 +1332,52 @@ async function toolsRoute(req, res, url, path) {
     const j = await readJSON(req);
     if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
     if (j?.gateway && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(j.gateway)) return fail(res, 400, 'bad_request', 'Gateway must be a valid IPv4 address');
-    if (evilportal.active) return fail(res, 409, 'conflict', 'already running');
+    if (evilportal.active || evilportal.karmaScanning) return fail(res, 409, 'conflict', 'already running');
     if (j?.coherent) return fail(res, 503, 'unavailable', 'WPA2-coherent twin mode is not implemented');
+    const template = selectPortalTemplate(j?.templateId ?? 0);
+    if (!template) return fail(res, 400, 'bad_request', 'Unknown, changed or invalid SD portal template');
     evilportal.active = true; evilportal.mode = path.endsWith('twin') ? 1 : 0;
+    evilportal.html = template.html;
     evilportal.ssid = j?.ssid || 'Free Wi-Fi'; evilportal.twinBssid = j?.bssid || '';
     evilportal.channel = j?.channel || 1; evilportal.started = nowEpoch(); evilportal.attempts = 0;
     if (j?.gateway) evilportal.settings.gateway = j.gateway;
     return ok(res, { ssid: evilportal.ssid, mode: evilportal.mode ? 'twin' : 'standalone' });
   }
-  if (path === '/api/evilportal/start-karma' && m === 'POST') return fail(res, 503, 'unavailable', 'KARMA probe capture is not implemented');
-  if (path === '/api/evilportal/karma-scan' && m === 'POST') return fail(res, 503, 'unavailable', 'KARMA probe scanning is not implemented');
+  if (path === '/api/evilportal/templates/reload' && m === 'POST') return ok(res, await reloadPortalTemplates());
+  if (path === '/api/evilportal/karma-scan' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
+    const seconds = j?.seconds ?? 30;
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 120) return fail(res, 400, 'bad_request', 'seconds must be 1-120');
+    if (evilportal.active || evilportal.karmaScanning) return fail(res, 409, 'conflict', 'Stop the portal or current probe discovery first');
+    evilportal.karmaProbes = []; evilportal.karmaScanning = true;
+    evilportal.karmaTimer = setTimeout(finishKarmaScan, seconds * 1000);
+    return json(res, 202, { ok: true, scanning: true, seconds });
+  }
+  if (path === '/api/evilportal/karma' && m === 'GET') return json(res, 200, { scanning: evilportal.karmaScanning,
+    probes: evilportal.karmaProbes.map(p => ({ ...p, clients: p.clients.length })) });
+  if (path === '/api/evilportal/start-karma' && m === 'POST') {
+    const j = await readJSON(req);
+    if (j?.authorized !== true) return fail(res, 400, 'authorization_required', 'Confirm that you own or may test this network');
+    const choices = evilportal.karmaProbes.filter(p => !j?.ssid || p.ssid === j.ssid).sort((a, b) => b.hits - a.hits);
+    if (!choices.length) return fail(res, 409, 'conflict', j?.ssid ? 'Requested SSID was not discovered' : 'Run probe discovery first');
+    const template = selectPortalTemplate(j?.templateId ?? 0);
+    if (!template) return fail(res, 400, 'bad_request', 'Unknown, changed or invalid SD portal template');
+    if (j?.gateway && !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(j.gateway)) return fail(res, 400, 'bad_request', 'Gateway must be a valid IPv4 address');
+    if (j?.channel && (!Number.isInteger(j.channel) || j.channel < 1 || j.channel > 13)) return fail(res, 400, 'bad_request', 'channel must be 1-13');
+    finishKarmaScan();
+    evilportal.active = true; evilportal.mode = 2; evilportal.ssid = choices[0].ssid; evilportal.html = template.html;
+    evilportal.channel = j?.channel || 1; evilportal.started = nowEpoch(); evilportal.attempts = 0;
+    if (j?.gateway) evilportal.settings.gateway = j.gateway;
+    return ok(res, { ssid: evilportal.ssid, mode: 'karma' });
+  }
   if (path === '/api/evilportal/clone' && m === 'POST') return fail(res, 503, 'unavailable', 'Live page cloning is not implemented');
   if (path === '/api/evilportal/settings' && m === 'PUT') {
     const j = await readJSON(req);
     if (j?.verify) return fail(res, 503, 'unavailable', 'PSK verification is not implemented');
     evilportal.settings = { ...evilportal.settings, ...j }; return ok(res);
   }
-  if (path === '/api/evilportal/stop' && m === 'POST') { evilportal.active = false; evilportal.clients = 0; return ok(res); }
+  if (path === '/api/evilportal/stop' && m === 'POST') { finishKarmaScan(); evilportal.active = false; evilportal.clients = 0; return ok(res); }
   if (path === '/api/evilportal/captures' && m === 'GET') return json(res, 200, { captures: evilportal.captures.map(c => {
     const mode = evilportal.settings.pwdMode, p = c.password;
     return { ...c, password: mode === 2 ? '******' : mode === 1 && p.length > 2 ? p[0] + '*'.repeat(p.length - 2) + p.at(-1) : p };
@@ -1373,7 +1461,7 @@ const server = createServer(async (req, res) => {
         }
         if (req.method === 'GET' || req.method === 'HEAD') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-          return res.end('<!doctype html><title>Network Login</title><h1>Network Login</h1><form method="post" action="/login"><label>Username<input name="username"></label><label>Password<input type="password" name="password"></label><button>Connect</button></form>');
+          return res.end(evilportal.html || '<!doctype html><html><title>Network Login</title><h1>Network Login</h1><form method="post" action="/login"><label>Username<input name="username"></label><label>Password<input type="password" name="password"></label><button>Connect</button></form></html>');
         }
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') return fail(res, 405, 'bad_request', 'GET');

