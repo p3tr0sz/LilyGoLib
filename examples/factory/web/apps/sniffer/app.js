@@ -1,5 +1,6 @@
 // Passive Wi-Fi capture to a radiotap PCAP on the watch SD card.
-import { h, icon, toast, errorText } from '../../js/ui.js';
+import { h, icon, errorText } from '../../js/ui.js';
+import { toolApp } from '../../js/toolapp.js';
 
 const FILTER_LABELS = {
   all: 'All frames',
@@ -11,7 +12,6 @@ const FILTER_LABELS = {
 };
 
 export function mount(el, { api, events }) {
-  let alive = true, requestSeq = 0, busy = false;
   let state = {
     active: false, channel: null, filter: 'all', packets: 0, drops: 0, bytes: 0,
     seen: 0, management: 0, control: 0, data: 0, beacons: 0, probes: 0,
@@ -25,7 +25,7 @@ export function mount(el, { api, events }) {
     ...Object.entries(FILTER_LABELS).map(([value, label]) => h('option', { value }, label)));
   const maxBytes = h('input', { class: 'field', type: 'number', min: '0', step: '1', value: '0', 'aria-label': 'Maximum capture bytes; zero means unlimited' });
   const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: start }, icon('play'), 'Start capture');
-  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop and save');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: () => app.action(() => api.snifferStop(), 'Capture saved'), disabled: true }, icon('stop'), 'Stop and save');
   const info = h('div', { class: 'tool' });
   const apList = h('div', { class: 'list' });
 
@@ -46,8 +46,8 @@ export function mount(el, { api, events }) {
     h('div', { class: 'srow' }, h('span', {}, label), h('span', { class: warning ? 'tag alert' : '' }, String(value || 0)));
 
   function render() {
-    startBtn.disabled = busy || state.active;
-    stopBtn.disabled = busy || !state.active;
+    startBtn.disabled = app.busy || state.active;
+    stopBtn.disabled = app.busy || !state.active;
     channel.disabled = state.active;
     filter.disabled = state.active;
     const rows = [
@@ -76,38 +76,21 @@ export function mount(el, { api, events }) {
       : [h('p', { class: 'muted' }, 'No access points seen yet.')]));
   }
 
-  async function load(showError = true) {
-    const seq = ++requestSeq;
-    try {
-      const next = await api.sniffer();
-      if (!alive || seq !== requestSeq) return;
-      state = { ...state, ...next };
-      render();
-    } catch (e) {
-      if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Sniffer')));
-    }
+  const app = toolApp({
+    name: 'Sniffer',
+    read: () => api.sniffer(),
+    apply: (next) => { state = { ...state, ...next }; },
+    render,
+    onError: (e) => info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Sniffer'))),
+    interval: 2000,
+    pollWhen: () => state.active,
+  });
+
+  function start() {
+    return app.action(() => api.snifferStart({ channel: Number(channel.value), filter: filter.value, max_bytes: Number(maxBytes.value) || 0 }), 'Capture started');
   }
 
-  async function start() {
-    busy = true; render();
-    try {
-      await api.snifferStart({ channel: Number(channel.value), filter: filter.value, max_bytes: Number(maxBytes.value) || 0 });
-      toast('Capture started');
-      await load();
-    } catch (e) { toast(errorText(e, 'Sniffer'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-
-  async function stop() {
-    busy = true; render();
-    try { await api.snifferStop(); toast('Capture saved'); await load(); }
-    catch (e) { toast(errorText(e, 'Sniffer'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-
-  const off = events.on('sniffer', () => load(false));
-  const timer = setInterval(() => { if (state.active) load(false); }, 2000);
-  render();
-  load();
-  return { unmount() { alive = false; off(); clearInterval(timer); } };
+  const off = events.on('sniffer', () => app.load(false));
+  app.start();
+  return { unmount: () => app.unmount(off) };
 }

@@ -1,6 +1,6 @@
 // GNSS: the watch's position and satellites, the path walked this session, and tracks from the card.
 import { h, icon, errorText, fmtTime, fmtBytes } from '../../js/ui.js';
-import { fit, palette } from '../../js/chart.js';
+import { fit, palette, cssVar } from '../../js/chart.js';
 
 const EVERY_MS = 1000;
 const TRACKS = '/sd/tracks';
@@ -59,7 +59,7 @@ export function mount(el, ctx) {
     g.strokeStyle = '#333'; g.lineWidth = d;
     for (const el of [0, 30, 60]) { g.beginPath(); g.arc(w / 2, w / 2, r * (90 - el) / 90, 0, Math.PI * 2); g.stroke(); }
     g.beginPath(); g.moveTo(w / 2, w / 2 - r); g.lineTo(w / 2, w / 2 + r); g.moveTo(w / 2 - r, w / 2); g.lineTo(w / 2 + r, w / 2); g.stroke();
-    g.fillStyle = '#a0a0a0'; g.font = `${11 * d}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillStyle = cssVar('--text-2') || '#a0a0a0'; g.font = `${11 * d}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText('N', w / 2, 6 * d); g.fillText('S', w / 2, w - 6 * d); g.fillText('E', w - 6 * d, w / 2); g.fillText('W', 6 * d, w / 2);
     const sats = last?.satellites || [];
     for (const s of sats) {
@@ -88,7 +88,7 @@ export function mount(el, ctx) {
       g.globalAlpha = s.used ? 1 : 0.45;
       g.fillRect(i * bw + 2 * d, hh - 14 * d - bh, Math.max(1, bw - 4 * d), bh);
       g.globalAlpha = 1;
-      g.fillStyle = '#a0a0a0'; g.font = `${9 * d}px system-ui`; g.textAlign = 'center';
+      g.fillStyle = cssVar('--text-2') || '#a0a0a0'; g.font = `${9 * d}px system-ui`; g.textAlign = 'center';
       g.fillText(String(s.prn), i * bw + bw / 2, hh - 3 * d);
     });
   }
@@ -98,7 +98,7 @@ export function mount(el, ctx) {
     g.clearRect(0, 0, w, hh);
     const all = [...track, ...gpx];
     if (!all.length) {
-      g.fillStyle = '#a0a0a0'; g.font = `${13 * d}px system-ui`; g.textAlign = 'center';
+      g.fillStyle = cssVar('--text-2') || '#a0a0a0'; g.font = `${13 * d}px system-ui`; g.textAlign = 'center';
       g.fillText('Waiting for a position', w / 2, hh / 2);
       return;
     }

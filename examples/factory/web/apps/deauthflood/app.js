@@ -1,10 +1,11 @@
 // Authorized 802.11 deauthentication testing.
 import { h, icon, toast, errorText, confirmDialog } from '../../js/ui.js';
+import { toolApp } from '../../js/toolapp.js';
 
 const MAC = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
 
 export function mount(el, { api, caps }) {
-  let alive = true, requestSeq = 0, busy = false, scanning = false;
+  let scanning = false;
   const selectedTargets = new Set();
   const canCampaign = caps.includes('deauth.campaign');
   let state = { active: false, targets: [], sent: 0, txErrors: 0, campaign: {}, progress: [], reconnect: {}, error: null };
@@ -15,7 +16,7 @@ export function mount(el, { api, caps }) {
   const campaignFrames = h('input', { class: 'field w3', type: 'number', min: '1', max: '100000', value: '100', 'aria-label': 'Frames per campaign target' });
   const campaignBtn = canCampaign ? h('button', { class: 'btn danger', type: 'button', onclick: startCampaign }, icon('play'), 'Start selected campaign') : null;
   const startBtn = h('button', { class: 'btn danger', type: 'button', onclick: start }, icon('play'), 'Start test');
-  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: () => app.action(() => api.deauthfloodStop(), 'Test stopped; Wi-Fi reconnect requested'), disabled: true }, icon('stop'), 'Stop');
   const scanBtn = h('button', { class: 'btn', type: 'button', onclick: scan }, icon('search'), 'Scan APs');
   const scanStatus = h('p', { class: 'muted' }, 'Scan to choose a network instead of typing its BSSID.');
   const info = h('div', {});
@@ -40,10 +41,10 @@ export function mount(el, { api, caps }) {
     h('div', { class: 'panel' }, h('h3', {}, 'Test status'), info)));
 
   function render() {
-    startBtn.disabled = busy || state.active;
-    stopBtn.disabled = busy || !state.active;
-    scanBtn.disabled = busy || scanning || state.active;
-    if (campaignBtn) campaignBtn.disabled = busy || state.active || !selectedTargets.size;
+    startBtn.disabled = app.busy || state.active;
+    stopBtn.disabled = app.busy || !state.active;
+    scanBtn.disabled = app.busy || scanning || state.active;
+    if (campaignBtn) campaignBtn.disabled = app.busy || state.active || !selectedTargets.size;
     info.replaceChildren(
       h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: `tag ${state.active ? 'alert' : ''}` }, state.active ? 'INJECTING' : 'STOPPED')),
       h('div', { class: 'srow' }, h('span', {}, 'Target'), h('span', { class: 'mono' }, state.targetSsid || state.targetBssid || '—')),
@@ -71,42 +72,27 @@ export function mount(el, { api, caps }) {
       : [h('p', { class: 'muted' }, 'No campaign progress yet.')]));
   }
 
-  async function load(showError = true) {
-    const seq = ++requestSeq;
-    try {
-      const next = await api.deauthflood();
-      if (!alive || seq !== requestSeq) return;
-      state = { ...state, ...next };
-      render();
-    } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Deauth Flood'))); }
-  }
+  const app = toolApp({
+    name: 'Deauth Flood',
+    read: () => api.deauthflood(),
+    apply: (next) => { state = { ...state, ...next }; },
+    render,
+    onError: (e) => info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Deauth Flood'))),
+    interval: 1000,
+    pollWhen: () => state.active,
+  });
+
   async function start() {
     const bssid = bssidInput.value.trim(), station = stationInput.value.trim();
     if (!MAC.test(bssid) || !MAC.test(station)) { toast('Enter valid BSSID and station MAC addresses.', 'error'); return; }
     if (!await confirmDialog('Start deauthentication test?', `Inject frames at ${bssid} on channel ${channelInput.value}? Only continue if you own or may disrupt this network. The watch’s normal Wi-Fi will disconnect.`, 'Start test', true)) return;
-    busy = true; render();
-    try {
-      await api.deauthfloodStart({ bssid, station, channel: Number(channelInput.value), rate: Number(rateInput.value), authorized: true });
-      toast('Deauthentication test started'); await load();
-    } catch (e) { toast(errorText(e, 'Deauth Flood'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
+    return app.action(() => api.deauthfloodStart({ bssid, station, channel: Number(channelInput.value), rate: Number(rateInput.value), authorized: true }), 'Deauthentication test started');
   }
   async function startCampaign() {
     const targets = [...selectedTargets];
     if (!targets.length || targets.length > 8) { toast('Select 1-8 authorized scan targets first.', 'error'); return; }
     if (!await confirmDialog('Start multi-target deauthentication campaign?', `Inject at ${targets.length} selected APs sequentially, up to ${campaignFrames.value} accepted frames each? Confirm every target is yours or explicitly authorized. PMF-protected clients may ignore the frames.`, 'Start campaign', true)) return;
-    busy = true; render();
-    try {
-      await api.deauthfloodCampaignStart({ targets, station: stationInput.value.trim(), frames: Number(campaignFrames.value), rate: Number(rateInput.value), authorized: true });
-      toast('Campaign started'); await load();
-    } catch (e) { toast(errorText(e, 'Deauth campaign'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-  async function stop() {
-    busy = true; render();
-    try { await api.deauthfloodStop(); toast('Test stopped; Wi-Fi reconnect requested'); await load(); }
-    catch (e) { toast(errorText(e, 'Deauth Flood'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
+    return app.action(() => api.deauthfloodCampaignStart({ targets, station: stationInput.value.trim(), frames: Number(campaignFrames.value), rate: Number(rateInput.value), authorized: true }), 'Campaign started');
   }
   async function scan() {
     selectedTargets.clear();
@@ -118,7 +104,7 @@ export function mount(el, { api, caps }) {
       do {
         await new Promise(r => setTimeout(r, 400));
         result = await api.deauthfloodTargets();
-        if (!alive) return;
+        if (!app.alive) return;
       } while (result.scanning && Date.now() < deadline);
       if (result.scanning) throw new Error('Scan timed out; try again');
       if (result.error) throw new Error(result.error);
@@ -126,10 +112,9 @@ export function mount(el, { api, caps }) {
       scanStatus.textContent = `${state.targets.length} networks found. Select a row to fill the target.`;
       render();
     } catch (e) { scanStatus.textContent = errorText(e, 'AP scan'); toast(errorText(e, 'AP scan'), 'error'); }
-    finally { scanning = false; if (alive) render(); }
+    finally { scanning = false; if (app.alive) render(); }
   }
 
-  const timer = setInterval(() => { if (state.active) load(false); }, 1000);
-  render(); load();
-  return { unmount() { alive = false; clearInterval(timer); } };
+  app.start();
+  return { unmount: () => app.unmount() };
 }

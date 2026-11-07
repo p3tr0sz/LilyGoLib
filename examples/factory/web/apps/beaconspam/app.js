@@ -1,8 +1,8 @@
 // Authorized fake-beacon injection with generated or custom SSIDs.
 import { h, icon, toast, errorText, confirmDialog } from '../../js/ui.js';
+import { toolApp } from '../../js/toolapp.js';
 
 export function mount(el, { api, caps }) {
-  let alive = true, requestSeq = 0, busy = false;
   const canCampaign = caps.includes('beacon.campaign');
   let state = { active: false, channel: 0, beacons: 0, ssids: 0, txErrors: 0, customSsids: [], campaign: {}, progress: [], reconnect: {}, error: null };
   const mode = h('select', { class: 'field', 'aria-label': 'Beacon source' },
@@ -13,7 +13,7 @@ export function mount(el, { api, caps }) {
   const customArea = h('textarea', { class: 'field', rows: 4, placeholder: 'One SSID per line, 1-32 bytes each', 'aria-label': 'Custom SSIDs, one per line' });
   const saveCustomBtn = h('button', { class: 'btn', type: 'button', onclick: setCustom }, 'Save custom list');
   const startBtn = h('button', { class: 'btn danger', type: 'button', onclick: start }, icon('play'), 'Start test');
-  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: () => app.action(() => api.beaconspamStop(), 'Beacon test stopped; Wi-Fi reconnect requested'), disabled: true }, icon('stop'), 'Stop');
   const framesPerSsid = h('input', { class: 'field w3', type: 'number', min: '1', max: '10000', value: '10', 'aria-label': 'Beacon frames per SSID' });
   const campaignBtn = canCampaign ? h('button', { class: 'btn danger', type: 'button', onclick: startCampaign }, icon('play'), 'Run finite campaign') : null;
   const campaignList = h('div', { class: 'list' });
@@ -40,10 +40,10 @@ export function mount(el, { api, caps }) {
     h('div', { class: 'panel' }, h('h3', {}, 'Test status'), info)));
 
   function render() {
-    startBtn.disabled = busy || state.active;
-    stopBtn.disabled = busy || !state.active;
-    saveCustomBtn.disabled = busy || state.active;
-    if (campaignBtn) campaignBtn.disabled = busy || state.active;
+    startBtn.disabled = app.busy || state.active;
+    stopBtn.disabled = app.busy || !state.active;
+    saveCustomBtn.disabled = app.busy || state.active;
+    if (campaignBtn) campaignBtn.disabled = app.busy || state.active;
     prefixInput.disabled = mode.value !== 'generated';
     countInput.disabled = mode.value !== 'generated';
     info.replaceChildren(
@@ -63,40 +63,35 @@ export function mount(el, { api, caps }) {
     if (document.activeElement !== customArea) customArea.value = (state.customSsids || []).join('\n');
   }
 
-  async function load(showError = true) {
-    const seq = ++requestSeq;
-    try {
-      const next = await api.beaconspam();
-      if (!alive || seq !== requestSeq) return;
-      state = { ...state, ...next };
-      render();
-    } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Beacon Spam'))); }
-  }
+  const app = toolApp({
+    name: 'Beacon Spam',
+    read: () => api.beaconspam(),
+    apply: (next) => { state = { ...state, ...next }; },
+    render,
+    onError: (e) => info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Beacon Spam'))),
+    interval: 1500,
+    pollWhen: () => state.active,
+  });
+
   function customLines() {
     return customArea.value.split('\n').map(x => x.trim()).filter(Boolean);
   }
-  async function setCustom() {
+  function setCustom() {
     const lines = customLines();
     if (!lines.length || lines.length > 64 || lines.some(x => new TextEncoder().encode(x).length > 32)) {
       toast('Use 1-64 non-empty SSIDs, each at most 32 UTF-8 bytes.', 'error'); return;
     }
-    busy = true; render();
-    try { await api.beaconspamSetSsids(lines); toast(`Saved ${lines.length} custom SSIDs`); await load(); }
-    catch (e) { toast(errorText(e, 'Custom SSIDs'), 'error'); }
-    finally { busy = false; if (alive) render(); }
+    return app.action(() => api.beaconspamSetSsids(lines), `Saved ${lines.length} custom SSIDs`);
   }
   async function start() {
     if (mode.value === 'custom' && !customLines().length && !(state.customSsids || []).length) {
       toast('Add and save at least one custom SSID first.', 'error'); return;
     }
     if (!await confirmDialog('Start beacon injection?', `Broadcast ${mode.value === 'custom' ? 'custom' : 'generated'} fake networks on ${Number(channelInput.value) ? 'channel ' + channelInput.value : 'all channels'}? Only continue in an environment you control.`, 'Start test', true)) return;
-    busy = true; render();
-    try {
+    return app.action(async () => {
       if (mode.value === 'custom' && customArea.value !== (state.customSsids || []).join('\n')) await api.beaconspamSetSsids(customLines());
       await api.beaconspamStart({ mode: mode.value, prefix: prefixInput.value.trim(), count: Number(countInput.value), channel: Number(channelInput.value), authorized: true });
-      toast('Beacon test started'); await load();
-    } catch (e) { toast(errorText(e, 'Beacon Spam'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
+    }, 'Beacon test started');
   }
   async function startCampaign() {
     if (mode.value === 'custom' && !customLines().length && !(state.customSsids || []).length) {
@@ -104,23 +99,13 @@ export function mount(el, { api, caps }) {
     }
     if (mode.value === 'generated' && Number(countInput.value) > 64) { toast('Campaigns support at most 64 generated SSIDs.', 'error'); return; }
     if (!await confirmDialog('Run finite beacon campaign?', `Inject at every selected SSID until each reaches ${framesPerSsid.value} accepted frames, then stop and reconnect? Only continue in an environment you control.`, 'Start campaign', true)) return;
-    busy = true; render();
-    try {
+    return app.action(async () => {
       if (mode.value === 'custom' && customArea.value !== (state.customSsids || []).join('\n')) await api.beaconspamSetSsids(customLines());
       await api.beaconspamCampaignStart({ mode: mode.value, prefix: prefixInput.value.trim(), count: Number(countInput.value), channel: Number(channelInput.value), framesPerSsid: Number(framesPerSsid.value), authorized: true });
-      toast('Beacon campaign started'); await load();
-    } catch (e) { toast(errorText(e, 'Beacon campaign'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-  async function stop() {
-    busy = true; render();
-    try { await api.beaconspamStop(); toast('Beacon test stopped; Wi-Fi reconnect requested'); await load(); }
-    catch (e) { toast(errorText(e, 'Beacon Spam'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
+    }, 'Beacon campaign started');
   }
 
   mode.addEventListener('change', render);
-  const timer = setInterval(() => { if (state.active) load(false); }, 1500);
-  render(); load();
-  return { unmount() { alive = false; clearInterval(timer); } };
+  app.start();
+  return { unmount: () => app.unmount() };
 }

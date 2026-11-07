@@ -24,7 +24,9 @@ export function drawLines(canvas, lines, { cap = 0, min, max, unit = '' } = {}) 
   if (min === undefined) lo -= span * 0.08;
   if (max === undefined) hi += span * 0.08;
   const pad = 8 * d;
-  g.strokeStyle = '#262626';
+  const gridColor = cssVar('--line') || '#262626';
+  const labelColor = cssVar('--text-2') || '#a0a0a0';
+  g.strokeStyle = gridColor;
   g.lineWidth = d;
   for (let i = 0; i <= 3; i++) {
     const y = Math.round(pad + (h - 2 * pad) * i / 3) + 0.5;
@@ -46,7 +48,7 @@ export function drawLines(canvas, lines, { cap = 0, min, max, unit = '' } = {}) 
     g.stroke();
   }
   g.font = `${11 * d}px system-ui, sans-serif`;
-  g.fillStyle = '#a0a0a0';
+  g.fillStyle = labelColor;
   g.fillText(fmtv(hi) + unit, 4 * d, pad + 10 * d);
   g.fillText(fmtv(lo) + unit, 4 * d, h - pad - 2 * d);
 }

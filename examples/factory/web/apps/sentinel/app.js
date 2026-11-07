@@ -1,11 +1,11 @@
 // Sentinel: passive detection of persistent BLE location trackers.
-import { h, icon, toast, errorText } from '../../js/ui.js';
+import { h, icon, errorText } from '../../js/ui.js';
+import { toolApp } from '../../js/toolapp.js';
 
 export function mount(el, { api, events, notify }) {
-  let alive = true, requestSeq = 0, busy = false;
   let state = { active: false, scanning: false, device_count: 0, devices: [], error: null };
-  const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: start }, icon('play'), 'Start passive scan');
-  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: stop, disabled: true }, icon('stop'), 'Stop');
+  const startBtn = h('button', { class: 'btn primary', type: 'button', onclick: () => app.action(() => api.sentinelStart(), 'Passive BLE scan started') }, icon('play'), 'Start passive scan');
+  const stopBtn = h('button', { class: 'btn', type: 'button', onclick: () => app.action(() => api.sentinelStop(), 'BLE scan stopped'), disabled: true }, icon('stop'), 'Stop');
   const info = h('div', {});
   const tagList = h('div', { class: 'list' });
 
@@ -18,8 +18,8 @@ export function mount(el, { api, events, notify }) {
     h('div', { class: 'panel' }, h('h3', {}, 'Detected trackers'), tagList)));
 
   function render() {
-    startBtn.disabled = busy || state.active;
-    stopBtn.disabled = busy || !state.active;
+    startBtn.disabled = app.busy || state.active;
+    stopBtn.disabled = app.busy || !state.active;
     const persistent = (state.devices || []).filter(d => d.stalking).length;
     info.replaceChildren(
       h('div', { class: 'srow' }, h('span', {}, 'State'), h('span', { class: `tag ${state.active ? 'ok' : ''}` }, state.active ? (state.scanning ? 'LISTENING' : 'ACTIVE') : 'STOPPED')),
@@ -34,34 +34,21 @@ export function mount(el, { api, events, notify }) {
       : [h('p', { class: 'muted' }, state.active ? 'No known trackers detected yet.' : 'Start a scan to check nearby trackers.')]));
   }
 
-  async function load(showError = true) {
-    const seq = ++requestSeq;
-    try {
-      const next = await api.sentinel();
-      if (!alive || seq !== requestSeq) return;
-      state = { ...state, ...next };
-      render();
-    } catch (e) { if (alive && seq === requestSeq && showError) info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Sentinel'))); }
-  }
-  async function start() {
-    busy = true; render();
-    try { await api.sentinelStart(); toast('Passive BLE scan started'); await load(); }
-    catch (e) { toast(errorText(e, 'Sentinel'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-  async function stop() {
-    busy = true; render();
-    try { await api.sentinelStop(); toast('BLE scan stopped'); await load(); }
-    catch (e) { toast(errorText(e, 'Sentinel'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
+  const app = toolApp({
+    name: 'Sentinel',
+    read: () => api.sentinel(),
+    apply: (next) => { state = { ...state, ...next }; },
+    render,
+    onError: (e) => info.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Sentinel'))),
+    interval: 3000,
+    pollWhen: () => state.active,
+  });
 
   const off = events.on('sentinel', d => {
-    if (!alive) return;
+    if (!app.alive) return;
     notify('Persistent tracker', d.detail || `${d.kind || 'Tracker'} remains nearby`, 'warn');
-    load(false);
+    app.load(false);
   });
-  const timer = setInterval(() => { if (state.active) load(false); }, 3000);
-  render(); load();
-  return { unmount() { alive = false; off(); clearInterval(timer); } };
+  app.start();
+  return { unmount: () => app.unmount(off) };
 }

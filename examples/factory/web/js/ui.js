@@ -59,7 +59,6 @@ const P = {
   send: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4z"/>',
   save: '<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
   usb: '<circle cx="12" cy="20" r="1.6"/><path d="M12 20V5"/><path d="M12 5l-2.5 3.5h5z" fill="currentColor"/><path d="M12 14l-4-2.2V9M12 11l4-2.2V6.5"/><circle cx="8" cy="11.8" r="1.3"/><rect x="14.5" y="4.8" width="3.2" height="3.2" rx="0.5"/>',
-  link: '<path d="M9 15l6-6"/><path d="M11 6l1-1a4 4 0 0 1 6 6l-1 1"/><path d="M13 18l-1 1a4 4 0 0 1-6-6l1-1"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
   wrench: '<path d="M14.5 6a3.5 3.5 0 0 0-4.6 4.3L4 16.2 7.8 20l5.9-5.9A3.5 3.5 0 0 0 18 9.5l-2.3 2.3-1.8-1.8L16.2 7.7A3.5 3.5 0 0 0 14.5 6z"/>',
   cpu: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/>',

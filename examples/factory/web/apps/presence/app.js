@@ -1,9 +1,9 @@
 // Dual-link Wi-Fi CSI presence, optional Faro transmitter, alarm and nearby peers.
-import { h, icon, toast, errorText, fmtTime } from '../../js/ui.js';
+import { h, icon, errorText, fmtTime } from '../../js/ui.js';
 import { drawLines, palette } from '../../js/chart.js';
+import { toolApp } from '../../js/toolapp.js';
 
 export function mount(el, { api, events }) {
-  let alive = true, requestSeq = 0, busy = false;
   let state = {
     active: false, peers_ever: 0, peers: [], history: [], error: null,
     csi: { active: false, state: 'stopped', calibrating: false, present: false, motion: false,
@@ -87,10 +87,10 @@ export function mount(el, { api, events }) {
   function render() {
     const csi = state.csi || {}, router = zone('router'), faroZone = zone('faro');
     const csiState = !csi.active ? 'STOPPED' : csi.calibrating ? 'CALIBRATING' : csi.motion ? 'MOTION' : csi.present ? 'PRESENT' : 'CLEAR';
-    csiStartBtn.disabled = busy || csi.active || state.faro.active;
-    csiStopBtn.disabled = busy || !csi.active;
-    calibrateBtn.disabled = busy || !csi.active;
-    threshold.disabled = busy || csi.active;
+    csiStartBtn.disabled = app.busy || csi.active || state.faro.active;
+    csiStopBtn.disabled = app.busy || !csi.active;
+    calibrateBtn.disabled = app.busy || !csi.active;
+    threshold.disabled = app.busy || csi.active;
     if (document.activeElement !== threshold && typeof csi.threshold === 'number') {
       threshold.value = csi.threshold;
       thresholdValue.textContent = csi.threshold.toFixed(2);
@@ -110,8 +110,8 @@ export function mount(el, { api, events }) {
       row('Signal', `${faroZone.rssi || 0} dBm · link expires after 3 s without frames`),
       !faroZone.linked ? h('p', { class: 'muted' }, 'Optional. Start Faro transmitter mode on a second watch on this channel.') : null);
 
-    faroStartBtn.disabled = busy || state.faro.active || csi.active;
-    faroStopBtn.disabled = busy || !state.faro.active;
+    faroStartBtn.disabled = app.busy || state.faro.active || csi.active;
+    faroStopBtn.disabled = app.busy || !state.faro.active;
     faroInfo.replaceChildren(
       row('Mode', state.faro.active ? 'TRANSMITTING' : 'STOPPED', `tag ${state.faro.active ? 'ok' : ''}`),
       row('Channel', state.faro.channel || '—'),
@@ -121,11 +121,11 @@ export function mount(el, { api, events }) {
       state.faro.error ? h('p', { class: 'inline-error', role: 'alert' }, state.faro.error) : null);
 
     const alarm = state.alarm || {}, alarmActive = alarm.state !== 'off';
-    alarmArmBtn.disabled = busy || alarmActive || !csi.active || csi.calibrating;
-    alarmDisarmBtn.disabled = busy || !alarmActive;
-    alarmExit.disabled = busy || alarmActive;
-    alarmDuration.disabled = busy || alarmActive;
-    if (!alarmActive && !busy) {
+    alarmArmBtn.disabled = app.busy || alarmActive || !csi.active || csi.calibrating;
+    alarmDisarmBtn.disabled = app.busy || !alarmActive;
+    alarmExit.disabled = app.busy || alarmActive;
+    alarmDuration.disabled = app.busy || alarmActive;
+    if (!alarmActive && !app.busy) {
       if (document.activeElement !== alarmExit && [...alarmExit.options].some(o => Number(o.value) === alarm.exit_s)) alarmExit.value = alarm.exit_s;
       if (document.activeElement !== alarmDuration && [...alarmDuration.options].some(o => Number(o.value) === alarm.duration_s)) alarmDuration.value = alarm.duration_s;
     }
@@ -137,8 +137,8 @@ export function mount(el, { api, events }) {
       alarm.state === 'triggered' ? h('p', { class: 'inline-error', role: 'alert' }, `Motion alarm: ${alarm.zone || 'unknown'} zone`) : null,
       alarm.error ? h('p', { class: 'inline-error', role: 'alert' }, alarm.error) : null);
 
-    peerStartBtn.disabled = busy || state.active;
-    peerStopBtn.disabled = busy || !state.active;
+    peerStartBtn.disabled = app.busy || state.active;
+    peerStopBtn.disabled = app.busy || !state.active;
     const peers = [...(state.peers || [])].sort((a, b) => Number(b.present) - Number(a.present) || b.rssi - a.rssi);
     const present = peers.filter(p => p.present).length;
     peerInfo.replaceChildren(
@@ -156,43 +156,37 @@ export function mount(el, { api, events }) {
     drawHistory();
   }
 
-  async function load(showError = true) {
-    const seq = ++requestSeq;
-    try {
-      const next = await api.presence();
-      if (!alive || seq !== requestSeq) return;
+  const app = toolApp({
+    name: 'Presence',
+    read: () => api.presence(),
+    apply: (next) => {
       state = { ...state, ...next,
         csi: { ...state.csi, ...(next.csi || {}) },
         faro: { ...state.faro, ...(next.faro || {}) },
         alarm: { ...state.alarm, ...(next.alarm || {}) } };
-      render();
-    } catch (e) { if (alive && seq === requestSeq && showError) csiInfo.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Presence'))); }
-  }
-  async function action(fn, message) {
-    busy = true; render();
-    try { await fn(); toast(message); await load(); }
-    catch (e) { toast(errorText(e, 'Presence'), 'error'); await load(false); }
-    finally { busy = false; if (alive) render(); }
-  }
-  const startCsi = () => action(() => api.presenceCsiStart(Number(threshold.value)), 'CSI sensing started; keep both radio paths still for calibration');
-  const stopCsi = () => action(() => api.presenceCsiStop(), 'CSI sensing stopped; alarm disarmed');
-  const calibrate = () => action(() => api.presenceCsiCalibrate('all'), 'Recalibrating both zones; keep the room still');
-  const startFaro = () => action(() => api.presenceFaroStart(), 'Faro transmitter started at 100 Hz');
-  const stopFaro = () => action(() => api.presenceFaroStop(), 'Faro transmitter stopped');
+    },
+    render,
+    onError: (e) => csiInfo.replaceChildren(h('p', { class: 'inline-error', role: 'alert' }, errorText(e, 'Presence'))),
+    interval: 2000,
+    pollWhen: () => state.active || state.csi?.active || state.faro?.active || state.alarm?.state !== 'off',
+  });
+
+  const startCsi = () => app.action(() => api.presenceCsiStart(Number(threshold.value)), 'CSI sensing started; keep both radio paths still for calibration');
+  const stopCsi = () => app.action(() => api.presenceCsiStop(), 'CSI sensing stopped; alarm disarmed');
+  const calibrate = () => app.action(() => api.presenceCsiCalibrate('all'), 'Recalibrating both zones; keep the room still');
+  const startFaro = () => app.action(() => api.presenceFaroStart(), 'Faro transmitter started at 100 Hz');
+  const stopFaro = () => app.action(() => api.presenceFaroStop(), 'Faro transmitter stopped');
   const armAlarm = () => {
     const exit = Number(alarmExit.value), duration = Number(alarmDuration.value);
-    return action(() => api.presenceAlarmArm(exit, duration), 'Alarm arming; leave the detection zones');
+    return app.action(() => api.presenceAlarmArm(exit, duration), 'Alarm arming; leave the detection zones');
   };
-  const disarmAlarm = () => action(() => api.presenceAlarmDisarm(), 'Alarm disarmed');
-  const startPeers = () => action(() => api.presenceStart(), 'Peer discovery started');
-  const stopPeers = () => action(() => api.presenceStop(), 'Peer discovery stopped');
+  const disarmAlarm = () => app.action(() => api.presenceAlarmDisarm(), 'Alarm disarmed');
+  const startPeers = () => app.action(() => api.presenceStart(), 'Peer discovery started');
+  const stopPeers = () => app.action(() => api.presenceStop(), 'Peer discovery stopped');
 
-  const offs = ['presence.csi', 'presence.alarm', 'presence.faro'].map(name => events.on(name, () => { if (alive) load(false); }));
-  const timer = setInterval(() => {
-    if (state.active || state.csi?.active || state.faro?.active || state.alarm?.state !== 'off') load(false);
-  }, 2000);
+  const offs = ['presence.csi', 'presence.alarm', 'presence.faro'].map(name => events.on(name, () => { if (app.alive) app.load(false); }));
   const ro = new ResizeObserver(drawHistory);
   ro.observe(historyCanvas);
-  render(); load();
-  return { unmount() { alive = false; offs.forEach(off => off()); clearInterval(timer); ro.disconnect(); } };
+  app.start();
+  return { unmount: () => app.unmount(...offs, () => ro.disconnect()) };
 }

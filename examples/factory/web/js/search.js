@@ -29,8 +29,7 @@ const join = (dir, name) => `${dir === '/' ? '' : dir}/${name}`;
 export async function searchFiles(api, query, caps, isCurrent = () => true) {
   const q = query.trim().toLowerCase();
   if (!q || !caps.includes('files')) return { results: [], truncated: false };
-  const roots = [];
-  if (caps.includes('files')) roots.push('/sd/data', '/sd');
+  const roots = ['/sd/data', '/sd'];   // caps.includes('files') already guaranteed above
   if (caps.includes('files.flash')) roots.push('/flash');
   const queue = roots.map((path) => ({ path, depth: 0 }));
   const seen = new Set();
