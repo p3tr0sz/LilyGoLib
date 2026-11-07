@@ -222,31 +222,52 @@ static void picker_open_cb(lv_event_t *e)
     }
 }
 
+static void picker_value_update(lv_obj_t *value, lv_obj_t *dd)
+{
+    char buf[PICKER_OPTION_MAX_LEN];
+    lv_dropdown_get_selected_str(dd, buf, sizeof(buf));
+    lv_label_set_text(value, buf);
+}
+
+static void picker_value_cb(lv_event_t *e)
+{
+    picker_value_update((lv_obj_t *)lv_event_get_user_data(e), lv_event_get_target_obj(e));
+}
+
 void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd)
 {
-    /* The dropdown only shows the choice ("Auto >"); the row takes the tap. Apps
-     * that build their own dropdown may have styled it, so every style is reset. */
+    /* The row takes the tap and opens a radio list; the dropdown is kept only to
+     * hold the options and the selection, and stays hidden as the row's last child
+     * (picker_open_cb and row_value() both read it there). A lv_dropdown draws its
+     * own selected text without clipping, so a long choice ("Default (Wi-Fi Login)")
+     * spilled left over the title; a plain label with a fixed single-line height
+     * clips that choice with an ellipsis instead. */
     lv_group_remove_obj(dd);
-    lv_dropdown_set_symbol(dd, LV_SYMBOL_RIGHT);
-    lv_obj_set_size(dd, 1, LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(dd, 1);
+    lv_obj_add_flag(dd, LV_OBJ_FLAG_HIDDEN);     /* hidden children are skipped by flex */
     lv_obj_remove_flag(dd, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(dd, LV_OBJ_FLAG_FLEX_IN_NEW_TRACK);
-    lv_obj_set_style_margin_left(dd, 0, 0);
-    lv_obj_set_style_margin_right(dd, 0, 0);
-    lv_obj_set_style_bg_opa(dd, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(dd, 0, 0);
-    lv_obj_set_style_shadow_width(dd, 0, 0);
-    lv_obj_set_style_outline_width(dd, 0, 0);
-    lv_obj_set_style_pad_all(dd, 0, 0);
-    lv_obj_set_style_pad_column(dd, 12, 0);
-    lv_obj_set_style_text_align(dd, LV_TEXT_ALIGN_RIGHT, 0);
+
     const lv_font_t *font = title_label ? lv_obj_get_style_text_font(title_label, LV_PART_MAIN)
                             : lv_obj_get_style_text_font(row, LV_PART_MAIN);
-    lv_obj_set_style_text_font(dd, font, 0);
-    lv_obj_set_style_text_color(dd, UI_COLOR_TEXT_SECONDARY, 0);
-    lv_obj_set_style_text_color(dd, UI_COLOR_TEXT_SECONDARY, LV_PART_INDICATOR);
-    lv_obj_set_style_text_opa(dd, LV_OPA_40, LV_STATE_DISABLED);
+    lv_obj_t *value = lv_label_create(row);
+    lv_obj_move_to_index(value, (int32_t)lv_obj_get_index(dd)); /* value before dd; dd stays last */
+    lv_obj_set_flex_grow(value, 1);
+    lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(value, font, 0);
+    lv_obj_set_style_text_color(value, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_height(value, lv_font_get_line_height(font));
+    lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
+    picker_value_update(value, dd);
+    lv_obj_add_event_cb(dd, picker_value_cb, LV_EVENT_VALUE_CHANGED, value);
+
+    /* A fixed chevron after the value: the ">" affordance stays put while a long
+     * value ellipsizes before it, instead of being eaten by the ellipsis. */
+    lv_obj_t *chevron = lv_label_create(row);
+    lv_obj_move_to_index(chevron, (int32_t)lv_obj_get_index(dd)); /* chevron before dd; dd stays last */
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_font(chevron, font, 0);
+    lv_obj_set_style_text_color(chevron, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_margin_left(chevron, 8, 0);
 
     lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
@@ -802,12 +823,14 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
 
 static void text_value_update(lv_obj_t *value, lv_obj_t *ta)
 {
+    /* The ">" affordance is a separate fixed label (see ui_text_adopt), so the
+     * value text here carries no chevron and gets the whole value column. */
     const char *text = lv_textarea_get_text(ta);
     char buf[TEXT_VALUE_MAX * 3 + 8];
     size_t len = text ? strlen(text) : 0;
     if (len == 0) {
         const char *placeholder = lv_textarea_get_placeholder_text(ta);
-        lv_label_set_text_fmt(value, "%s  " LV_SYMBOL_RIGHT, placeholder && placeholder[0] ? placeholder : "Add");
+        lv_label_set_text(value, placeholder && placeholder[0] ? placeholder : "Add");
         return;
     }
     if (lv_textarea_get_password_mode(ta)) {
@@ -817,7 +840,7 @@ static void text_value_update(lv_obj_t *value, lv_obj_t *ta)
     } else {
         lv_snprintf(buf, TEXT_VALUE_MAX + 1, "%s", text);
     }
-    lv_label_set_text_fmt(value, "%s  " LV_SYMBOL_RIGHT, buf);
+    lv_label_set_text(value, buf);
 }
 
 static void text_value_cb(lv_event_t *e)
@@ -849,10 +872,23 @@ void ui_text_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *ta)
     lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_font(value, font, 0);
     lv_obj_set_style_text_color(value, UI_COLOR_TEXT_SECONDARY, 0);
+    /* One line, clipped with an ellipsis. LONG_DOT only truncates when the label
+     * has a bounded height; without this it wraps the value onto a second line. */
+    lv_obj_set_height(value, lv_font_get_line_height(font));
     lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
     text_value_update(value, ta);
     /* lv_textarea_set_text() sends VALUE_CHANGED, so text the app sets shows too. */
     lv_obj_add_event_cb(ta, text_value_cb, LV_EVENT_VALUE_CHANGED, value);
+
+    /* Fixed chevron after the value, matching the picker rows: the ">" stays put
+     * while a long value (or a longer title) ellipsizes before it, instead of the
+     * ellipsis eating the ">". The hidden field stays the row's last child. */
+    lv_obj_t *chevron = lv_label_create(row);
+    lv_obj_move_to_index(chevron, (int32_t)lv_obj_get_index(ta)); /* chevron before ta; ta stays last */
+    lv_label_set_text(chevron, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_font(chevron, font, 0);
+    lv_obj_set_style_text_color(chevron, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_margin_left(chevron, 8, 0);
 
     lv_obj_set_style_bg_color(row, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);

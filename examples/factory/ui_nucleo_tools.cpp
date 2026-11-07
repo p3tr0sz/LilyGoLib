@@ -13,6 +13,38 @@
 
 #include <stdarg.h>
 
+/* ── Row icons ───────────────────────────────────────────────────────────────
+ * Every status/config row's glyph is named here by role, so the icon set stays
+ * consistent and is trivial to retune: change one line below and every row of
+ * that role follows. Any LV_SYMBOL_* works as long as it is in the compiled font
+ * (all the ones used here already are). Action pills (Start/Stop/Scan) keep their
+ * own verbs and are not part of this set. */
+/* status / state */
+#define ICON_STATE      LV_SYMBOL_WIFI      /* Wi-Fi / AP run-state, discovery, link */
+#define ICON_STATE_BLE  LV_SYMBOL_BLUETOOTH /* BLE scan state */
+#define ICON_STATE_USB  LV_SYMBOL_USB       /* USB transport state */
+#define ICON_SENSE      LV_SYMBOL_EYE_OPEN  /* sensing / passive inspection state */
+#define ICON_ACTIVITY   LV_SYMBOL_WIFI      /* motion / activity metric */
+#define ICON_WARN       LV_SYMBOL_WARNING   /* deauth seen / armed-alarm state */
+#define ICON_ALERT      LV_SYMBOL_BELL      /* alert count */
+/* metrics */
+#define ICON_COUNT      LV_SYMBOL_BARS      /* live count: clients, peers, trackers, beacons, SSIDs */
+#define ICON_SAVED      LV_SYMBOL_SAVE      /* stored artifacts: captures, bytes, credentials */
+#define ICON_TX         LV_SYMBOL_UPLOAD    /* frames transmitted */
+#define ICON_RX         LV_SYMBOL_DOWNLOAD  /* packets captured */
+#define ICON_VERIFY     LV_SYMBOL_OK        /* verification result */
+/* config / pickers */
+#define ICON_NETWORK    LV_SYMBOL_WIFI      /* SSID / AP / prefix selector */
+#define ICON_EDIT       LV_SYMBOL_EDIT      /* free-text entry field */
+#define ICON_TEMPLATE   LV_SYMBOL_FILE      /* captive page template */
+#define ICON_ADDRESS    LV_SYMBOL_GPS       /* IP / gateway address */
+#define ICON_RATE       LV_SYMBOL_CHARGE    /* packets per second */
+#define ICON_CHANNEL    LV_SYMBOL_SHUFFLE   /* channel / hop */
+#define ICON_FILTER     LV_SYMBOL_EYE_OPEN  /* capture filter */
+#define ICON_LEVEL      LV_SYMBOL_CHARGE    /* sensitivity / threshold */
+#define ICON_DELAY      LV_SYMBOL_LOOP      /* exit delay timer */
+#define ICON_DURATION   LV_SYMBOL_BELL      /* siren duration */
+
 struct native_page_t {
     lv_obj_t *page = NULL;
     lv_timer_t *timer = NULL;
@@ -72,7 +104,7 @@ static lv_obj_t *text_input_row(lv_obj_t *card, const char *title, const char *p
     lv_textarea_set_max_length(ta, max_length);
     lv_textarea_set_placeholder_text(ta, placeholder);
     lv_obj_set_width(ta, 150);
-    ui_create_card_item(card, LV_SYMBOL_EDIT, title, ta);
+    ui_create_card_item(card, ICON_EDIT, title, ta);
     return ta;
 }
 
@@ -117,7 +149,7 @@ static void exit_native(native_page_t &ui, bool (*stop)(void))
 /* ================================================================ Wi-Fi Sniffer */
 
 static native_page_t sniffer_ui;
-static lv_obj_t *sniffer_channel, *sniffer_filter, *sniffer_state, *sniffer_packets, *sniffer_bytes, *sniffer_analysis, *sniffer_file, *sniffer_error;
+static lv_obj_t *sniffer_channel, *sniffer_filter, *sniffer_state, *sniffer_packets, *sniffer_seen, *sniffer_bytes, *sniffer_analysis, *sniffer_file, *sniffer_error;
 static lv_obj_t *sniffer_start_row, *sniffer_stop_row;
 static const char *const SNIFFER_FILTERS[] = { "all", "management", "data", "beacons", "probes", "eapol" };
 
@@ -127,10 +159,10 @@ static void sniffer_refresh(lv_timer_t *)
     web_hw_sniffer_t st;
     web_hw_sniffer_status(&st);
     label_set(sniffer_state, st.active ? "Capturing" : "Stopped");
-    label_set(sniffer_packets, "%lu saved / %lu seen / drop %lu",
-              (unsigned long)st.packet_count, (unsigned long)st.seen, (unsigned long)st.dropped);
+    label_set(sniffer_packets, "%lu", (unsigned long)st.packet_count);
+    label_set(sniffer_seen, "%lu / %lu", (unsigned long)st.seen, (unsigned long)st.dropped);
     label_set(sniffer_bytes, "%lu B", (unsigned long)st.bytes_written);
-    label_set(sniffer_analysis, "Beacons %lu  Probes %lu  EAPOL %lu  HS %lu",
+    label_set(sniffer_analysis, "Beacons %lu · Probes %lu · EAPOL %lu · HS %lu",
               (unsigned long)st.beacons, (unsigned long)st.probes,
               (unsigned long)st.eapol, (unsigned long)st.handshakes);
     label_set(sniffer_file, st.file[0] ? st.file : "No capture yet");
@@ -162,17 +194,18 @@ static void enter_sniffer(lv_obj_t *parent)
     sniffer_ui.tool = &web_tool_sniffer;
     sniffer_ui.page = ui_create_app_page(parent, "Wi-Fi Sniffer", sniffer_back);
     lv_obj_t *card = ui_create_card(sniffer_ui.page, "Status");
-    sniffer_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
-    sniffer_packets = info_row(card, LV_SYMBOL_LIST, "Packets", "0 saved / 0 seen");
-    sniffer_bytes = info_row(card, LV_SYMBOL_SAVE, "Written", "0 B");
-    sniffer_analysis = info_row(card, LV_SYMBOL_EYE_OPEN, "Analysis", "Beacons 0  Probes 0  EAPOL 0  HS 0");
+    sniffer_state = info_row(card, ICON_STATE, "State", "Stopped");
+    sniffer_packets = info_row(card, ICON_RX, "Packets", "0");
+    sniffer_seen = info_row(card, ICON_COUNT, "Seen / drop", "0 / 0");
+    sniffer_bytes = info_row(card, ICON_SAVED, "Written", "0 B");
+    sniffer_analysis = wrapped_text(card, "Beacons 0 · Probes 0 · EAPOL 0 · HS 0");
     sniffer_file = wrapped_text(card, "No capture yet");
     sniffer_error = wrapped_text(card, "", true);
 
     card = ui_create_card(sniffer_ui.page, "Capture");
     static const char options[] = "All channels\nChannel 1\nChannel 2\nChannel 3\nChannel 4\nChannel 5\nChannel 6\nChannel 7\nChannel 8\nChannel 9\nChannel 10\nChannel 11\nChannel 12\nChannel 13";
-    sniffer_channel = row_value(ui_create_card_dropdown(card, NULL, "Channel", options, 0, NULL));
-    sniffer_filter = row_value(ui_create_card_dropdown(card, NULL, "Filter",
+    sniffer_channel = row_value(ui_create_card_dropdown(card, ICON_CHANNEL, "Channel", options, 0, NULL));
+    sniffer_filter = row_value(ui_create_card_dropdown(card, ICON_FILTER, "Filter",
         "All frames\nManagement only\nData only\nBeacons only\nProbes only\nEAPOL only", 0, NULL));
     sniffer_start_row = action_row(card, LV_SYMBOL_PLAY, "Start capture", sniffer_start);
     sniffer_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop and save", sniffer_stop_cb);
@@ -209,10 +242,10 @@ static void enter_airspace(lv_obj_t *parent)
     airspace_ui.tool = &web_tool_airspace;
     airspace_ui.page = ui_create_app_page(parent, "Airspace", airspace_back);
     lv_obj_t *card = ui_create_card(airspace_ui.page, "Passive monitor");
-    air_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
-    air_deauth = info_row(card, LV_SYMBOL_WARNING, "Deauth", "0");
-    air_beacons = info_row(card, LV_SYMBOL_LIST, "Beacons", "0");
-    air_alerts = info_row(card, LV_SYMBOL_BELL, "Alerts", "0");
+    air_state = info_row(card, ICON_STATE, "State", "Stopped");
+    air_deauth = info_row(card, ICON_WARN, "Deauth", "0");
+    air_beacons = info_row(card, ICON_COUNT, "Beacons", "0");
+    air_alerts = info_row(card, ICON_ALERT, "Alerts", "0");
     air_error = wrapped_text(card, "D=flood B=beacon T=twin X=broadcast");
     card = ui_create_card(airspace_ui.page, "Control");
     air_start_row = action_row(card, LV_SYMBOL_PLAY, "Start monitor", airspace_start);
@@ -226,7 +259,7 @@ static void exit_airspace(lv_obj_t *) { exit_native(airspace_ui, web_hw_airspace
 /* ================================================================ Sentinel */
 
 static native_page_t sentinel_ui;
-static lv_obj_t *sent_state, *sent_count, *sent_error, *sent_start_row, *sent_stop_row, *sent_rows[4];
+static lv_obj_t *sent_state, *sent_count, *sent_persistent, *sent_error, *sent_start_row, *sent_stop_row, *sent_rows[4];
 static void sentinel_refresh(lv_timer_t *)
 {
     drive_native(sentinel_ui);
@@ -235,7 +268,8 @@ static void sentinel_refresh(lv_timer_t *)
     int persistent = 0;
     for (int i = 0; i < st.device_count; i++) if (st.devices[i].stalking) persistent++;
     label_set(sent_state, st.active ? (st.scanning ? "Listening" : "Active") : "Stopped");
-    label_set(sent_count, "%d nearby / %d persistent", st.device_count, persistent);
+    label_set(sent_count, "%d", st.device_count);
+    label_set(sent_persistent, "%d", persistent);
     label_set(sent_error, st.error ? st.error : "Persistent is a heuristic, not proof");
     row_disabled(sent_start_row, st.active);
     row_disabled(sent_stop_row, !st.active);
@@ -256,8 +290,9 @@ static void enter_sentinel(lv_obj_t *parent)
     sentinel_ui.tool = &web_tool_sentinel;
     sentinel_ui.page = ui_create_app_page(parent, "Sentinel", sentinel_back);
     lv_obj_t *card = ui_create_card(sentinel_ui.page, "BLE safety check");
-    sent_state = info_row(card, LV_SYMBOL_BLUETOOTH, "State", "Stopped");
-    sent_count = info_row(card, LV_SYMBOL_LIST, "Trackers", "0");
+    sent_state = info_row(card, ICON_STATE_BLE, "State", "Stopped");
+    sent_count = info_row(card, ICON_COUNT, "Nearby", "0");
+    sent_persistent = info_row(card, ICON_WARN, "Persistent", "0");
     sent_error = wrapped_text(card, "Persistent is a heuristic, not proof");
     card = ui_create_card(sentinel_ui.page, "Control");
     sent_start_row = action_row(card, LV_SYMBOL_PLAY, "Start passive scan", sentinel_start);
@@ -274,7 +309,7 @@ static void exit_sentinel(lv_obj_t *) { exit_native(sentinel_ui, web_hw_sentinel
 
 static native_page_t presence_ui;
 static lv_obj_t *presence_state, *presence_count, *presence_error, *presence_start_row, *presence_stop_row, *presence_rows[4];
-static lv_obj_t *csi_state, *csi_metrics, *csi_network, *csi_error, *csi_threshold;
+static lv_obj_t *csi_state, *csi_metrics, *csi_rate, *csi_network, *csi_error, *csi_threshold;
 static lv_obj_t *csi_faro_state, *csi_faro_metrics, *csi_history;
 static lv_chart_series_t *csi_router_series, *csi_faro_series;
 static lv_obj_t *csi_start_row, *csi_stop_row, *csi_calibrate_row;
@@ -293,8 +328,8 @@ static void presence_refresh(lv_timer_t *)
     web_hw_csi_presence_t csi;
     web_hw_presence_csi_status(&csi);
     label_set(csi_state, !csi.active ? "Stopped" : csi.calibrating ? "Calibrating" : csi.motion ? "Motion" : csi.present ? "Present" : "Clear");
-    label_set(csi_metrics, "%d%% motion · %lu/s · drop %lu", (int)(csi.score * 100 + 0.5f),
-              (unsigned long)csi.rate, (unsigned long)csi.drops);
+    label_set(csi_metrics, "%d%% motion", (int)(csi.score * 100 + 0.5f));
+    label_set(csi_rate, "%lu/s · %lu", (unsigned long)csi.rate, (unsigned long)csi.drops);
     label_set(csi_network, "%s · ch %d · %d dBm", csi.ssid[0] ? csi.ssid : "No network", csi.channel, csi.rssi);
     label_set(csi_faro_state, !csi.faro.discovered ? "Waiting" : !csi.faro.linked ? "Absent" :
               csi.faro.calibrating ? "Calibrating" : csi.faro.motion ? "Motion" : csi.faro.present ? "Present" : "Clear");
@@ -393,11 +428,12 @@ static void enter_presence(lv_obj_t *parent)
     presence_ui.tool = &web_tool_presence;
     presence_ui.page = ui_create_app_page(parent, "Presence", presence_back);
     lv_obj_t *card = ui_create_card(presence_ui.page, "Router CSI zone");
-    csi_state = info_row(card, LV_SYMBOL_EYE_OPEN, "State", "Stopped");
-    csi_metrics = info_row(card, LV_SYMBOL_WIFI, "Activity", "0% motion · 0/s");
+    csi_state = info_row(card, ICON_SENSE, "State", "Stopped");
+    csi_metrics = info_row(card, ICON_ACTIVITY, "Activity", "0% motion");
+    csi_rate = info_row(card, ICON_RX, "Rate / drop", "0/s · 0");
     csi_network = wrapped_text(card, "No network");
     csi_error = wrapped_text(card, "Calibrate each link in an empty room. Presence is an estimate.", true);
-    csi_threshold = row_value(ui_create_card_dropdown(card, NULL, "Sensitivity",
+    csi_threshold = row_value(ui_create_card_dropdown(card, ICON_LEVEL, "Sensitivity",
         "High (0.20)\nBalanced (0.35)\nLow (0.55)", 1, NULL));
     csi_start_row = action_row(card, LV_SYMBOL_PLAY, "Start CSI sensing", csi_start);
     csi_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop CSI sensing", csi_stop);
@@ -405,7 +441,7 @@ static void enter_presence(lv_obj_t *parent)
     wrapped_text(card, "Keep watch and router fixed. CSI reports radio-path motion, not identity or location.");
 
     card = ui_create_card(presence_ui.page, "Faro CSI zone");
-    csi_faro_state = info_row(card, LV_SYMBOL_WIFI, "Second link", "Waiting");
+    csi_faro_state = info_row(card, ICON_STATE, "Second link", "Waiting");
     csi_faro_metrics = wrapped_text(card, "No Faro discovered");
     wrapped_text(card, "Run Faro transmitter mode on a second watch on this channel. Each link calibrates and detects independently.");
 
@@ -425,26 +461,26 @@ static void enter_presence(lv_obj_t *parent)
     wrapped_text(card, "Blue: router · Orange: Faro · 500 ms peak buckets. Session only; reboot clears it.");
 
     card = ui_create_card(presence_ui.page, "Faro transmitter");
-    faro_state = info_row(card, LV_SYMBOL_WIFI, "Mode", "Stopped");
+    faro_state = info_row(card, ICON_STATE, "Mode", "Stopped");
     faro_metrics = wrapped_text(card, "Second-watch transmitter");
     faro_error = wrapped_text(card, "100 Hz ESP-NOW beacon. Same channel as receiver; no sensing in this mode.", true);
     faro_start_row = action_row(card, LV_SYMBOL_PLAY, "Start Faro transmitter", faro_start);
     faro_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop Faro transmitter", faro_stop);
 
     card = ui_create_card(presence_ui.page, "Intrusion alarm");
-    alarm_state = info_row(card, LV_SYMBOL_WARNING, "State", "off");
+    alarm_state = info_row(card, ICON_WARN, "State", "off");
     alarm_metrics = wrapped_text(card, "exit 10 s · siren 30 s");
-    alarm_exit = row_value(ui_create_card_dropdown(card, NULL, "Exit delay",
+    alarm_exit = row_value(ui_create_card_dropdown(card, ICON_DELAY, "Exit delay",
         "5 seconds\n10 seconds\n30 seconds\n60 seconds", 1, NULL));
-    alarm_duration = row_value(ui_create_card_dropdown(card, NULL, "Siren duration",
+    alarm_duration = row_value(ui_create_card_dropdown(card, ICON_DURATION, "Siren duration",
         "10 seconds\n30 seconds\n60 seconds\n120 seconds", 1, NULL));
     alarm_arm_row = action_row(card, LV_SYMBOL_PLAY, "Arm alarm", alarm_arm);
     alarm_disarm_row = action_row(card, LV_SYMBOL_STOP, "Disarm alarm", alarm_disarm);
     alarm_error = wrapped_text(card, "Only live motion triggers; the 10-second presence hold does not.", true);
 
     card = ui_create_card(presence_ui.page, "Nearby ESP-NOW peers");
-    presence_state = info_row(card, LV_SYMBOL_WIFI, "Discovery", "Stopped");
-    presence_count = info_row(card, LV_SYMBOL_LIST, "Peers", "0");
+    presence_state = info_row(card, ICON_STATE, "Discovery", "Stopped");
+    presence_count = info_row(card, ICON_COUNT, "Peers", "0");
     presence_error = wrapped_text(card, "Separate ESP-NOW watch/peer discovery");
     presence_start_row = action_row(card, LV_SYMBOL_PLAY, "Start discovery", presence_start);
     presence_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop discovery", presence_stop_cb);
@@ -472,8 +508,8 @@ static void enter_fido2(lv_obj_t *parent)
     fido_ui = {};
     fido_ui.page = ui_create_app_page(parent, "FIDO2 Key", fido_back);
     lv_obj_t *card = ui_create_card(fido_ui.page, "Transport status");
-    fido_state = info_row(card, LV_SYMBOL_USB, "State", "Unavailable");
-    fido_creds = info_row(card, LV_SYMBOL_LIST, "Credentials", "0");
+    fido_state = info_row(card, ICON_STATE_USB, "State", "Unavailable");
+    fido_creds = info_row(card, ICON_SAVED, "Credentials", "0");
     fido_error = wrapped_text(card, "", true);
     wrapped_text(card, "Keyboard HID is not FIDO2. This build has no CTAP transport, credential crypto or secure key storage, so no Register or Authenticate action is offered.");
     fido_ui.timer = lv_timer_create(fido_refresh, 1000, NULL);
@@ -485,7 +521,7 @@ static void exit_fido2(lv_obj_t *) { exit_native(fido_ui, NULL); }
 
 static native_page_t portal_ui;
 static bool portal_consented = false;
-static lv_obj_t *portal_ssid, *portal_ssid_text, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_error;
+static lv_obj_t *portal_ssid, *portal_ssid_text, *portal_template, *portal_state, *portal_clients, *portal_attempts, *portal_verified, *portal_error;
 static lv_obj_t *portal_start_row, *portal_stop_row, *portal_scan_row, *portal_karma_row, *portal_karma_info;
 static lv_obj_t *portal_twin_bssid, *portal_twin_channel, *portal_twin_psk, *portal_coherent, *portal_verify;
 static lv_obj_t *portal_twin_start_row, *portal_clone_row, *portal_clone_info;
@@ -507,7 +543,8 @@ static void portal_refresh(lv_timer_t *)
     bool cloning = web_hw_evilportal_cloning();
     label_set(portal_state, st.active ? (st.mode == EP_MODE_KARMA ? "KARMA AP active" : st.twin_coherent ? "WPA2 twin active" : st.mode == EP_MODE_TWIN ? "Open twin active" : "Standalone active") : cloning ? "Cloning page" : scanning ? "Discovering probes" : "Stopped");
     label_set(portal_clients, "%d", st.clients);
-    label_set(portal_attempts, "%lu · PSK %d ok / %d bad", (unsigned long)st.attempts,
+    label_set(portal_attempts, "%lu", (unsigned long)st.attempts);
+    label_set(portal_verified, "%d / %d",
               web_hw_evilportal_verified_ok(), web_hw_evilportal_verified_bad());
     label_set(portal_error, st.error ? st.error : "");
     const char *clone_name = web_hw_evilportal_clone_name();
@@ -625,9 +662,12 @@ static void portal_build(void)
 {
     /* Status — always visible */
     lv_obj_t *card = ui_create_card(portal_ui.page, "Status");
-    portal_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
-    portal_clients = info_row(card, LV_SYMBOL_LIST, "Clients", "0");
-    portal_attempts = info_row(card, LV_SYMBOL_LIST, "Captures", "0");
+    portal_state = info_row(card, ICON_STATE, "State", "Stopped");
+    portal_clients = info_row(card, ICON_COUNT, "Clients", "0");
+    portal_attempts = info_row(card, ICON_SAVED, "Captures", "0");
+    /* PSK verification split onto its own short row: packing it after the capture
+     * count overflowed the value column and wrapped awkwardly on the watch. */
+    portal_verified = info_row(card, ICON_VERIFY, "PSK ok / bad", "0 / 0");
     portal_error = wrapped_text(card, "", true);
 
     /* Mode selector — segmented control (Standalone / Twin / KARMA) */
@@ -659,17 +699,17 @@ static void portal_build(void)
         if (i) strlcat(ssids, "\n", sizeof(ssids));
         strlcat(ssids, web_hw_evilportal_ssid_preset(i), sizeof(ssids));
     }
-    portal_ssid = row_value(ui_create_card_dropdown(card, NULL, "SSID preset", ssids, 0, NULL));
-    portal_ssid_text = text_input_row(card, "Manual SSID", "Empty: use preset", 32);
+    portal_ssid = row_value(ui_create_card_dropdown(card, ICON_NETWORK, "SSID preset", ssids, 0, NULL));
+    portal_ssid_text = text_input_row(card, "Manual SSID", "Preset", 32);
     char templates[1024] = "";
     for (int i = 0; i < web_hw_evilportal_template_count(); i++) {
         if (i) strlcat(templates, "\n", sizeof(templates));
         strlcat(templates, web_hw_evilportal_template_name(i), sizeof(templates));
     }
-    portal_template = row_value(ui_create_card_dropdown(card, NULL, "Template", templates, 0, NULL));
+    portal_template = row_value(ui_create_card_dropdown(card, ICON_TEMPLATE, "Template", templates, 0, NULL));
     const char *gw = web_hw_evilportal_gateway();
     uint8_t ip_sel = !strcmp(gw, "192.168.4.1") ? 0 : !strcmp(gw, "172.0.0.1") ? 1 : 2;
-    portal_ip_preset = row_value(ui_create_card_dropdown(card, NULL, "AP IP address",
+    portal_ip_preset = row_value(ui_create_card_dropdown(card, ICON_ADDRESS, "AP IP address",
                                  "192.168.4.1\n172.0.0.1\nCustom...", ip_sel, portal_ip_mode_cb));
     portal_ip = text_input_row(card, "Custom IP", "e.g. 10.0.0.1", 15);
     lv_textarea_set_accepted_chars(portal_ip, "0123456789.");
@@ -687,7 +727,7 @@ static void portal_build(void)
     portal_twin_channel = text_input_row(portal_card_twin, "Channel", "1-13", 2);
     lv_textarea_set_accepted_chars(portal_twin_channel, "0123456789");
     portal_coherent = row_value(ui_create_card_switch(portal_card_twin, LV_SYMBOL_WIFI, "WPA2-coherent AP", false, NULL));
-    portal_twin_psk = text_input_row(portal_card_twin, "Known lab PSK", "Required for WPA2 twin", 63);
+    portal_twin_psk = text_input_row(portal_card_twin, "Known lab PSK", "WPA2 key", 63);
     lv_textarea_set_password_mode(portal_twin_psk, true);
     portal_verify = row_value(ui_create_card_switch(portal_card_twin, LV_SYMBOL_OK, "Verify captured PSKs", web_hw_evilportal_verify_enabled(), portal_verify_cb));
     portal_twin_start_row = action_row(portal_card_twin, LV_SYMBOL_PLAY, "Start twin", portal_twin_start);
@@ -744,7 +784,7 @@ static void deauth_refresh(lv_timer_t *)
     int count = web_hw_deauthflood_target_count();
     if (st.active && st.campaign_count) label_set(deauth_state, "Campaign %d/%d", st.campaign_completed, st.campaign_count);
     else label_set(deauth_state, st.active ? "Injecting" : scanning ? "Scanning" : "Stopped");
-    label_set(deauth_sent, "%lu ok / %lu failed", (unsigned long)st.sent_count, (unsigned long)st.tx_errors);
+    label_set(deauth_sent, "%lu / %lu", (unsigned long)st.sent_count, (unsigned long)st.tx_errors);
     if (st.error) label_set(deauth_error, "%s", st.error);
     else if (!st.active && st.reconnect_attempts) label_set(deauth_error, "Reconnect: %lu ms, %d attempt(s)", (unsigned long)st.reconnect_ms, st.reconnect_attempts);
     else label_set(deauth_error, "WPA3/PMF may ignore deauth");
@@ -796,12 +836,14 @@ static void deauth_consent(lv_event_t *) { deauth_consented = true; lv_obj_clean
 static void deauth_build(void)
 {
     lv_obj_t *card = ui_create_card(deauth_ui.page, "Status");
-    deauth_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
-    deauth_sent = info_row(card, LV_SYMBOL_LIST, "Accepted frames", "0");
+    deauth_state = info_row(card, ICON_STATE, "State", "Stopped");
+    /* ok / failed label lives in the title so the value stays a compact "N / N"
+     * that fits one line; "Accepted frames" + "0 ok / 0 failed" wrapped. */
+    deauth_sent = info_row(card, ICON_TX, "TX ok / fail", "0 / 0");
     deauth_error = wrapped_text(card, "WPA3/PMF may ignore deauth");
     card = ui_create_card(deauth_ui.page, "Target");
-    deauth_target = row_value(ui_create_card_dropdown(card, NULL, "AP", deauth_options, 0, NULL));
-    deauth_rate = row_value(ui_create_card_dropdown(card, NULL, "Packets/s", "1\n5\n10\n20\n50", 2, NULL));
+    deauth_target = row_value(ui_create_card_dropdown(card, ICON_NETWORK, "AP", deauth_options, 0, NULL));
+    deauth_rate = row_value(ui_create_card_dropdown(card, ICON_RATE, "Packets/s", "1\n5\n10\n20\n50", 2, NULL));
     deauth_scan_row = action_row(card, LV_SYMBOL_REFRESH, "Scan APs", deauth_scan);
     deauth_scan_label = wrapped_text(card, "Scan for targets");
     deauth_start_row = action_row(card, LV_SYMBOL_PLAY, "Start selected test", deauth_start);
@@ -830,7 +872,7 @@ static void exit_deauthflood(lv_obj_t *) { exit_native(deauth_ui, web_hw_deauthf
 
 static native_page_t beacon_ui;
 static bool beacon_consented = false;
-static lv_obj_t *beacon_prefix, *beacon_prefix_text, *beacon_count, *beacon_channel, *beacon_state, *beacon_sent, *beacon_error;
+static lv_obj_t *beacon_prefix, *beacon_prefix_text, *beacon_count, *beacon_channel, *beacon_state, *beacon_sent, *beacon_ssids, *beacon_error;
 static lv_obj_t *beacon_start_row, *beacon_campaign_row, *beacon_stop_row;
 static void beacon_build(void);
 static void beacon_refresh(lv_timer_t *)
@@ -841,8 +883,8 @@ static void beacon_refresh(lv_timer_t *)
     web_hw_beaconspam_status(&st);
     if (st.active && st.campaign_active) label_set(beacon_state, "Campaign %d/%lu", st.campaign_completed, (unsigned long)st.ssid_count);
     else label_set(beacon_state, st.active ? "Injecting" : "Stopped");
-    label_set(beacon_sent, "%lu ok / %lu failed · %lu SSIDs", (unsigned long)st.beacon_count,
-              (unsigned long)st.tx_errors, (unsigned long)st.ssid_count);
+    label_set(beacon_sent, "%lu / %lu", (unsigned long)st.beacon_count, (unsigned long)st.tx_errors);
+    label_set(beacon_ssids, "%lu", (unsigned long)st.ssid_count);
     if (st.error) label_set(beacon_error, "%s", st.error);
     else if (!st.active && st.reconnect_attempts) label_set(beacon_error, "Reconnect: %lu ms, %d attempt(s)", (unsigned long)st.reconnect_ms, st.reconnect_attempts);
     else label_set(beacon_error, "");
@@ -877,15 +919,18 @@ static void beacon_consent(lv_event_t *) { beacon_consented = true; lv_obj_clean
 static void beacon_build(void)
 {
     lv_obj_t *card = ui_create_card(beacon_ui.page, "Status");
-    beacon_state = info_row(card, LV_SYMBOL_WIFI, "State", "Stopped");
-    beacon_sent = info_row(card, LV_SYMBOL_LIST, "Accepted beacons", "0");
+    beacon_state = info_row(card, ICON_STATE, "State", "Stopped");
+    /* One stat per row: "0 ok / 0 failed · 0 SSIDs" packed into a single value
+     * wrapped to three lines. ok / failed label moves into the title. */
+    beacon_sent = info_row(card, ICON_TX, "TX ok / fail", "0 / 0");
+    beacon_ssids = info_row(card, ICON_COUNT, "SSIDs", "0");
     beacon_error = wrapped_text(card, "", true);
     card = ui_create_card(beacon_ui.page, "Generated beacons");
-    beacon_prefix = row_value(ui_create_card_dropdown(card, NULL, "Prefix preset", "FreeNet\nLabTest\nBeaconTest", 0, NULL));
-    beacon_prefix_text = text_input_row(card, "Manual prefix", "Empty: use preset", 20);
-    beacon_count = row_value(ui_create_card_dropdown(card, NULL, "SSID count", "20\n50\n100", 0, NULL));
+    beacon_prefix = row_value(ui_create_card_dropdown(card, ICON_NETWORK, "Prefix preset", "FreeNet\nLabTest\nBeaconTest", 0, NULL));
+    beacon_prefix_text = text_input_row(card, "Manual prefix", "Preset", 20);
+    beacon_count = row_value(ui_create_card_dropdown(card, ICON_COUNT, "SSID count", "20\n50\n100", 0, NULL));
     static const char channels[] = "Hop all\nChannel 1\nChannel 2\nChannel 3\nChannel 4\nChannel 5\nChannel 6\nChannel 7\nChannel 8\nChannel 9\nChannel 10\nChannel 11\nChannel 12\nChannel 13";
-    beacon_channel = row_value(ui_create_card_dropdown(card, NULL, "Channel", channels, 0, NULL));
+    beacon_channel = row_value(ui_create_card_dropdown(card, ICON_CHANNEL, "Channel", channels, 0, NULL));
     beacon_start_row = action_row(card, LV_SYMBOL_PLAY, "Start continuous test", beacon_start);
     beacon_campaign_row = action_row(card, LV_SYMBOL_PLAY, "Run finite SSID campaign", beacon_campaign_start);
     beacon_stop_row = action_row(card, LV_SYMBOL_STOP, "Stop and reconnect", beacon_stop_cb);
