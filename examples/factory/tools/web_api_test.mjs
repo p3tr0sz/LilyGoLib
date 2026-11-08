@@ -570,6 +570,35 @@ if (caps.includes('automation')) {
   check('deleted rule is gone', !(r.json?.rules || []).some((x) => x.id === RID), r.json);
   r = await call('POST', '/api/automation/delete', { id: RID });
   check('delete of a missing rule is 404', r.status === 404 && r.json?.error === 'not_found', r.json);
+
+  // dry-run matcher (pure logic; mirrored sim + mock)
+  const atest = async (rl, ev) => (await call('POST', '/api/automation/test', { rule: rl, event: ev })).json;
+  let t = await atest({ on: 'battery', if: { level: { lt: 20 } } }, { topic: 'battery', d: { level: 12 } });
+  check('test: topic + numeric lt matches', t?.match === true && t.topic_match === true && t.if_match === true, t);
+  t = await atest({ on: 'battery', if: { level: { lt: 20 } } }, { topic: 'battery', d: { level: 80 } });
+  check('test: predicate fails -> no match', t?.match === false && t.topic_match === true && t.if_match === false, t);
+  t = await atest({ on: 'presence.*' }, { topic: 'presence.alarm', d: {} });
+  check('test: prefix topic match, no if fires always', t?.match === true, t);
+  t = await atest({ on: 'presence.*' }, { topic: 'battery', d: {} });
+  check('test: prefix topic mismatch', t?.match === false && t.topic_match === false, t);
+  t = await atest({ on: 'net', if: { ssid: { substr: 'Home' }, connected: true } }, { topic: 'net', d: { ssid: 'HomeWifi', connected: true } });
+  check('test: substr + bool eq match', t?.match === true, t);
+  t = await atest({ on: 'net', if: { ssid: { substr: 'Home' } } }, { topic: 'net', d: { ssid: 'Cafe' } });
+  check('test: substr mismatch', t?.match === false, t);
+  t = await atest({ on: 'battery', if: { charging: false } }, { topic: 'battery', d: { charging: false } });
+  check('test: scalar bool eq (false) matches', t?.match === true, t);
+  t = await atest({ on: 'gnss.fix', if: { sats: { ge: 4 } } }, { topic: 'gnss.fix', d: { sats: 4 } });
+  check('test: ge boundary matches', t?.match === true, t);
+  t = await atest({ on: 'nfc.tag', if: { uid: { exists: true } } }, { topic: 'nfc.tag', d: { uid: '04ab' } });
+  check('test: exists:true matches a present field', t?.match === true, t);
+  t = await atest({ on: 'nfc.tag', if: { uid: { exists: true } } }, { topic: 'nfc.tag', d: {} });
+  check('test: exists:true fails on an absent field', t?.match === false, t);
+  t = await atest({ on: 'battery', if: { level: { ne: 100 } } }, { topic: 'battery', d: { level: 50 } });
+  check('test: ne matches', t?.match === true, t);
+  t = await atest({ on: 'battery', do: [{ notify: { title: 'x' } }, { term: 'ver' }] }, { topic: 'battery', d: {} });
+  check('test: a match echoes the do action plan', t?.match === true && Array.isArray(t.actions) && t.actions.length === 2, t);
+  r = await call('POST', '/api/automation/test', { event: { topic: 'x' } });
+  check('test: a missing rule is 400', r.status === 400, r.json);
 } else {
   console.log('automation: cap absent on this target — skipped');
 }

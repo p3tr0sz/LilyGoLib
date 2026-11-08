@@ -179,5 +179,10 @@ bool web_json_get_bool(const std::string &json, const char *key, bool *out);
 bool web_json_has(const std::string &json, const char *key);
 /* Is the text a JSON object (balanced, top-level {...})? */
 bool web_json_is_object(const std::string &json);
+/* Nested access: raw value text of a key, the member keys of an object, the elements of an array.
+ * Each returned substring is itself valid JSON, so it can be fed back into these readers. */
+bool web_json_raw(const std::string &json, const char *key, std::string &out);
+void web_json_object_keys(const std::string &json, std::vector<std::string> &out);
+void web_json_array_items(const std::string &json, std::vector<std::string> &out);
 
 #endif /* FACTORY_WEB */

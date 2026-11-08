@@ -104,6 +104,128 @@ static void auto_list(std::string &out)
     out += "]}";
 }
 
+/* ---------------------------------------------------------------- rule matching
+ * Pure logic, mirrored line-for-line by the JS mock (matchRule in web_mock_device.mjs) so
+ * /api/automation/test behaves identically on both planes. A rule matches an event when its "on"
+ * topic matches and every predicate in "if" holds over the event's "d". No "if" = fire on every
+ * occurrence of the topic. */
+
+/* A JSON scalar, read with the existing tested parsers by wrapping the raw token as {"v":<raw>}. */
+struct auto_val { int kind; double num; bool b; std::string str; };   /* 0 absent, 1 num, 2 str, 3 bool, 4 other */
+
+static auto_val auto_parse_val(const std::string &raw)
+{
+    auto_val v; v.kind = 0; v.num = 0; v.b = false;
+    std::string wrap = "{\"v\":" + raw + "}";
+    double n; bool b; std::string s;
+    if (web_json_get_num(wrap, "v", &n)) { v.kind = 1; v.num = n; }
+    else if (web_json_get_bool(wrap, "v", &b)) { v.kind = 3; v.b = b; }
+    else if (web_json_get_str(wrap, "v", s)) { v.kind = 2; v.str = s; }
+    else {
+        size_t i = 0;
+        while (i < raw.size() && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r')) i++;
+        if (i < raw.size() && (raw[i] == '{' || raw[i] == '[')) v.kind = 4;
+    }
+    return v;
+}
+
+/* The value of a top-level field of the event's "d" object. */
+static auto_val auto_d_field(const std::string &d, const std::string &field)
+{
+    auto_val v; v.kind = 0; v.num = 0; v.b = false;
+    double n; bool b; std::string s, raw;
+    if (web_json_get_num(d, field.c_str(), &n)) { v.kind = 1; v.num = n; }
+    else if (web_json_get_bool(d, field.c_str(), &b)) { v.kind = 3; v.b = b; }
+    else if (web_json_get_str(d, field.c_str(), s)) { v.kind = 2; v.str = s; }
+    else if (web_json_raw(d, field.c_str(), raw)) { v.kind = 4; }
+    return v;
+}
+
+static bool auto_val_eq(const auto_val &a, const auto_val &b)
+{
+    if (a.kind != b.kind) return false;
+    if (a.kind == 1) return a.num == b.num;
+    if (a.kind == 2) return a.str == b.str;
+    if (a.kind == 3) return a.b == b.b;
+    return false;
+}
+
+/* "presence.*" prefix match, else an exact topic match. */
+static bool auto_topic_match(const std::string &pattern, const std::string &topic)
+{
+    if (pattern.empty()) return false;
+    if (pattern.back() == '*') {
+        std::string pfx = pattern.substr(0, pattern.size() - 1);
+        return topic.size() >= pfx.size() && topic.compare(0, pfx.size(), pfx) == 0;
+    }
+    return pattern == topic;
+}
+
+/* One predicate: a scalar (eq), or {op: operand} with op in eq/ne/lt/le/gt/ge/substr/exists. */
+static bool auto_predicate_match(const auto_val &field, const std::string &predRaw)
+{
+    size_t i = 0;
+    while (i < predRaw.size() && (predRaw[i] == ' ' || predRaw[i] == '\t' || predRaw[i] == '\n' || predRaw[i] == '\r')) i++;
+    if (i < predRaw.size() && predRaw[i] == '{') {
+        std::vector<std::string> ops;
+        web_json_object_keys(predRaw, ops);
+        if (ops.empty()) return true;                       /* {} = no constraint */
+        for (const std::string &op : ops) {
+            std::string operandRaw;
+            web_json_raw(predRaw, op.c_str(), operandRaw);
+            auto_val o = auto_parse_val(operandRaw);
+            if (op == "exists") {
+                bool want = (o.kind == 3) ? o.b : true;
+                if ((field.kind != 0) != want) return false;
+            } else if (op == "eq") {
+                if (!auto_val_eq(field, o)) return false;
+            } else if (op == "ne") {
+                if (auto_val_eq(field, o)) return false;
+            } else if (op == "lt" || op == "le" || op == "gt" || op == "ge") {
+                int cmp;
+                if (field.kind == 1 && o.kind == 1) cmp = (field.num < o.num) ? -1 : (field.num > o.num ? 1 : 0);
+                else if (field.kind == 2 && o.kind == 2) cmp = field.str.compare(o.str) < 0 ? -1 : (field.str.compare(o.str) > 0 ? 1 : 0);
+                else return false;                          /* type mismatch never matches an ordering */
+                if (op == "lt" && !(cmp < 0)) return false;
+                if (op == "le" && !(cmp <= 0)) return false;
+                if (op == "gt" && !(cmp > 0)) return false;
+                if (op == "ge" && !(cmp >= 0)) return false;
+            } else if (op == "substr") {
+                if (field.kind != 2 || o.kind != 2 || field.str.find(o.str) == std::string::npos) return false;
+            } else {
+                return false;                               /* unknown operator */
+            }
+        }
+        return true;
+    }
+    return auto_val_eq(field, auto_parse_val(predRaw));      /* bare scalar = equality */
+}
+
+static bool auto_if_match(const std::string &ifRaw, const std::string &d)
+{
+    std::vector<std::string> fields;
+    web_json_object_keys(ifRaw, fields);
+    for (const std::string &f : fields) {
+        std::string predRaw;
+        web_json_raw(ifRaw, f.c_str(), predRaw);
+        if (!auto_predicate_match(auto_d_field(d, f), predRaw)) return false;
+    }
+    return true;
+}
+
+/* Evaluate a rule against (topic, d). out_on / out_if report the two halves for /test diagnostics. */
+static bool auto_rule_match(const std::string &rule, const std::string &topic, const std::string &d,
+                            bool *out_on, bool *out_if)
+{
+    std::string on;
+    bool onm = web_json_get_str(rule, "on", on) && auto_topic_match(on, topic);
+    std::string ifRaw;
+    bool ifm = web_json_raw(rule, "if", ifRaw) ? auto_if_match(ifRaw, d) : true;
+    if (out_on) *out_on = onm;
+    if (out_if) *out_if = ifm;
+    return onm && ifm;
+}
+
 /* ---------------------------------------------------------------- web endpoints */
 
 static bool automation_handle(web_req_t *r)
@@ -156,6 +278,42 @@ static bool automation_handle(web_req_t *r)
         std::string j = "{\"ok\":true,\"id\":";
         web_json_str(j, id.c_str());
         j += ",\"size\":" + tools_int((long)body.size()) + "}";
+        web_resp_json(r, 200, j);
+        return true;
+    }
+    if (tools_is(r, "POST", "/api/automation/test")) {
+        /* Dry-run a rule against a synthetic event: {rule:{...}, event:{topic, d}} -> match + the
+         * actions that would run. No side effects, no SD, no firing. */
+        std::string body;
+        if (!tools_read_json(r, body, AUTO_RULE_MAX + 2048)) return true;
+        std::string rule, event;
+        if (!web_json_raw(body, "rule", rule) || !web_json_is_object(rule)) {
+            web_resp_error(r, 400, "bad_request", "need a rule object");
+            return true;
+        }
+        if (!web_json_raw(body, "event", event) || !web_json_is_object(event)) {
+            web_resp_error(r, 400, "bad_request", "need an event object");
+            return true;
+        }
+        std::string topic, d;
+        web_json_get_str(event, "topic", topic);
+        if (!web_json_raw(event, "d", d) || !web_json_is_object(d)) d = "{}";
+        bool onm = false, ifm = false;
+        bool m = auto_rule_match(rule, topic, d, &onm, &ifm);
+        bool enabled = true;
+        web_json_get_bool(rule, "enabled", &enabled);
+        std::string doRaw;
+        std::string j = "{\"match\":";
+        j += m ? "true" : "false";
+        j += ",\"topic_match\":";
+        j += onm ? "true" : "false";
+        j += ",\"if_match\":";
+        j += ifm ? "true" : "false";
+        j += ",\"enabled\":";
+        j += enabled ? "true" : "false";
+        j += ",\"actions\":";
+        j += (m && web_json_raw(rule, "do", doRaw)) ? doRaw : std::string("[]");
+        j += "}";
         web_resp_json(r, 200, j);
         return true;
     }

@@ -199,6 +199,45 @@ async function autoList() {
   }
   return out;
 }
+// Rule matching — mirrors auto_* in web_tool_automation.cpp so /api/automation/test agrees on both planes.
+function autoTopicMatch(pattern, topic) {
+  if (typeof pattern !== 'string' || !pattern) return false;
+  if (pattern.endsWith('*')) return typeof topic === 'string' && topic.startsWith(pattern.slice(0, -1));
+  return pattern === topic;
+}
+function autoPredicateMatch(field, pred) {
+  if (pred && typeof pred === 'object' && !Array.isArray(pred)) {
+    for (const op of Object.keys(pred)) {
+      const o = pred[op];
+      if (op === 'exists') { const want = typeof o === 'boolean' ? o : true; if ((field !== undefined) !== want) return false; }
+      else if (op === 'eq') { if (field !== o) return false; }
+      else if (op === 'ne') { if (field === o) return false; }
+      else if (op === 'lt' || op === 'le' || op === 'gt' || op === 'ge') {
+        const bothNum = typeof field === 'number' && typeof o === 'number';
+        const bothStr = typeof field === 'string' && typeof o === 'string';
+        if (!bothNum && !bothStr) return false;
+        const cmp = field < o ? -1 : (field > o ? 1 : 0);
+        if (op === 'lt' && !(cmp < 0)) return false;
+        if (op === 'le' && !(cmp <= 0)) return false;
+        if (op === 'gt' && !(cmp > 0)) return false;
+        if (op === 'ge' && !(cmp >= 0)) return false;
+      } else if (op === 'substr') { if (typeof field !== 'string' || typeof o !== 'string' || !field.includes(o)) return false; }
+      else return false;
+    }
+    return true;
+  }
+  return field === pred;   // bare scalar = equality (type-sensitive, like the firmware)
+}
+function autoIfMatch(ifObj, d) {
+  for (const f of Object.keys(ifObj || {})) if (!autoPredicateMatch(d ? d[f] : undefined, ifObj[f])) return false;
+  return true;
+}
+function matchRule(rule, topic, d) {
+  const on = typeof rule?.on === 'string' ? rule.on : '';
+  const onm = autoTopicMatch(on, topic);
+  const ifm = (rule && typeof rule.if === 'object' && rule.if !== null && !Array.isArray(rule.if)) ? autoIfMatch(rule.if, d) : true;
+  return { match: onm && ifm, topic_match: onm, if_match: ifm };
+}
 
 // Seg: {type:0 lit|1 var(text=name)|2 arith}. Word = Seg[]. Statement = Word[].
 function scriptLex(src) {
@@ -1565,6 +1604,17 @@ async function toolsRoute(req, res, url, path) {
     try { await fsp.mkdir(dir.abs, { recursive: true }); await fsp.writeFile(join(dir.abs, `${id}.json`), body); }
     catch { return fail(res, 500, 'write_failed', 'could not write rule'); }
     return json(res, 200, { ok: true, id, size: Buffer.byteLength(body) });
+  }
+  if (path === '/api/automation/test' && m === 'POST') {
+    const b = await readJSON(req);
+    const rule = b?.rule, event = b?.event;
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return fail(res, 400, 'bad_request', 'need a rule object');
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return fail(res, 400, 'bad_request', 'need an event object');
+    const topic = typeof event.topic === 'string' ? event.topic : '';
+    const d = (event.d && typeof event.d === 'object' && !Array.isArray(event.d)) ? event.d : {};
+    const mres = matchRule(rule, topic, d);
+    const actions = mres.match && Array.isArray(rule.do) ? rule.do : [];
+    return json(res, 200, { match: mres.match, topic_match: mres.topic_match, if_match: mres.if_match, enabled: rule.enabled !== false, actions });
   }
   if (path === '/api/automation/delete' && m === 'POST') {
     const b = await readJSON(req);

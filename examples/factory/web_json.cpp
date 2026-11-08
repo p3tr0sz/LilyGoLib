@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <vector>
 
 void web_json_str(std::string &out, const char *s)
 {
@@ -194,6 +195,60 @@ bool web_json_is_object(const std::string &json)
     if (i >= json.size() || json[i] != '{') return false;
     size_t end = skip_value(json, i);
     return end != std::string::npos && skip_ws(json, end) == json.size();
+}
+
+/* The raw text of a top-level key's value (a nested object/array kept verbatim for re-parsing),
+ * trimmed of surrounding whitespace. false if the key is absent. */
+bool web_json_raw(const std::string &json, const char *key, std::string &out)
+{
+    size_t a, b;
+    if (!find_value(json, key, &a, &b)) return false;
+    out.assign(json, a, b - a);
+    return true;
+}
+
+/* The top-level member keys of a JSON object, in document order. */
+void web_json_object_keys(const std::string &json, std::vector<std::string> &out)
+{
+    out.clear();
+    size_t i = skip_ws(json, 0);
+    if (i >= json.size() || json[i] != '{') return;
+    i++;
+    while (true) {
+        i = skip_ws(json, i);
+        if (i >= json.size() || json[i] == '}') return;
+        std::string k;
+        i = parse_string(json, i, &k);
+        if (i == std::string::npos) return;
+        i = skip_ws(json, i);
+        if (i >= json.size() || json[i] != ':') return;
+        i = skip_ws(json, i + 1);
+        size_t end = skip_value(json, i);
+        if (end == std::string::npos) return;
+        out.push_back(k);
+        i = skip_ws(json, end);
+        if (i < json.size() && json[i] == ',') { i++; continue; }
+        return;
+    }
+}
+
+/* The raw element substrings of a top-level JSON array, in order. */
+void web_json_array_items(const std::string &json, std::vector<std::string> &out)
+{
+    out.clear();
+    size_t i = skip_ws(json, 0);
+    if (i >= json.size() || json[i] != '[') return;
+    i++;
+    while (true) {
+        i = skip_ws(json, i);
+        if (i >= json.size() || json[i] == ']') return;
+        size_t end = skip_value(json, i);
+        if (end == std::string::npos) return;
+        out.push_back(json.substr(i, end - i));
+        i = skip_ws(json, end);
+        if (i < json.size() && json[i] == ',') { i++; continue; }
+        return;
+    }
 }
 
 #endif /* FACTORY_WEB */
