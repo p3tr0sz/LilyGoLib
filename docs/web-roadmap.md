@@ -131,6 +131,20 @@ The 2026-11-08 command-exit-status change is verified on both planes: the simula
 
 **Automation app — Berry, first slice (2026-11-08).** The embedded interpreter is **landed and verified on firmware**. Berry (MIT) is vendored under `examples/factory/berry/` and wired as `web_tool_automation.cpp` (cap `automation`, `POST /api/automation/run` `{source}` → `{ok, engine, output}`). This first slice exposes the full language + `print`; the device-API bindings and the web/native front-ends are the next slices. Build path (proven): compile **as C with `BE_USE_PRECOMPILED_OBJECT 1`** + the `coc`-generated constant tables, flattened into `berry/src/` so no `platformio.ini` `-I` change is needed; `PRECOMPILED 0` is a dead end. Verified on the simulator firmware — `print`/arithmetic, recursive functions, maps, lists, a compile error, a `divzero` traceback and an 8 s runaway-loop abort all behave (simulator API **345/345**, five new `automation` checks that the JS mock skips since it cannot re-run a native interpreter; mock API 336/336). **Flash: 96.2%** on `twatch_ultra` (~157 KB free, down from ~293 KB — Berry ≈ +3.2%); budget is now tight, so trim unused Berry modules in `berry_conf.h` before the next slice. Full recipe + the one local change to track across upgrades: `handoff-scripting.md` → "Berry landed".
 
+**Automation — Berry disconnected, rule engine is the direction (2026-11-08, commit `a7541d7`).** Decision
+reversed after settling the execution model. "Automation" on a watch needs **trigger → condition → action
+running headless** (nothing connected), not a Turing-complete language — and an embedded interpreter costs
+~133 KB for that. Berry was unregistered from `TOOLS[]` and its TU gated behind `FACTORY_AUTOMATION`;
+`--gc-sections` then drops it, taking `twatch_ultra` flash **96.2% → 93.0%** (the full ~133 KB back, pre-Berry
+baseline; sim API 340/340, mock 336/336). Berry's `examples/factory/berry/` stays in-tree pending the
+redesign. **New plan:** a small headless **rule engine** that taps the event bus we already have
+(`web_events_publish`, `web_core.cpp:734`) via a new in-process sink, matches JSON rules from
+`/sd/automation/*.json`, and fires actions through existing verbs (`term_exec`, `script_run`, app-launch,
+notify, cap-gated `/api/*`); authored in the web plane (JS, zero flash). Design: `automation-rule-engine.md`.
+A separate, bigger lever — moving a *tail* of apps out of the firmware binary onto SD as loadable native
+`.nap` modules (NucleoOS's model; built-ins stay resident) — is evaluated, **gated on a flash map**, in
+`eval-loadable-native-apps.md`.
+
 ### Next feature work
 
 Near-term work now that the Terminal and the scripting engine have landed, in rough value order. This
@@ -143,7 +157,7 @@ Item 1 (**command exit status for `term_exec`**) landed on 2026-11-08 — see th
 
 | Order | Work package | Why / notes |
 |---|---|---|
-| 1 | **Automation app — embedded interpreter** (engine slice **done 2026-11-08**) | **Berry (MIT)** is vendored and running on firmware as cap `automation` / `POST /api/automation/run` — see the note above. **Remaining:** trim Berry modules to reclaim flash (now 96.2%); bind a safe device API (`delay`, `sys.*`, sandboxed `fs.*`, `notify`, later radio/attack verbs behind the P9 claim gates); add the web + on-device front-ends (reuse the Scripts UI shape) and a `/sd/automation/*.be` library. Tested against the simulator, since the JS mock cannot re-run a native interpreter. See `handoff-scripting.md`. |
+| 1 | **Automation app — headless rule engine** (Berry disconnected 2026-11-08, `a7541d7`; flash back to 93.0%) | Direction changed from an embedded interpreter to a small **trigger → condition → action** rule engine that runs headless. **Next steps (in order):** (1) in-process event sink on `web_events_publish` + a sim check that a disconnected event reaches it; (2) the JSON rule matcher drained on the UI `tick`; (3) `/api/automation/{list,read,save,delete,test}`; (4) web Automation app (JS authoring) + on-device LVGL list/enable. Matcher is pure logic, so the **JS mock mirrors it** (dual-plane testing is back). Design: `automation-rule-engine.md`. Bigger, gated lever (loadable native `.nap` apps): `eval-loadable-native-apps.md`. |
 | 2 | **Unified file manager** | move / copy / delete across `/sd` and `/flash`, plus a USB-MSC mount so a host PC sees the card. |
 | 3 | **Wardriving → WiGLE CSV** | Log scanned APs with GNSS fixes to the WiGLE CSV format for upload. |
 | 4 | **Dynamic per-probe Karma** | The remaining Evil Portal gap vs the reference: respond to each probed SSID, not only a selected one. |
