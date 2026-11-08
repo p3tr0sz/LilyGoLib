@@ -515,7 +515,13 @@ static void handle_captive_request(web_req_t *r)
         serve_captive_html(r, SUCCESS_HTML);
         return;
     }
-    serve_captive_html(r, s_active_template ? s_active_template : TEMPLATE_DEFAULT);
+    /* Copy the template bytes before serving. The lifecycle (auto-stop runs on the main-loop
+     * task) can null or replace s_active_template concurrently with this HTTP-task read; copying
+     * up front means the send works from stable local bytes. A torn read at worst serves the
+     * default page. (A full fix would guard the s_active/s_active_template/s_custom_html trio with
+     * a mutex; that is left as a reviewed follow-up.) */
+    std::string tpl = s_active_template ? s_active_template : TEMPLATE_DEFAULT;
+    serve_captive_html(r, tpl.c_str());
 }
 
 /* ═══════════════════════════════════════════════ Vendor names ══════════════ */
