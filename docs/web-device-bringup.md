@@ -4,6 +4,10 @@ First hardware run of the web desktop stack. Everything below has passed in the 
 (`web-roadmap.md`); this is the list of what the simulator **cannot** cover and must be checked on a
 real watch. The firmware links as of `793aafc` (the `demo_ce.h` NFC blocker fix).
 
+> For the quick build / flash / SD-card commands and the scripts reference, see
+> **[README → Build, Flash & SD Card](../README.MD#2-build-flash--sd-card-t-watch-ultra-factory-firmware)**.
+> This document is the detailed on-device bring-up checklist.
+
 Context you may not have in front of you:
 
 - The firmware (Arduino + LVGL factory build) lives in the sibling PlatformIO project
