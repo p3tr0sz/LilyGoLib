@@ -69,19 +69,20 @@ half-made language. Research summary:
 
 | Engine | License | Footprint | Precedent | Notes |
 |---|---|---|---|---|
-| **mJS** | Apache-2.0* | <50 KB flash, ~1–2 KB RAM | **Flipper Zero** (modified mJS) | restricted JS, built to call C functions directly — best fit for device bindings |
-| **Berry** | MIT | small, OO | **Tasmota** (ESP32) | clean license; some ESP32 build friction reported |
+| ~~**mJS**~~ | **GPLv2-or-commercial** ✗ | <50 KB flash, ~1–2 KB RAM | **Flipper Zero** (modified mJS) | **disqualified** — its `LICENSE` is GPLv2, which would virally GPL the firmware. Verified 2026-11-08. |
+| **Berry** | MIT | small, OO | **Tasmota** (ESP32) | clean license, ESP32-proven — **the lead candidate** |
 | **Duktape** | MIT | heavier | **Bruce** | full ES5; ports to ESP32 easily |
 | **Lua** | MIT | ~200 KB | NodeMCU | the reference embeddable; largest |
 
-\*Confirm mJS's `LICENSE` in-repo before committing.
+License check done (2026-11-08): mJS's in-repo `LICENSE` is GPLv2-or-commercial, **not** Apache-2.0 as
+an earlier draft of this note claimed. Berry, Duktape and Lua are MIT and confirmed permissive.
 
 **Flash budget matters here.** The DSL alone took the watch build from 91.8% → **93.0%** flash
-(~49 KB), leaving ~293 KB headroom. mJS (<50 KB) fits; Berry is comparable; **Duktape and Lua would be
-tight** against that remaining budget. Measure before committing to one.
+(~49 KB), leaving ~293 KB headroom. Berry should fit (Tasmota ships it on ESP32); **Duktape and Lua
+would be tighter.** Measure a real `env:twatch_ultra` build before committing to one.
 
-**Recommended:** mJS first (smallest, strong device-binding story, Flipper precedent), Berry as the
-MIT alternative. Do **not** embed Duktape/Lua unless a specific need appears; do **not** copy Bruce
+**Recommended:** **Berry** (MIT, ESP32/Tasmota precedent) — the only permissive engine that is both
+small enough and proven on this class of hardware. Do **not** embed mJS (GPLv2); do **not** copy Bruce
 (GPL) or NucleoOS (AGPL) code — only permissively-licensed engines may be vendored.
 
 Sketch of the follow-up slice (no code yet):
@@ -93,11 +94,12 @@ Sketch of the follow-up slice (no code yet):
 - The mock cannot faithfully re-run a native interpreter, so test it against the simulator/firmware
   directly (unlike the DSL, which the JS mock mirrors exactly).
 
-### Related: per-command exit status (smaller, enables real `if cmd`)
+### Related: per-command exit status (smaller, enables real `if cmd`) — DONE 2026-11-08
 
-Give `term_exec` an out-parameter status (or a return code) so the DSL's `if`/`while`/`&&`/`||` work
-on actual command success, not just `test`. This is a contained improvement independent of the
-interpreter work and would remove the main v1 limitation above.
+Done. `term_exec` now returns a real exit status (0 success, 1 a failed command, 127 command not
+found); `POST /api/term` also reports it as `status`. The DSL feeds it into `$?`, so `if cmd`,
+`while cmd`, `&&` and `||` branch on actual command success, not just `test`. Verified on both planes
+(simulator API 340/340, mock API 336/336). This removed the main v1 limitation above.
 
 ### Related: BadUSB
 
