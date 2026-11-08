@@ -1,110 +1,180 @@
 /**
  * @file      web_tool_automation.cpp
- * @brief     The Automation app: a real, embeddable scripting language on the watch, as a *separate*
- *            app from the sh-like Scripts DSL (web_tool_script.cpp). Where the DSL is a shell, this is
- *            a full language — functions, data structures, a standard library.
+ * @brief     The Automation app: a small headless rule engine (trigger -> condition -> action).
  *
- * The engine is **Berry** (MIT, github.com/berry-lang/berry — the interpreter Tasmota embeds on the
- * ESP32), vendored under examples/factory/berry/. It is built the supported way: compiled as C with
- * BE_USE_PRECOMPILED_OBJECT 1 and the coc-generated constant tables in berry/generate/ (regenerate
- * with: python3 tools/coc/coc -o generate src default -c default/berry_conf.h from a Berry checkout).
- * mJS was rejected on licence grounds (GPLv2); see docs/handoff-scripting.md.
+ * Replaces the earlier Berry interpreter (disconnected in a7541d7; Berry source kept in-tree for now).
+ * A watch automation must run with nothing connected -- "buzz when the battery is low", "launch an app
+ * on a button hold" -- so the executor lives in firmware, not in the browser's JS. What that needs is
+ * not a Turing-complete language but trigger -> condition -> action, and we already have the event bus
+ * (web_events_publish) and the verbs (term_exec, script_run, notify, the cap-gated API). See
+ * docs/automation-rule-engine.md.
  *
- * This first slice exposes only the language and `print` — enough to prove the engine runs end to end
- * and to measure its footprint. A later slice binds a safe device API (`sys.*`, sandboxed `fs.*`,
- * notify, and radio/attack verbs behind the P9 claim gates), a script library on /sd, and the web +
- * native front-ends. The JS mock cannot re-run a native interpreter, so this is validated against the
- * simulator/firmware directly (unlike the DSL, which the mock mirrors).
- *
- * A run is bounded: the source and output are capped, and a wall-clock budget is enforced from Berry's
- * VM heartbeat so a runaway loop cannot hang the device. Not re-entrant — the web server runs one
- * request at a time, and the VM is created and destroyed per run.
+ * Rules are small JSON objects stored one per file in /sd/automation/<id>.json. This slice implements
+ * the CRUD + storage plane (list/read/save/delete), mirrored by the JS mock. The matcher -- an
+ * in-process sink on the event tap (web_events_subscribe), drained on the UI tick, matching rules and
+ * firing bounded action chains -- lands in the next slice, with /api/automation/test. Because the
+ * matcher is pure logic (unlike the native Berry VM), the mock can mirror it, so dual-plane testing is
+ * back.
  */
 #include "web_tools.h"
 
-/* Disconnected 2026-11-08 pending the headless rule-engine redesign. Gated off by default so the Berry
- * interpreter (~133 KB flash) is not referenced and --gc-sections drops it; Berry's files stay in-tree.
- * Define FACTORY_AUTOMATION to re-enable (also restore &web_tool_automation in web_tools.cpp). */
-#if FACTORY_WEB && defined(FACTORY_AUTOMATION)
+#if FACTORY_WEB
 
 #include "web_internal.h"
-#include <string>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <string.h>
-#include <stdarg.h>
+#include <stdlib.h>
+#include <algorithm>
+#include <string>
+#include <vector>
 
-#include "berry/src/berry.h"                           /* berry.h carries its own extern "C" guard */
+#define AUTO_DIR       "/sd/automation"
+#define AUTO_RULE_MAX  (8 * 1024)      /* largest rule JSON accepted / stored */
 
-/* Defined in berry/src/be_port.c (local change): print output goes here when set, else to stdout. */
-extern "C" void (*berry_output_hook)(const char *buffer, size_t length);
-
-#define AUTO_SRC_MAX   (16 * 1024)                     /* largest source accepted */
-#define AUTO_OUT_MAX   (32 * 1024)                     /* cap on captured output */
-#define AUTO_MS_MAX    8000                            /* wall-clock budget for one run, ms */
-
-/* ---- output capture: Berry's be_writebuffer() calls this through berry_output_hook ---- */
-static std::string *g_auto_out = NULL;
-static void auto_out_cb(const char *buf, size_t len)
+/* A rule id is the file stem (<id>.json): a short, filesystem-safe token. */
+static bool auto_id_ok(const std::string &id)
 {
-    if (g_auto_out && g_auto_out->size() < AUTO_OUT_MAX) g_auto_out->append(buf, len);
-}
-
-/* ---- time guard: the VM fires BE_OBS_VM_HEARTBEAT periodically; abort if over budget ---- */
-static uint32_t g_auto_start = 0;
-static void auto_obs_hook(bvm *vm, int event, ...)
-{
-    if (event == BE_OBS_VM_HEARTBEAT && tools_now_ms() - g_auto_start > AUTO_MS_MAX)
-        be_raise(vm, "runtime_error", "time limit exceeded");
-}
-
-/* Run a Berry source string, appending its output (and any error/traceback) to out. Returns true if
- * the script compiled and ran without an uncaught exception. */
-static bool berry_run(const std::string &src, std::string &out)
-{
-    bvm *vm = be_vm_new();
-    if (!vm) { out += "automation: out of memory\n"; return false; }
-
-    g_auto_out = &out;
-    g_auto_start = tools_now_ms();
-    berry_output_hook = auto_out_cb;
-    be_set_obs_hook(vm, auto_obs_hook);
-
-    bool ok = true;
-    int res = be_loadstring(vm, src.c_str());
-    if (res == BE_OK) {
-        res = be_pcall(vm, 0);                         /* execute the compiled chunk */
-        if (res != BE_OK) { be_dumpexcept(vm); ok = false; }   /* traceback goes through the hook */
-    } else {
-        out += "compile error: ";
-        out += (be_isstring(vm, -1) ? be_tostring(vm, -1) : "syntax error");
-        out += "\n";
-        ok = false;
+    if (id.size() < 1 || id.size() > 48) return false;
+    for (char c : id) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                  c == '.' || c == '-' || c == '_';
+        if (!ok) return false;
     }
-
-    berry_output_hook = NULL;                           /* unhook before anything else can print */
-    g_auto_out = NULL;
-    be_vm_delete(vm);
-    return ok;
+    if (id.find("..") != std::string::npos) return false;
+    return true;
 }
 
-/* ---------------------------------------------------------------- web endpoint */
+/* Read a rule file's whole text (sandboxed to AUTO_DIR). false if the id is bad or unreadable. */
+static bool auto_read_file(const std::string &id, std::string &text)
+{
+    text.clear();
+    if (!auto_id_ok(id)) return false;
+    std::string host;
+    if (web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host) != 0) return false;
+    FILE *f = fopen(host.c_str(), "rb");
+    if (!f) return false;
+    char chunk[512];
+    size_t rd;
+    while ((rd = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        text.append(chunk, rd);
+        if (text.size() > AUTO_RULE_MAX) { text.resize(AUTO_RULE_MAX); break; }
+    }
+    fclose(f);
+    return true;
+}
+
+/* {dir, rules:[{id, enabled, on}]} -- a summary of every /sd/automation/<id>.json, sorted by id. */
+static void auto_list(std::string &out)
+{
+    out = "{\"dir\":\"" AUTO_DIR "\",\"rules\":[";
+    std::string host;
+    std::vector<std::string> ids;
+    if (web_fs_resolve(AUTO_DIR, host) == 0) {
+        DIR *d = opendir(host.c_str());
+        if (d) {
+            while (struct dirent *ent = readdir(d)) {
+                std::string nm = ent->d_name;
+                if (nm.size() <= 5 || nm.compare(nm.size() - 5, 5, ".json") != 0) continue;
+                std::string id = nm.substr(0, nm.size() - 5);
+                if (!auto_id_ok(id)) continue;
+                struct stat st;
+                if (stat((host + "/" + nm).c_str(), &st) == 0 && S_ISREG(st.st_mode)) ids.push_back(id);
+            }
+            closedir(d);
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+    for (size_t i = 0; i < ids.size(); i++) {
+        std::string text;
+        if (!auto_read_file(ids[i], text)) continue;
+        std::string on;
+        bool enabled = true;
+        web_json_get_str(text, "on", on);
+        web_json_get_bool(text, "enabled", &enabled);
+        if (i) out += ',';
+        out += "{\"id\":";
+        web_json_str(out, ids[i].c_str());
+        out += ",\"enabled\":";
+        out += enabled ? "true" : "false";
+        out += ",\"on\":";
+        web_json_str(out, on.c_str());
+        out += "}";
+    }
+    out += "]}";
+}
+
+/* ---------------------------------------------------------------- web endpoints */
 
 static bool automation_handle(web_req_t *r)
 {
-    if (!tools_is(r, "POST", "/api/automation/run")) return false;
-    std::string body;
-    if (!tools_read_json(r, body, AUTO_SRC_MAX + 1024)) return true;
-    std::string src;
-    web_json_get_str(body, "source", src);
-    if (src.size() > AUTO_SRC_MAX) { web_resp_error(r, 400, "too_large", "script too large"); return true; }
-    std::string out;
-    bool ok = berry_run(src, out);
-    std::string j = "{\"ok\":";
-    j += ok ? "true" : "false";
-    j += ",\"engine\":\"berry\",\"output\":";
-    web_json_str(j, out.c_str());
-    j += "}";
-    web_resp_json(r, 200, j);
-    return true;
+    if (tools_is(r, "GET", "/api/automation/list")) {
+        std::string j;
+        auto_list(j);
+        web_resp_json(r, 200, j);
+        return true;
+    }
+    if (tools_is(r, "GET", "/api/automation/read")) {
+        char idbuf[64] = {0};
+        web_query_get(r, "id", idbuf, sizeof(idbuf));
+        std::string id = idbuf;
+        if (!auto_id_ok(id)) { web_resp_error(r, 400, "bad_name", "bad rule id"); return true; }
+        std::string host;
+        if (web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host)) {
+            web_resp_error(r, 503, "sd_missing", "SD card not mounted");
+            return true;
+        }
+        std::string text;
+        if (!auto_read_file(id, text) || text.empty()) { web_resp_error(r, 404, "not_found", "no such rule"); return true; }
+        std::string j = "{\"id\":";
+        web_json_str(j, id.c_str());
+        j += ",\"rule\":";
+        j += text;                     /* the file is a JSON object (validated on save) -- embed raw */
+        j += "}";
+        web_resp_json(r, 200, j);
+        return true;
+    }
+    if (tools_is(r, "POST", "/api/automation/save")) {
+        std::string body;
+        if (!tools_read_json(r, body, AUTO_RULE_MAX + 1024)) return true;
+        if (body.size() > AUTO_RULE_MAX) { web_resp_error(r, 400, "too_large", "rule too large"); return true; }
+        if (!web_json_is_object(body)) { web_resp_error(r, 400, "bad_request", "rule must be a JSON object"); return true; }
+        std::string id;
+        if (!web_json_get_str(body, "id", id) || !auto_id_ok(id)) {
+            web_resp_error(r, 400, "bad_name", "rule needs a valid id");
+            return true;
+        }
+        std::string dirhost;
+        if (web_fs_resolve(AUTO_DIR, dirhost)) { web_resp_error(r, 503, "sd_missing", "SD card not mounted"); return true; }
+        mkdir(dirhost.c_str(), 0777);
+        std::string host;
+        web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host);
+        FILE *f = fopen(host.c_str(), "wb");
+        if (!f) { web_resp_error(r, 500, "write_failed", "could not write rule"); return true; }
+        fwrite(body.data(), 1, body.size(), f);
+        fclose(f);
+        std::string j = "{\"ok\":true,\"id\":";
+        web_json_str(j, id.c_str());
+        j += ",\"size\":" + tools_int((long)body.size()) + "}";
+        web_resp_json(r, 200, j);
+        return true;
+    }
+    if (tools_is(r, "POST", "/api/automation/delete")) {
+        std::string body;
+        if (!tools_read_json(r, body, 512)) return true;
+        std::string id;
+        web_json_get_str(body, "id", id);
+        if (!auto_id_ok(id)) { web_resp_error(r, 400, "bad_name", "bad rule id"); return true; }
+        std::string host;
+        if (web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host)) {
+            web_resp_error(r, 503, "sd_missing", "SD card not mounted");
+            return true;
+        }
+        if (remove(host.c_str()) != 0) { web_resp_error(r, 404, "not_found", "no such rule"); return true; }
+        web_resp_ok(r);
+        return true;
+    }
+    return false;
 }
 
 static const char *const AUTO_CAPS[] = { "automation", NULL };

@@ -55,7 +55,7 @@ const BOOT = Date.now();
 const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
-const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display', 'term', 'script',
+const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display', 'term', 'script', 'automation',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
@@ -175,6 +175,30 @@ const SCRIPT_MS_MAX = 8000, SCRIPT_SLEEP_MAX = 5000, SCRIPT_DEPTH_MAX = 24, SCRI
 const isNameStart = (c) => /[A-Za-z_]/.test(c);
 const isNameChar = (c) => /[A-Za-z0-9_]/.test(c);
 const scriptNameOk = (n) => typeof n === 'string' && /^[A-Za-z0-9._-]{1,48}$/.test(n) && !n.includes('..') && n.endsWith('.scr');
+
+// ---- automation (headless rule engine; mirrors web_tool_automation.cpp) ----
+const AUTO_DIR = '/sd/automation', AUTO_RULE_MAX = 8 * 1024;
+const autoIdOk = (id) => typeof id === 'string' && /^[A-Za-z0-9._-]{1,48}$/.test(id) && !id.includes('..');
+async function autoList() {
+  const r = resolvePath(AUTO_DIR);
+  if (r.error) return [];
+  let names = [];
+  try { names = await fsp.readdir(r.abs); } catch { return []; }
+  const out = [];
+  for (const nm of names.sort()) {
+    if (!nm.endsWith('.json')) continue;
+    const id = nm.slice(0, -5);
+    if (!autoIdOk(id)) continue;
+    try {
+      const st = await fsp.stat(join(r.abs, nm));
+      if (!st.isFile()) continue;
+      let rule = {};
+      try { rule = JSON.parse((await fsp.readFile(join(r.abs, nm))).toString('utf8')); } catch { /* keep {} */ }
+      out.push({ id, enabled: rule.enabled !== false, on: typeof rule.on === 'string' ? rule.on : '' });
+    } catch { /* skip */ }
+  }
+  return out;
+}
 
 // Seg: {type:0 lit|1 var(text=name)|2 arith}. Word = Seg[]. Statement = Word[].
 function scriptLex(src) {
@@ -1518,6 +1542,37 @@ async function toolsRoute(req, res, url, path) {
     const r = resolvePath(`${SCRIPT_DIR}/${name}`);
     if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
     try { await fsp.unlink(r.abs); } catch { return fail(res, 404, 'not_found', 'no such script'); }
+    return ok(res);
+  }
+  if (path === '/api/automation/list' && m === 'GET') return json(res, 200, { dir: AUTO_DIR, rules: await autoList() });
+  if (path === '/api/automation/read' && m === 'GET') {
+    const id = url.searchParams.get('id') || '';
+    if (!autoIdOk(id)) return fail(res, 400, 'bad_name', 'bad rule id');
+    const r = resolvePath(`${AUTO_DIR}/${id}.json`);
+    if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { const rule = JSON.parse((await fsp.readFile(r.abs)).toString('utf8')); return json(res, 200, { id, rule }); }
+    catch { return fail(res, 404, 'not_found', 'no such rule'); }
+  }
+  if (path === '/api/automation/save' && m === 'POST') {
+    const rule = await readJSON(req);
+    const body = JSON.stringify(rule ?? null);
+    if (body.length > AUTO_RULE_MAX) return fail(res, 400, 'too_large', 'rule too large');
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return fail(res, 400, 'bad_request', 'rule must be a JSON object');
+    const id = typeof rule.id === 'string' ? rule.id : '';
+    if (!autoIdOk(id)) return fail(res, 400, 'bad_name', 'rule needs a valid id');
+    const dir = resolvePath(AUTO_DIR);
+    if (dir.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { await fsp.mkdir(dir.abs, { recursive: true }); await fsp.writeFile(join(dir.abs, `${id}.json`), body); }
+    catch { return fail(res, 500, 'write_failed', 'could not write rule'); }
+    return json(res, 200, { ok: true, id, size: Buffer.byteLength(body) });
+  }
+  if (path === '/api/automation/delete' && m === 'POST') {
+    const b = await readJSON(req);
+    const id = typeof b?.id === 'string' ? b.id : '';
+    if (!autoIdOk(id)) return fail(res, 400, 'bad_name', 'bad rule id');
+    const r = resolvePath(`${AUTO_DIR}/${id}.json`);
+    if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { await fsp.unlink(r.abs); } catch { return fail(res, 404, 'not_found', 'no such rule'); }
     return ok(res);
   }
   if (path === '/api/logs' && m === 'GET') {

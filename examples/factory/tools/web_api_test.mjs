@@ -544,20 +544,32 @@ check('POST /api/script/delete', r.status === 200 && r.json?.ok === true, r.json
 r = await call('GET', '/api/script/list');
 check('deleted script is gone', !(r.json?.scripts || []).some((s) => s.name === 'api-test.scr'), r.json);
 
-// ---- automation (Berry; firmware only — the JS mock cannot re-run a native interpreter) ----
+// ---- automation (headless rule engine; CRUD plane, mirrored sim + mock) ----
 if (caps.includes('automation')) {
-  console.log('automation (berry)');
-  const brun = async (source) => (await call('POST', '/api/automation/run', { source })).json;
-  let a = await brun('print("hi", 2+3)');
-  check('berry: print + arithmetic', a?.ok === true && a.engine === 'berry' && a.output === 'hi 5\n', a);
-  a = await brun('def sq(x) return x*x end for i:1..3 print(sq(i)) end');
-  check('berry: functions + range loop', a?.ok === true && a.output === '1\n4\n9\n', a);
-  a = await brun('var l=[] for i:1..4 l.push(i) end print(l.size())');
-  check('berry: lists + methods', a?.ok === true && a.output === '4\n', a);
-  a = await brun('print(no_such_name)');
-  check('berry: compile error reported', a?.ok === false && /error/.test(a.output || ''), a);
-  a = await brun('var x = 1 / 0');
-  check('berry: runtime exception reported', a?.ok === false && /zero/.test(a.output || ''), a);
+  console.log('automation (rule CRUD)');
+  const RID = 'api-test-rule';
+  const rule = { id: RID, enabled: true, on: 'battery', if: { level: { lt: 20 } }, do: [{ notify: { title: 'Low battery' } }] };
+  await call('POST', '/api/automation/delete', { id: RID });      // clean slate from a prior run
+  r = await call('POST', '/api/automation/save', rule);
+  check('POST /api/automation/save', r.status === 200 && r.json?.ok === true && r.json.id === RID && r.json.size > 0, r.json);
+  r = await call('GET', '/api/automation/list');
+  const listed = (r.json?.rules || []).find((x) => x.id === RID);
+  check('saved rule appears in list with summary', r.status === 200 && listed && listed.enabled === true && listed.on === 'battery', r.json);
+  r = await call('GET', `/api/automation/read?id=${RID}`);
+  check('GET /api/automation/read round-trips the rule', r.status === 200 && r.json?.id === RID &&
+    r.json.rule?.on === 'battery' && r.json.rule?.if?.level?.lt === 20 && Array.isArray(r.json.rule?.do), r.json);
+  r = await call('POST', '/api/automation/save', { enabled: true, on: 'net' });
+  check('save without an id is rejected', r.status === 400 && r.json?.error === 'bad_name', r.json);
+  r = await call('POST', '/api/automation/save', { id: '../escape', on: 'net' });
+  check('save with a path-traversal id is rejected', r.status === 400 && r.json?.error === 'bad_name', r.json);
+  r = await call('GET', '/api/automation/read?id=no-such-rule');
+  check('read of a missing rule is 404', r.status === 404 && r.json?.error === 'not_found', r.json);
+  r = await call('POST', '/api/automation/delete', { id: RID });
+  check('POST /api/automation/delete', r.status === 200 && r.json?.ok === true, r.json);
+  r = await call('GET', '/api/automation/list');
+  check('deleted rule is gone', !(r.json?.rules || []).some((x) => x.id === RID), r.json);
+  r = await call('POST', '/api/automation/delete', { id: RID });
+  check('delete of a missing rule is 404', r.status === 404 && r.json?.error === 'not_found', r.json);
 } else {
   console.log('automation: cap absent on this target — skipped');
 }
