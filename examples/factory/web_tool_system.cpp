@@ -137,6 +137,28 @@ static bool parse_note(web_req_t *r, const std::string &body, notification_t &n,
     return true;
 }
 
+void web_notify_raise(const std::string &title, const std::string &body, const std::string &level,
+                      bool vibrate, bool on_ui_thread)
+{
+    if (title.empty()) return;
+    notification_t n;
+    n.title = title.size() > 64 ? title.substr(0, 64) : title;
+    n.body = body.size() > 512 ? body.substr(0, 512) : body;
+    n.level = (level == "warn" || level == "alert") ? level : "info";
+    n.ts = tools_epoch();
+    {
+        std::lock_guard<std::mutex> lk(s_note_mx);
+        n.id = "n" + tools_int(++s_note_seq);
+        s_notes.push_front(n);
+        while (s_notes.size() > NOTIFY_KEEP) s_notes.pop_back();
+    }
+    int lv = n.level == "alert" ? 2 : n.level == "warn" ? 1 : 0;
+    if (on_ui_thread) web_hw_notify(n.title.c_str(), n.body.c_str(), lv, vibrate);
+    else web_ui_run([&] { web_hw_notify(n.title.c_str(), n.body.c_str(), lv, vibrate); });
+    web_plat_log("[web] notification: %s", n.title.c_str());
+    web_events_publish("notify", note_json(n).c_str());
+}
+
 static void post_notify(web_req_t *r)
 {
     std::string body;

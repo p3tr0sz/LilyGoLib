@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <atomic>
 
 #define AUTO_DIR       "/sd/automation"
 #define AUTO_RULE_MAX  (8 * 1024)      /* largest rule JSON accepted / stored */
@@ -226,6 +228,174 @@ static bool auto_rule_match(const std::string &rule, const std::string &topic, c
     return onm && ifm;
 }
 
+/* ---------------------------------------------------------------- live engine (headless)
+ * A sink on the event tap (web_events_subscribe) enqueues every published event into a small ring,
+ * even with no desktop connected. The ring is drained on the UI-thread tick, where rules are matched
+ * and their action chains run. Nothing here touches hardware off the UI thread; the publish-thread
+ * sink only copies into the ring. */
+
+#define AUTO_RING      16
+#define AUTO_DRAIN_MAX 4           /* events processed per tick, to bound UI-thread time */
+#define AUTO_ACT_MS_MAX 3000       /* wall-clock budget for one rule's whole action chain */
+
+struct auto_event { std::string topic; std::string d; };
+static auto_event s_ring[AUTO_RING];
+static int s_ring_head = 0, s_ring_count = 0;
+static std::mutex s_ring_mx;
+
+/* Per-rule debounce: last-fire tick for min_interval_ms. Small and linear -- few rules. */
+static std::vector<std::pair<std::string, uint32_t>> s_last_fired;
+
+/* In-memory rule cache (id -> rule JSON). The drain matches against this, never SD: scanning
+ * /sd/automation on every tick starved the UI-thread workers. Rebuilt only when a save/delete marks
+ * it dirty (set on the server thread, consumed on the UI-thread drain), and once on first use. */
+static std::vector<std::pair<std::string, std::string>> s_rules;
+static std::atomic<bool> s_rules_dirty{true};
+
+static void auto_sink(const char *topic, const char *d_json, void *user)
+{
+    (void)user;
+    std::lock_guard<std::mutex> lk(s_ring_mx);
+    if (s_ring_count >= AUTO_RING) {                 /* full: drop the oldest (events are advisory) */
+        s_ring_head = (s_ring_head + 1) % AUTO_RING;
+        s_ring_count--;
+    }
+    int tail = (s_ring_head + s_ring_count) % AUTO_RING;
+    s_ring[tail].topic = topic ? topic : "";
+    s_ring[tail].d = (d_json && *d_json) ? d_json : "{}";
+    s_ring_count++;
+}
+
+/* Sorted rule ids on SD (the filesystem half of auto_list, without reading bodies). */
+static void auto_list_ids(std::vector<std::string> &ids)
+{
+    ids.clear();
+    std::string host;
+    if (web_fs_resolve(AUTO_DIR, host) != 0) return;
+    DIR *d = opendir(host.c_str());
+    if (!d) return;
+    while (struct dirent *ent = readdir(d)) {
+        std::string nm = ent->d_name;
+        if (nm.size() <= 5 || nm.compare(nm.size() - 5, 5, ".json") != 0) continue;
+        std::string id = nm.substr(0, nm.size() - 5);
+        if (!auto_id_ok(id)) continue;
+        struct stat st;
+        if (stat((host + "/" + nm).c_str(), &st) == 0 && S_ISREG(st.st_mode)) ids.push_back(id);
+    }
+    closedir(d);
+    std::sort(ids.begin(), ids.end());
+}
+
+static bool auto_debounced(const std::string &id, uint32_t now, uint32_t interval)
+{
+    for (auto &e : s_last_fired)
+        if (e.first == id) return (now - e.second) < interval;
+    return false;
+}
+
+static void auto_mark_fired(const std::string &id, uint32_t now)
+{
+    for (auto &e : s_last_fired)
+        if (e.first == id) { e.second = now; return; }
+    s_last_fired.push_back({ id, now });
+}
+
+/* Run one action object. Returns true on success; a false stops the chain (like the DSL's exit status).
+ * Reuses existing verbs: {notify:{...}} the notify tool, {term:"..."} the sandboxed shell, {script:"x.scr"}
+ * the Scripts engine. Runs on the UI thread (from the tick drain). */
+static bool auto_run_action(const std::string &action, const std::string &d, std::string &cwd)
+{
+    (void)d;                                          /* $d.* value substitution: a later slice */
+    std::string obj, str;
+    if (web_json_raw(action, "notify", obj)) {
+        std::string title, body, level = "info";
+        web_json_get_str(obj, "title", title);
+        web_json_get_str(obj, "body", body);
+        web_json_get_str(obj, "level", level);
+        if (title.empty()) return false;
+        web_notify_raise(title, body, level, true, true);
+        return true;
+    }
+    if (web_json_get_str(action, "term", str)) {
+        std::string out;
+        return term_exec(cwd, str, out) == 0;         /* 0 = success */
+    }
+    if (web_json_get_str(action, "script", str)) {
+        std::string src;
+        if (!script_read_file(str, src)) return false;
+        std::string out;
+        script_run(cwd, src, out);
+        return true;
+    }
+    return false;                                     /* unknown action kind: fail the chain */
+}
+
+static void auto_fire(const std::string &rule, const std::string &d)
+{
+    std::string doRaw;
+    if (!web_json_raw(rule, "do", doRaw)) return;
+    std::vector<std::string> actions;
+    web_json_array_items(doRaw, actions);
+    uint32_t start = tools_now_ms();
+    std::string cwd = "/sd";
+    for (const std::string &a : actions) {
+        if (tools_now_ms() - start > AUTO_ACT_MS_MAX) break;
+        if (!auto_run_action(a, d, cwd)) break;
+    }
+}
+
+/* Rebuild the cache from SD (UI thread only). Called when dirty -- never in the per-event hot path. */
+static void auto_rules_reload(void)
+{
+    s_rules.clear();
+    std::vector<std::string> ids;
+    auto_list_ids(ids);
+    for (const std::string &id : ids) {
+        std::string rule;
+        if (auto_read_file(id, rule) && !rule.empty()) s_rules.push_back({ id, rule });
+    }
+}
+
+static void auto_dispatch_event(const std::string &topic, const std::string &d, uint32_t now_ms)
+{
+    if (s_rules_dirty.exchange(false)) auto_rules_reload();
+    for (const auto &r : s_rules) {
+        bool enabled = true;
+        web_json_get_bool(r.second, "enabled", &enabled);
+        if (!enabled) continue;
+        bool onm, ifm;
+        if (!auto_rule_match(r.second, topic, d, &onm, &ifm)) continue;
+        double mi = 0;
+        if (web_json_get_num(r.second, "min_interval_ms", &mi) && mi > 0 &&
+            auto_debounced(r.first, now_ms, (uint32_t)mi)) continue;
+        auto_fire(r.second, d);
+        auto_mark_fired(r.first, now_ms);
+    }
+}
+
+static void auto_tick(uint32_t now_ms)
+{
+    static bool subscribed = false;
+    if (!subscribed) { web_events_subscribe(auto_sink, NULL); subscribed = true; }
+    for (int k = 0; k < AUTO_DRAIN_MAX; k++) {
+        auto_event ev;
+        {
+            std::lock_guard<std::mutex> lk(s_ring_mx);
+            if (s_ring_count == 0) break;
+            ev = s_ring[s_ring_head];
+            s_ring_head = (s_ring_head + 1) % AUTO_RING;
+            s_ring_count--;
+        }
+        auto_dispatch_event(ev.topic, ev.d, now_ms);
+    }
+}
+
+static void auto_stop(void)
+{
+    std::lock_guard<std::mutex> lk(s_ring_mx);
+    s_ring_head = s_ring_count = 0;                   /* the sink stays subscribed; just drop the backlog */
+}
+
 /* ---------------------------------------------------------------- web endpoints */
 
 static bool automation_handle(web_req_t *r)
@@ -275,6 +445,7 @@ static bool automation_handle(web_req_t *r)
         if (!f) { web_resp_error(r, 500, "write_failed", "could not write rule"); return true; }
         fwrite(body.data(), 1, body.size(), f);
         fclose(f);
+        s_rules_dirty = true;          /* the UI-thread drain reloads the cache on its next pass */
         std::string j = "{\"ok\":true,\"id\":";
         web_json_str(j, id.c_str());
         j += ",\"size\":" + tools_int((long)body.size()) + "}";
@@ -329,6 +500,7 @@ static bool automation_handle(web_req_t *r)
             return true;
         }
         if (remove(host.c_str()) != 0) { web_resp_error(r, 404, "not_found", "no such rule"); return true; }
+        s_rules_dirty = true;
         web_resp_ok(r);
         return true;
     }
@@ -336,6 +508,6 @@ static bool automation_handle(web_req_t *r)
 }
 
 static const char *const AUTO_CAPS[] = { "automation", NULL };
-const web_tool_t web_tool_automation = { AUTO_CAPS, automation_handle, NULL, NULL, NULL };
+const web_tool_t web_tool_automation = { AUTO_CAPS, automation_handle, auto_tick, NULL, auto_stop };
 
 #endif /* FACTORY_WEB */

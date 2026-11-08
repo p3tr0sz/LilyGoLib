@@ -118,6 +118,22 @@ if (DEV) {
     const tap2 = (await call('POST', '/api/_dev/emit', { topic: 'automation.tap.ping2' })).json;
     check('tap: each publish advances the sink',
       tap2?.seat === -1 && tap2.events_seen > tap1.events_seen && tap2.last_topic === 'automation.tap.ping2', tap2);
+    // A rule fires headless: save a rule, publish its trigger with NO WebSocket (seat === -1),
+    // and assert the notify action ran. This is the whole point of the engine, and the one thing
+    // the JS mock can't prove (it has no firmware event bus).
+    if (caps.includes('automation')) {
+      const FIRE_ID = 'selftest-fire';
+      await call('POST', '/api/automation/delete', { id: FIRE_ID });
+      await call('POST', '/api/automation/save',
+        { id: FIRE_ID, enabled: true, on: 'automation.selftest.fire', do: [{ notify: { title: 'rule fired headless' } }] });
+      const em = (await call('POST', '/api/_dev/emit', { topic: 'automation.selftest.fire' })).json;
+      await new Promise((x) => setTimeout(x, 400));           // let the UI tick drain + fire
+      const notes = (await call('GET', '/api/notify')).json;
+      const fired = (notes?.items || []).some((n) => n.title === 'rule fired headless');
+      check('rule fires headless (no WebSocket) via the event tap',
+        em?.seat === -1 && fired, { seat: em?.seat, items: (notes?.items || []).slice(0, 2) });
+      await call('POST', '/api/automation/delete', { id: FIRE_ID });
+    }
   } else {
     console.log('automation event tap: /api/_dev/emit absent (mock) — skipped');
   }

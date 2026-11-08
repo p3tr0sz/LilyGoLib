@@ -57,6 +57,14 @@ void script_run(std::string &cwd, const std::string &src, std::string &out);
 void script_list_names(std::vector<std::string> &out);                 /* .scr files in /sd/scripts */
 bool script_read_file(const std::string &name, std::string &src);      /* read one by name */
 
+/* Raise a notification from inside the firmware -- the same store/buzz/publish as POST /api/notify
+ * (web_tool_system.cpp), for the automation rule engine's notify action. on_ui_thread must be true
+ * when called from a UI-thread context (a tool's tick/second) so the buzz runs inline; false from a
+ * server-thread handler, where it is marshalled through web_ui_run (calling web_ui_run from the UI
+ * thread would deadlock). */
+void web_notify_raise(const std::string &title, const std::string &body, const std::string &level,
+                      bool vibrate, bool on_ui_thread);
+
 /* ---------------------------------------------------------------- shared helpers (web_tools.cpp) */
 
 uint32_t tools_now_ms(void);
