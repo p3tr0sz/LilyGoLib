@@ -64,6 +64,17 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - Removed whole-app live-region chatter, added toast live region metadata, dialog labels/focus trapping and reduced-motion CSS.
 - Desktop status uses text as well as colour.
 
+### Follow-up fixes (2026-11-08 review)
+
+A correctness/readability review of the desktop shell and Evil Portal produced these fixes:
+
+- **Evil Portal — captive-template teardown race.** `handle_captive_request()` read `s_active_template` across the whole response while the main-loop auto-stop could null or replace it; the template is now copied to a local before serving, shrinking the use-after-free window to a single copy. A full lifecycle mutex over `s_active`/`s_active_template`/`s_custom_html` is noted in-code as a reviewed follow-up (not landed unvalidated on hardware).
+- **Evil Portal — dead capture fields.** The never-populated `mac`/`hostname` were dropped from the capture JSON and the SD CSV header (struct fields marked reserved), so the data model no longer advertises data it never delivers.
+- **Evil Portal — auto-stop timers.** The idle (“base”) and active (“extended”) stop timers are now independent; either set to 0 means off, matching the UI labels (previously both were gated behind `base > 0`).
+- **Evil Portal — verify vs twin channel.** While the portal is active, finishing PSK verification no longer reconnects the saved home STA — which would pull the shared radio (and the portal AP) off the twin channel; the real STA restore still happens at teardown.
+- **Evil Portal desktop — select repaint.** The template and SSID-preset `<select>`s are no longer rebuilt while the user has one open during the 2-second poll.
+- **Desktop shell — re-pair leak.** `startDesktop()` wired intervals, document listeners and event subscriptions that `onUnpaired()` never tore down, so each re-pair doubled them; the shell is now teardownable and idempotent, and a redundant boot `/api/device` fetch was removed.
+
 ## Verification
 
 Final successful runs after P9.5 core:
@@ -72,8 +83,8 @@ Final successful runs after P9.5 core:
 - `pio run -e emulator_watch_ultra` — **pass**
 - `node web_api_test.mjs --dev-pin` — **310/310**
 - `node web_api_test.mjs --url http://localhost:8080 --dev-pin` — **314/314**
-- `node web_ui_test.mjs` — **170/170**
-- `node web_ui_test.mjs --url http://localhost:8080` — **171/171**
+- `node web_ui_test.mjs` — **177/177** (mock)
+- `node web_ui_test.mjs --url http://localhost:8080` — **178/178** (simulator; both include the Terminal app)
 
 The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filters/AP/EAPOL/handshake analysis, CSI calibration/motion/presence hold/recalibration/events/radio conflicts, independent Faro calibration/motion/holds and TTL, alarm validation/exit/grace/zone trigger/manual disarm/timeout/events, bounded 60-second history, Faro transmitter validation/lifecycle/counters, alerts, tracker persistence, FIDO unavailable behaviour, authorization, custom SD template validation/serving, safe clone success/failure, WPA2 PSK validation, per-capture valid/invalid verification with redaction, passive probe aggregation, selected-SSID KARMA startup, captive POST, deauth scans, independent campaign failure/completion, aggregate/per-target counter consistency, PMF-limited outcomes, reconnect metrics and custom beacon lists. Desktop tests click every P9 app, including sniffer live analysis, CSI stable/motion/present states, independent Faro motion, graph rendering, alarm arm/trigger/timeout/disarm, Faro transmitter start/stop, custom template selection, asynchronous cloning, WPA2 twin startup, live PSK verification, probe-discovery consent/results/KARMA startup, multi-target campaign progress and reconnect health.
 
