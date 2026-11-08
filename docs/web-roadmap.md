@@ -164,6 +164,7 @@ Item 1 (**command exit status for `term_exec`**) landed on 2026-11-08 — see th
 | 5 | **TOTP authenticator** | RFC 6238 codes from secrets stored on the watch; a small, self-contained app. |
 | 6 | **Notepad / editor** | A plain-text editor over the file API — also makes on-device `.scr` editing viable. |
 | 7 | **Per-app help / info** | One shared help registry (a short "what this does, web vs device" blurb per app) surfaced as a `?` in each desktop window's title bar and an on-device help page, sourced from a single file so it cannot drift. |
+| 8 | **Loadable native apps (`.nap`) — gated on a flash map** | Systemic flash lever from the NucleoOS model: built-ins stay resident; a *tail* of large/optional apps loads from SD on demand (PIE ELF32 Xtensa shared objects, flash scratch region, name-based ABI table with level + layout-fingerprint discipline). **Not started — gated:** first measure `twatch_ultra`'s resident-flash breakdown; pursue only if the movable (non-radio/non-system) tail justifies a dynamic-linker + ABI + store + signing subsystem. Make-or-break design item: a narrow, LVGL-opaque ABI. Full evaluation: `eval-loadable-native-apps.md`. |
 
 ### Next steps to NucleoOS parity
 
