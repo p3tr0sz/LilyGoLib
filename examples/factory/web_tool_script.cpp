@@ -22,8 +22,9 @@
  * Everything that is not a builtin is handed to the Terminal shell (term_exec in web_tool_term.cpp),
  * so `ls`, `cat`, `status`, `cd`, `logs`, … behave exactly as they do in the Terminal and stay
  * sandboxed to /sd and /flash. (*echo is one of those, routed to term_exec after expansion, so the
- * two agree.) External commands always report success ($? = 0) in this slice — use test/[ … ] for
- * real conditionals; a later slice adds command exit status and device-action verbs.
+ * two agree.) External commands report the shell's real exit status in $? (0 success, 1 a failed
+ * command, 127 command not found), so `if cmd`, `while cmd`, `&&` and `||` branch on whether the
+ * command actually succeeded — not only on test/[ … ].
  *
  * Scripts live in /sd/scripts as .scr files. The run is synchronous and bounded (step, wall-clock and
  * output caps, and a per-sleep cap) so a runaway or infinite loop cannot hang the device.
@@ -576,13 +577,14 @@ static void run_argv(Ctx &c, const std::vector<std::string> &argv)
     }
 
     /* Everything else is a Terminal command (ls, cat, cd, status, echo, …). Reconstruct the line
-     * from the expanded argv and hand it to the shared shell; it stays sandboxed there. */
+     * from the expanded argv and hand it to the shared shell; it stays sandboxed there. Its real exit
+     * status (0 success, 1 a failed command, 127 command not found) becomes $?, so `if cmd`, `while
+     * cmd`, `&&` and `||` branch on whether the command actually succeeded. */
     std::string line;
     for (size_t i = 0; i < argv.size(); i++) { if (i) line += ' '; line += argv[i]; }
     std::string out;
-    term_exec(c.cwd, line, out);
+    c.status = term_exec(c.cwd, line, out);
     out_add(c, out);
-    c.status = 0;                                      /* external status is success in this slice */
 }
 
 static void run_simple(Ctx &c, const Node &n)

@@ -10,8 +10,9 @@
 
 #include <string>
 
-/* The shared shell (web_tool_term.cpp). cwd is carried here between commands. */
-extern void term_exec(std::string &cwd, const std::string &line, std::string &out);
+/* The shared shell (web_tool_term.cpp). cwd is carried here between commands. It returns an exit
+ * status the on-device Terminal does not display; the Scripts engine uses it. */
+extern int term_exec(std::string &cwd, const std::string &line, std::string &out);
 
 #define TERM_LOG_MAX   8192         /* trim the on-screen log to roughly this many bytes */
 

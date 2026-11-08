@@ -126,6 +126,7 @@ async function termExec(cwd, line) {
   if (!cwd) cwd = '/sd';
   const out = [];
   const add = (s) => out.push(s);
+  let status = 0;                                       // 0 success, 1 a failed command, 127 not found
   const t = (line || '').trim();
   const sp = t.indexOf(' ');
   const cmd = sp < 0 ? t : t.slice(0, sp);
@@ -137,24 +138,24 @@ async function termExec(cwd, line) {
   else if (cmd === 'cd') {
     const api = termNorm(cwd, rest);
     if (api === '/') cwd = '/';
-    else { const r = resolvePath(api); let ok = false; if (!r.error) { try { ok = (await fsp.stat(r.abs)).isDirectory(); } catch {} } if (ok) cwd = api; else add(`cd: ${api}: no such directory`); }
+    else { const r = resolvePath(api); let ok = false; if (!r.error) { try { ok = (await fsp.stat(r.abs)).isDirectory(); } catch {} } if (ok) cwd = api; else { add(`cd: ${api}: no such directory`); status = 1; } }
   } else if (cmd === 'ls' || cmd === 'dir') {
     const api = termNorm(cwd, rest);
     if (api === '/') { add('flash/'); add('sd/'); }
     else {
       const r = resolvePath(api);
-      if (r.error) add(`ls: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such path'}`);
+      if (r.error) { add(`ls: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such path'}`); status = 1; }
       else try {
         const st = await fsp.stat(r.abs);
         if (!st.isDirectory()) add(api);
         else { const names = (await fsp.readdir(r.abs)).sort(); if (!names.length) add('(empty)'); for (const n of names) { const s = await fsp.stat(join(r.abs, n)); add(s.isDirectory() ? n + '/' : `${n}\t${s.size} B`); } }
-      } catch { add(`ls: ${api}: no such path`); }
+      } catch { add(`ls: ${api}: no such path`); status = 1; }
     }
   } else if (cmd === 'cat' || cmd === 'type') {
-    if (!rest) add('cat: missing file');
+    if (!rest) { add('cat: missing file'); status = 1; }
     else { const api = termNorm(cwd, rest); const r = resolvePath(api);
-      if (r.error) add(`cat: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such file'}`);
-      else try { const st = await fsp.stat(r.abs); if (st.isDirectory()) add(`cat: ${api}: not a file`); else { let buf = await fsp.readFile(r.abs); const total = buf.length; if (buf.length > 16384) buf = buf.subarray(0, 16384); out.push(buf.toString('utf8').replace(/\n$/, '')); if (total > 16384) add(`… (truncated at 16384 B of ${total})`); } } catch { add(`cat: ${api}: not a file`); }
+      if (r.error) { add(`cat: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such file'}`); status = 1; }
+      else try { const st = await fsp.stat(r.abs); if (st.isDirectory()) { add(`cat: ${api}: not a file`); status = 1; } else { let buf = await fsp.readFile(r.abs); const total = buf.length; if (buf.length > 16384) buf = buf.subarray(0, 16384); out.push(buf.toString('utf8').replace(/\n$/, '')); if (total > 16384) add(`… (truncated at 16384 B of ${total})`); } } catch { add(`cat: ${api}: not a file`); status = 1; }
     }
   } else if (cmd === 'status') { add(`uptime   ${Math.floor(process.uptime())} s`); add('cpu      240 MHz'); add('app      (home)'); add('battery  99%  charging  4178 mV'); add('wifi     sta  mock  -50 dBm'); add('heap     180000 free / 320000 B'); }
   else if (cmd === 'free') { add('heap   180000 free  120000 min  320000 total'); add('psram  2000000 free  8000000 total'); }
@@ -164,8 +165,8 @@ async function termExec(cwd, line) {
   else if (cmd === 'logs') add('(no log lines yet)');
   else if (cmd === 'reboot') add('Rebooting…');
   else if (cmd === 'clear') { /* front-end handles it */ }
-  else add(`${cmd}: command not found (try help)`);
-  return { cwd, output: out.length ? out.join('\n') + '\n' : '' };
+  else { add(`${cmd}: command not found (try help)`); status = 127; }
+  return { cwd, output: out.length ? out.join('\n') + '\n' : '', status };
 }
 
 // ---- scripting engine (mirrors web_tool_script.cpp script_run so mock and firmware agree) ----
@@ -489,11 +490,12 @@ async function scriptRun(cwd, src) {
       C.status = await evalTest(a);
       return;
     }
-    // external: reconstruct the line and hand to the Terminal shell (keeps the sandbox)
+    // external: reconstruct the line and hand to the Terminal shell (keeps the sandbox). Its real
+    // exit status becomes $?, so `if cmd`, `while cmd`, `&&` and `||` branch on actual success.
     const r = await termExec(C.cwd, argv.join(' '));
     C.cwd = r.cwd;
     outAdd(r.output);
-    C.status = 0;
+    C.status = r.status;
   };
 
   const runSimple = async (n) => {

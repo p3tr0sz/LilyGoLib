@@ -44,8 +44,9 @@ extern const web_tool_t web_tool_monitor, web_tool_notify, web_tool_sensors, web
        web_tool_evilportal, web_tool_deauthflood, web_tool_beaconspam, web_tool_term, web_tool_script;
 
 /* The shared command shell behind the web Terminal (POST /api/term) and the native Terminal
- * (ui_terminal.cpp). Runs one line against cwd (updated by `cd`) and appends text to out. */
-void term_exec(std::string &cwd, const std::string &line, std::string &out);
+ * (ui_terminal.cpp). Runs one line against cwd (updated by `cd`), appends text to out and returns the
+ * exit status (0 success, 1 a failed command, 127 command not found). */
+int term_exec(std::string &cwd, const std::string &line, std::string &out);
 
 /* The shared sh-like scripting engine behind the web Scripts app (POST /api/script/run) and the
  * native Scripts app (ui_script.cpp). Runs a whole script source against cwd and appends output.

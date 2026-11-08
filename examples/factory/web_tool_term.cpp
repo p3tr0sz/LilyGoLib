@@ -3,10 +3,16 @@
  * @brief     A small command shell shared by the web Terminal app (POST /api/term) and the native
  *            on-device Terminal (ui_terminal.cpp). One command set, two thin front-ends.
  *
- * The dispatcher is a pure function: term_exec(cwd, line) -> output text, with cwd carried by the
- * caller (the web app keeps it per browser; the native app keeps it in the page). Commands read the
- * filesystem through web_fs_resolve() so they are sandboxed to /sd and /flash exactly like the Files
- * app. Nothing here changes radio or attack state; it is a status/filesystem console.
+ * The dispatcher is a pure function: term_exec(cwd, line) -> exit status, appending output text, with
+ * cwd carried by the caller (the web app keeps it per browser; the native app keeps it in the page).
+ * Commands read the filesystem through web_fs_resolve() so they are sandboxed to /sd and /flash
+ * exactly like the Files app. Nothing here changes radio or attack state; it is a status/filesystem
+ * console.
+ *
+ * The exit status follows the usual shell convention: 0 is success, a failed command returns 1, and
+ * an unknown command returns 127. The Scripts engine (web_tool_script.cpp) reads it so `if cmd`,
+ * `while cmd`, `&&` and `||` branch on whether a real command actually succeeded, not only on
+ * test/[ … ].
  */
 #include "web_tools.h"
 
@@ -64,18 +70,18 @@ static void list_roots(std::string &out)
     out_line(out, "sd/");
 }
 
-static void cmd_ls(const std::string &cwd, const std::string &arg, std::string &out)
+static int cmd_ls(const std::string &cwd, const std::string &arg, std::string &out)
 {
     std::string api = norm_path(cwd, arg);
-    if (api == "/") { list_roots(out); return; }
+    if (api == "/") { list_roots(out); return 0; }
     std::string host;
     int e = web_fs_resolve(api.c_str(), host);
-    if (e) { out_line(out, "ls: " + api + ": " + (e == 503 ? "not mounted" : "no such path")); return; }
+    if (e) { out_line(out, "ls: " + api + ": " + (e == 503 ? "not mounted" : "no such path")); return 1; }
     struct stat st;
-    if (stat(host.c_str(), &st) != 0) { out_line(out, "ls: " + api + ": no such path"); return; }
-    if (!S_ISDIR(st.st_mode)) { out_line(out, api); return; }         /* a file: echo it, like ls of a file */
+    if (stat(host.c_str(), &st) != 0) { out_line(out, "ls: " + api + ": no such path"); return 1; }
+    if (!S_ISDIR(st.st_mode)) { out_line(out, api); return 0; }        /* a file: echo it, like ls of a file */
     DIR *d = opendir(host.c_str());
-    if (!d) { out_line(out, "ls: " + api + ": cannot open"); return; }
+    if (!d) { out_line(out, "ls: " + api + ": cannot open"); return 1; }
     std::vector<std::string> names;
     while (struct dirent *ent = readdir(d)) {
         if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
@@ -90,18 +96,19 @@ static void cmd_ls(const std::string &cwd, const std::string &arg, std::string &
     std::sort(names.begin(), names.end());
     if (names.empty()) out_line(out, "(empty)");
     for (const std::string &n : names) out_line(out, n);
+    return 0;
 }
 
-static void cmd_cat(const std::string &cwd, const std::string &arg, std::string &out)
+static int cmd_cat(const std::string &cwd, const std::string &arg, std::string &out)
 {
-    if (arg.empty()) { out_line(out, "cat: missing file"); return; }
+    if (arg.empty()) { out_line(out, "cat: missing file"); return 1; }
     std::string api = norm_path(cwd, arg), host;
     int e = web_fs_resolve(api.c_str(), host);
-    if (e) { out_line(out, "cat: " + api + ": " + (e == 503 ? "not mounted" : "no such file")); return; }
+    if (e) { out_line(out, "cat: " + api + ": " + (e == 503 ? "not mounted" : "no such file")); return 1; }
     struct stat st;
-    if (stat(host.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) { out_line(out, "cat: " + api + ": not a file"); return; }
+    if (stat(host.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) { out_line(out, "cat: " + api + ": not a file"); return 1; }
     FILE *f = fopen(host.c_str(), "rb");
-    if (!f) { out_line(out, "cat: " + api + ": cannot open"); return; }
+    if (!f) { out_line(out, "cat: " + api + ": cannot open"); return 1; }
     std::string buf;
     char chunk[512];
     size_t n;
@@ -114,6 +121,7 @@ static void cmd_cat(const std::string &cwd, const std::string &arg, std::string 
     if (out.size() + buf.size() < TERM_OUT_MAX) out += buf;
     if (!buf.empty() && buf.back() != '\n') out += '\n';
     if (total > (long)TERM_CAT_MAX) out_line(out, "… (truncated at " + tools_int(TERM_CAT_MAX) + " B of " + tools_int(total) + ")");
+    return 0;
 }
 
 static void cmd_status(std::string &out)
@@ -157,14 +165,15 @@ static const char *const TERM_HELP[] = {
     NULL,
 };
 
-/* Run one command line. cwd is updated by `cd`. Returns the output text. clear is handled by the
- * front-ends, so it never reaches here. */
-void term_exec(std::string &cwd, const std::string &line, std::string &out)
+/* Run one command line. cwd is updated by `cd`. Appends output text and returns the exit status
+ * (0 success, 1 a failed command, 127 command not found). clear is handled by the front-ends, so it
+ * never reaches here. */
+int term_exec(std::string &cwd, const std::string &line, std::string &out)
 {
     if (cwd.empty()) cwd = "/sd";
     /* split into command + rest */
     size_t a = line.find_first_not_of(" \t");
-    if (a == std::string::npos) return;
+    if (a == std::string::npos) return 0;              /* blank line: success, like a shell */
     size_t b = line.find_first_of(" \t", a);
     std::string cmd = line.substr(a, b == std::string::npos ? std::string::npos : b - a);
     std::string rest = (b == std::string::npos) ? "" : line.substr(line.find_first_not_of(" \t", b) == std::string::npos ? line.size() : line.find_first_not_of(" \t", b));
@@ -174,15 +183,15 @@ void term_exec(std::string &cwd, const std::string &line, std::string &out)
     else if (cmd == "pwd") out_line(out, cwd);
     else if (cmd == "cd") {
         std::string api = norm_path(cwd, rest);
-        if (api == "/") { cwd = "/"; return; }
+        if (api == "/") { cwd = "/"; return 0; }
         std::string host;
         int e = web_fs_resolve(api.c_str(), host);
         struct stat st;
-        if (e || stat(host.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) out_line(out, "cd: " + api + ": no such directory");
-        else cwd = api;
+        if (e || stat(host.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) { out_line(out, "cd: " + api + ": no such directory"); return 1; }
+        cwd = api;
     }
-    else if (cmd == "ls" || cmd == "dir") cmd_ls(cwd, rest, out);
-    else if (cmd == "cat" || cmd == "type") cmd_cat(cwd, rest, out);
+    else if (cmd == "ls" || cmd == "dir") return cmd_ls(cwd, rest, out);
+    else if (cmd == "cat" || cmd == "type") return cmd_cat(cwd, rest, out);
     else if (cmd == "status") cmd_status(out);
     else if (cmd == "free") cmd_free(out);
     else if (cmd == "uptime") out_line(out, tools_int(tools_now_ms() / 1000) + " s");
@@ -198,7 +207,8 @@ void term_exec(std::string &cwd, const std::string &line, std::string &out)
         web_ui_run([] { web_plat_reboot(); });
     }
     else if (cmd == "clear") { /* front-ends handle this; ignore if it slips through */ }
-    else out_line(out, cmd + ": command not found (try help)");
+    else { out_line(out, cmd + ": command not found (try help)"); return 127; }
+    return 0;
 }
 
 /* ---------------------------------------------------------------- web endpoint */
@@ -213,11 +223,12 @@ static bool term_handle(web_req_t *r)
     web_json_get_str(body, "cwd", cwd);
     if (cwd.empty()) cwd = "/sd";
     std::string out;
-    term_exec(cwd, line, out);
+    int status = term_exec(cwd, line, out);
     std::string j = "{\"cwd\":";
     web_json_str(j, cwd.c_str());
     j += ",\"output\":";
     web_json_str(j, out.c_str());
+    j += ",\"status\":" + tools_int(status);
     j += "}";
     web_resp_json(r, 200, j);
     return true;

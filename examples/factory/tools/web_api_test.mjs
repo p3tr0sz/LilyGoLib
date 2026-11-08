@@ -502,6 +502,14 @@ check('# comment ignored', (await srun('echo one # trailing\n# whole line\necho 
 check('help lists the language', (await srun('help')).includes('sh-like language'));
 check('parse error is reported', (await srun('if true; then echo hi')).startsWith("script: if: missing 'fi'"));
 check('unknown command falls through to the shell', (await srun('frobnicate')).includes('command not found'));
+// real command exit status feeds $? / if / while / && / || (not just test)
+check('command not found sets $? = 127', (await srun('frobnicate\necho $?')).endsWith('127\n'));
+check('a failed command sets $? = 1', (await srun('cd /nope\necho $?')).endsWith('1\n'));
+check('a successful command sets $? = 0', (await srun('cd /sd\necho $?')) === '0\n');
+check('if branches on a real command', (await srun('if cd /sd; then echo yes; else echo no; fi')) === 'yes\n');
+check('if else branches on a failed command', (await srun('if cd /nope; then echo yes; else echo no; fi')).endsWith('no\n'));
+check('&& runs only after success', (await srun('cd /sd && echo here')) === 'here\n');
+check('|| runs only after failure', (await srun('cd /sd || echo skip; echo done')) === 'done\n');
 r = await call('POST', '/api/script/save', { name: 'bad name.scr', source: 'echo x' });
 check('save rejects a bad name', r.status === 400 && r.json?.error === 'bad_name', r.json);
 r = await call('POST', '/api/script/save', { name: 'api-test.scr', source: 'echo from-saved\nstatus\n' });
