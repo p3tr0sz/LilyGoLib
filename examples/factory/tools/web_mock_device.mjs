@@ -55,7 +55,7 @@ const BOOT = Date.now();
 const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
-const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display',
+const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display', 'term',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
@@ -104,6 +104,68 @@ function resolvePath(p) {
 }
 function pathError(res, e) {
   return e === 'sd_missing' ? fail(res, 503, 'sd_missing', 'SD card not mounted') : fail(res, 400, 'bad_request', 'bad path');
+}
+
+// ---- terminal (mirrors web_tool_term.cpp term_exec so mock and firmware agree) ----
+const TERM_HELP = [
+  'help            this list', 'echo TEXT       print TEXT', 'clear           clear the screen',
+  'pwd             working directory', 'cd [PATH]       change directory (/sd, /flash)',
+  'ls [PATH]       list a directory', 'cat FILE        print a file (first 16 KB)',
+  'status          uptime, cpu, app, battery, wifi, heap', 'free            heap and psram',
+  'uptime          seconds since boot', 'date            device clock (UTC epoch)',
+  'ver             firmware version and board', 'logs [N]        last N console lines (default 20)',
+  'reboot          restart the watch',
+];
+function termNorm(cwd, arg) {
+  const p = !arg ? cwd : (arg.startsWith('/') ? arg : cwd + '/' + arg);
+  const stack = [];
+  for (const seg of p.split('/')) { if (seg === '' || seg === '.') continue; else if (seg === '..') stack.pop(); else stack.push(seg); }
+  return '/' + stack.join('/');
+}
+async function termExec(cwd, line) {
+  if (!cwd) cwd = '/sd';
+  const out = [];
+  const add = (s) => out.push(s);
+  const t = (line || '').trim();
+  const sp = t.indexOf(' ');
+  const cmd = sp < 0 ? t : t.slice(0, sp);
+  const rest = sp < 0 ? '' : t.slice(sp + 1).trim();
+  if (cmd === '') { /* nothing */ }
+  else if (cmd === 'help' || cmd === '?') TERM_HELP.forEach(add);
+  else if (cmd === 'echo') add(rest);
+  else if (cmd === 'pwd') add(cwd);
+  else if (cmd === 'cd') {
+    const api = termNorm(cwd, rest);
+    if (api === '/') cwd = '/';
+    else { const r = resolvePath(api); let ok = false; if (!r.error) { try { ok = (await fsp.stat(r.abs)).isDirectory(); } catch {} } if (ok) cwd = api; else add(`cd: ${api}: no such directory`); }
+  } else if (cmd === 'ls' || cmd === 'dir') {
+    const api = termNorm(cwd, rest);
+    if (api === '/') { add('flash/'); add('sd/'); }
+    else {
+      const r = resolvePath(api);
+      if (r.error) add(`ls: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such path'}`);
+      else try {
+        const st = await fsp.stat(r.abs);
+        if (!st.isDirectory()) add(api);
+        else { const names = (await fsp.readdir(r.abs)).sort(); if (!names.length) add('(empty)'); for (const n of names) { const s = await fsp.stat(join(r.abs, n)); add(s.isDirectory() ? n + '/' : `${n}\t${s.size} B`); } }
+      } catch { add(`ls: ${api}: no such path`); }
+    }
+  } else if (cmd === 'cat' || cmd === 'type') {
+    if (!rest) add('cat: missing file');
+    else { const api = termNorm(cwd, rest); const r = resolvePath(api);
+      if (r.error) add(`cat: ${api}: ${r.error === 'sd_missing' ? 'not mounted' : 'no such file'}`);
+      else try { const st = await fsp.stat(r.abs); if (st.isDirectory()) add(`cat: ${api}: not a file`); else { let buf = await fsp.readFile(r.abs); const total = buf.length; if (buf.length > 16384) buf = buf.subarray(0, 16384); out.push(buf.toString('utf8').replace(/\n$/, '')); if (total > 16384) add(`… (truncated at 16384 B of ${total})`); } } catch { add(`cat: ${api}: not a file`); }
+    }
+  } else if (cmd === 'status') { add(`uptime   ${Math.floor(process.uptime())} s`); add('cpu      240 MHz'); add('app      (home)'); add('battery  99%  charging  4178 mV'); add('wifi     sta  mock  -50 dBm'); add('heap     180000 free / 320000 B'); }
+  else if (cmd === 'free') { add('heap   180000 free  120000 min  320000 total'); add('psram  2000000 free  8000000 total'); }
+  else if (cmd === 'uptime') add(`${Math.floor(process.uptime())} s`);
+  else if (cmd === 'date') add(`${Math.floor(Date.now() / 1000)} (UTC epoch)`);
+  else if (cmd === 'ver' || cmd === 'version') add(`${FW}  twatch-ultra`);
+  else if (cmd === 'logs') add('(no log lines yet)');
+  else if (cmd === 'reboot') add('Rebooting…');
+  else if (cmd === 'clear') { /* front-end handles it */ }
+  else add(`${cmd}: command not found (try help)`);
+  return { cwd, output: out.length ? out.join('\n') + '\n' : '' };
 }
 
 // ---- sessions ----
@@ -1021,6 +1083,7 @@ const otaState = () => ({ slot: ota.slot, other_slot: ota.other_slot, state: ota
 async function toolsRoute(req, res, url, path) {
   const m = req.method;
   if (path === '/api/monitor' && m === 'GET') return json(res, 200, monitor());
+  if (path === '/api/term' && m === 'POST') { const b = await readJSON(req); return json(res, 200, await termExec(typeof b?.cwd === 'string' ? b.cwd : '/sd', typeof b?.line === 'string' ? b.line : '')); }
   if (path === '/api/logs' && m === 'GET') {
     const after = Number(url.searchParams.get('after') || 0);
     return json(res, 200, { lines: logs.filter((l) => l.n > after), next: logN });
