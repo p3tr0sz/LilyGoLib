@@ -9,6 +9,7 @@ const APPS = [
   { id: 'files', title: 'Files', icon: 'folder', caps: ['files'], load: () => import('../apps/files/app.js') },
   { id: 'terminal', title: 'Terminal', icon: 'terminal', caps: ['term'], load: () => import('../apps/terminal/app.js') },
   { id: 'scripts', title: 'Scripts', icon: 'script', caps: ['script'], load: () => import('../apps/scripts/app.js') },
+  { id: 'automation', title: 'Automation', icon: 'wrench', caps: ['automation'], load: () => import('../apps/automation/app.js') },
   { id: 'screen', title: 'Screen', icon: 'screen', caps: ['screen'], load: () => import('../apps/screen/app.js') },
   { id: 'notify', title: 'Notify', icon: 'bell', caps: ['notify'], load: () => import('../apps/notify/app.js') },
   { id: 'monitor', title: 'Monitor', icon: 'monitor', caps: ['monitor'], load: () => import('../apps/monitor/app.js') },
