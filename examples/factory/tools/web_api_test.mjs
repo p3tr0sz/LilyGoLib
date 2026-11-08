@@ -526,6 +526,24 @@ check('POST /api/script/delete', r.status === 200 && r.json?.ok === true, r.json
 r = await call('GET', '/api/script/list');
 check('deleted script is gone', !(r.json?.scripts || []).some((s) => s.name === 'api-test.scr'), r.json);
 
+// ---- automation (Berry; firmware only — the JS mock cannot re-run a native interpreter) ----
+if (caps.includes('automation')) {
+  console.log('automation (berry)');
+  const brun = async (source) => (await call('POST', '/api/automation/run', { source })).json;
+  let a = await brun('print("hi", 2+3)');
+  check('berry: print + arithmetic', a?.ok === true && a.engine === 'berry' && a.output === 'hi 5\n', a);
+  a = await brun('def sq(x) return x*x end for i:1..3 print(sq(i)) end');
+  check('berry: functions + range loop', a?.ok === true && a.output === '1\n4\n9\n', a);
+  a = await brun('var l=[] for i:1..4 l.push(i) end print(l.size())');
+  check('berry: lists + methods', a?.ok === true && a.output === '4\n', a);
+  a = await brun('print(no_such_name)');
+  check('berry: compile error reported', a?.ok === false && /error/.test(a.output || ''), a);
+  a = await brun('var x = 1 / 0');
+  check('berry: runtime exception reported', a?.ok === false && /zero/.test(a.output || ''), a);
+} else {
+  console.log('automation: cap absent on this target — skipped');
+}
+
 // ---- P9 security tools (simulator/mock dev hooks drive deterministic hardware fakes) ----
 if (DEV) {
   console.log('P9 security tools');

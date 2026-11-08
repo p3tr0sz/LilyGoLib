@@ -41,7 +41,8 @@ extern const web_tool_t web_tool_monitor, web_tool_notify, web_tool_sensors, web
        web_tool_nfc, web_tool_recorder, web_tool_audio, web_tool_wifi_scan, web_tool_ble_scan,
        web_tool_link, web_tool_hid, web_tool_net, web_tool_ota,
        web_tool_sniffer, web_tool_airspace, web_tool_sentinel, web_tool_presence, web_tool_fido2,
-       web_tool_evilportal, web_tool_deauthflood, web_tool_beaconspam, web_tool_term, web_tool_script;
+       web_tool_evilportal, web_tool_deauthflood, web_tool_beaconspam, web_tool_term, web_tool_script,
+       web_tool_automation;
 
 /* The shared command shell behind the web Terminal (POST /api/term) and the native Terminal
  * (ui_terminal.cpp). Runs one line against cwd (updated by `cd`), appends text to out and returns the
