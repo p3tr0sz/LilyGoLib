@@ -1,0 +1,22 @@
+# hello.scr — a tour of the T-Watch scripting engine.
+# Edit this in the web Scripts app, or run it from the on-device Scripts app.
+# Run `help` as a one-line script for the full language reference.
+
+echo "Hello from the T-Watch scripting engine!"
+status
+
+for dir in /sd /flash; do
+  echo "== $dir =="
+  ls "$dir"
+done
+
+n=3
+while [ $n -gt 0 ]; do
+  echo "countdown $n"
+  n=$((n-1))
+done
+
+if [ -d /sd/scripts ]; then
+  echo "your scripts live in /sd/scripts"
+fi
+echo "done."

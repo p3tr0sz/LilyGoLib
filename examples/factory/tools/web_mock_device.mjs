@@ -55,7 +55,7 @@ const BOOT = Date.now();
 const ROOTS = { sd: join(ROOT, 'sd'), flash: join(ROOT, 'flash') };
 for (const d of Object.values(ROOTS)) mkdirSync(d, { recursive: true });
 
-const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display', 'term',
+const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input', 'display', 'term', 'script',
   'monitor', 'notify', 'sensors.imu', 'gnss', 'lora', 'nfc', 'recorder', 'audio.play', 'wifi.scan', 'ble.scan', 'link.espnow', 'usb.hid', 'wifi.tools', 'ota',
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
@@ -166,6 +166,404 @@ async function termExec(cwd, line) {
   else if (cmd === 'clear') { /* front-end handles it */ }
   else add(`${cmd}: command not found (try help)`);
   return { cwd, output: out.length ? out.join('\n') + '\n' : '' };
+}
+
+// ---- scripting engine (mirrors web_tool_script.cpp script_run so mock and firmware agree) ----
+const SCRIPT_SRC_MAX = 16 * 1024, SCRIPT_OUT_MAX = 32 * 1024, SCRIPT_STEP_MAX = 20000;
+const SCRIPT_MS_MAX = 8000, SCRIPT_SLEEP_MAX = 5000, SCRIPT_DEPTH_MAX = 24, SCRIPT_DIR = '/sd/scripts';
+const isNameStart = (c) => /[A-Za-z_]/.test(c);
+const isNameChar = (c) => /[A-Za-z0-9_]/.test(c);
+const scriptNameOk = (n) => typeof n === 'string' && /^[A-Za-z0-9._-]{1,48}$/.test(n) && !n.includes('..') && n.endsWith('.scr');
+
+// Seg: {type:0 lit|1 var(text=name)|2 arith}. Word = Seg[]. Statement = Word[].
+function scriptLex(src) {
+  const stmts = [];
+  let stmt = [], word = [], lit = '', wordActive = false, quote = 0;
+  const flushLit = () => { if (lit) { word.push({ type: 0, text: lit }); lit = ''; } };
+  const flushWord = () => { flushLit(); if (wordActive) { stmt.push(word); word = []; wordActive = false; } };
+  const endStmt = () => { flushWord(); if (stmt.length) { stmts.push(stmt); stmt = []; } };
+  let i = 0; const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (quote === 0) {
+      if (c === '#' && !wordActive) { while (i < n && src[i] !== '\n') i++; continue; }
+      if (c === '\n' || c === ';') { endStmt(); i++; continue; }
+      if (c === ' ' || c === '\t' || c === '\r') { flushWord(); i++; continue; }
+      if (c === "'") { wordActive = true; quote = 1; i++; continue; }
+      if (c === '"') { wordActive = true; quote = 2; i++; continue; }
+      if (c !== '$') { lit += c; wordActive = true; i++; continue; }
+      wordActive = true;
+    } else if (quote === 1) {
+      if (c === "'") { quote = 0; i++; continue; }
+      lit += c; i++; continue;
+    } else {
+      if (c === '"') { quote = 0; i++; continue; }
+      if (c !== '$') { lit += c; i++; continue; }
+    }
+    // c === '$'
+    if (i + 1 < n && src[i + 1] === '{') {
+      const j = src.indexOf('}', i + 2);
+      if (j < 0) return { err: 'bad substitution' };
+      flushLit(); word.push({ type: 1, text: src.slice(i + 2, j) }); i = j + 1;
+    } else if (i + 2 < n && src[i + 1] === '(' && src[i + 2] === '(') {
+      const j = src.indexOf('))', i + 3);
+      if (j < 0) return { err: 'bad arithmetic' };
+      flushLit(); word.push({ type: 2, text: src.slice(i + 3, j) }); i = j + 2;
+    } else if (i + 1 < n && src[i + 1] === '?') {
+      flushLit(); word.push({ type: 1, text: '?' }); i += 2;
+    } else if (i + 1 < n && isNameStart(src[i + 1])) {
+      let j = i + 1; while (j < n && isNameChar(src[j])) j++;
+      flushLit(); word.push({ type: 1, text: src.slice(i + 1, j) }); i = j;
+    } else { lit += '$'; i++; }
+  }
+  if (quote !== 0) return { err: 'unterminated quote' };
+  endStmt();
+  return { stmts };
+}
+
+const wordIs = (w, kw) => w.length === 1 && w[0].type === 0 && w[0].text === kw;
+const KEYWORDS = new Set(['if', 'then', 'elif', 'else', 'fi', 'for', 'in', 'do', 'done', 'while']);
+function stmtKw(s) {
+  if (!s.length || s[0].length !== 1 || s[0][0].type !== 0) return '';
+  const t = s[0][0].text;
+  return KEYWORDS.has(t) ? t : '';
+}
+function splitTrailingKeywords(stmts) {
+  for (let i = 0; i < stmts.length; i++) {
+    const k = stmtKw(stmts[i]);
+    if ((k === 'then' || k === 'do' || k === 'else') && stmts[i].length > 1) {
+      const rest = stmts[i].slice(1);
+      stmts[i] = [stmts[i][0]];
+      stmts.splice(i + 1, 0, rest);
+    }
+  }
+}
+
+// Parser: statements -> node list. Nodes: {t:'cmd',assigns,argv} {t:'andor',op,left,right}
+//   {t:'if',cond,body,elifs:[{cond,body}],elseBody} {t:'for',var,items,body} {t:'while',cond,body}
+function scriptParse(stmts) {
+  let pos = 0; let err = '';
+  const fail = (m) => { if (!err) err = m; return null; };
+  const kw = () => (pos < stmts.length ? stmtKw(stmts[pos]) : '');
+  const tail = () => stmts[pos].slice(1);
+
+  function simpleFromWords(words) {
+    const chunks = [[]]; const ops = [];
+    for (const w of words) {
+      if (wordIs(w, '&&') || wordIs(w, '||')) {
+        if (!chunks[chunks.length - 1].length) return fail(`syntax error near '${w[0].text}'`);
+        ops.push(wordIs(w, '&&') ? 0 : 1); chunks.push([]);
+      } else chunks[chunks.length - 1].push(w);
+    }
+    if (!chunks[chunks.length - 1].length) return fail('syntax error: empty command');
+    const makeCmd = (ws) => {
+      const cmd = { t: 'cmd', assigns: [], argv: [] };
+      let k = 0;
+      for (; k < ws.length; k++) {
+        const w = ws[k];
+        if (!w.length || w[0].type !== 0) break;
+        const first = w[0].text; const eq = first.indexOf('=');
+        if (eq <= 0 || !isNameStart(first[0])) break;
+        let ok = true;
+        for (let c = 1; c < eq; c++) if (!isNameChar(first[c])) { ok = false; break; }
+        if (!ok) break;
+        const value = [{ type: 0, text: first.slice(eq + 1) }, ...w.slice(1)];
+        cmd.assigns.push({ name: first.slice(0, eq), value });
+      }
+      for (; k < ws.length; k++) cmd.argv.push(ws[k]);
+      return cmd;
+    };
+    let node = makeCmd(chunks[0]);
+    for (let c = 0; c < ops.length; c++) node = { t: 'andor', op: ops[c], left: node, right: makeCmd(chunks[c + 1]) };
+    return node;
+  }
+
+  function parseBlock(stop, depth) {
+    if (depth > SCRIPT_DEPTH_MAX) return fail('too deeply nested');
+    const out = [];
+    while (pos < stmts.length) {
+      const k = kw();
+      if (stop.includes(k)) return out;
+      if (['then', 'elif', 'else', 'fi', 'done', 'in'].includes(k)) return fail(`unexpected '${k}'`);
+      let n;
+      if (k === 'if') n = parseIf(depth + 1);
+      else if (k === 'for') n = parseFor(depth + 1);
+      else if (k === 'while') n = parseWhile(depth + 1);
+      else { n = simpleFromWords(stmts[pos]); pos++; }
+      if (err) return null;
+      out.push(n);
+    }
+    return out;
+  }
+
+  function parseIf(depth) {
+    const node = { t: 'if', elifs: [], elseBody: null };
+    const c = tail(); if (!c.length) return fail('if: missing condition');
+    pos++;
+    node.cond = simpleFromWords(c); if (err) return null;
+    if (kw() !== 'then') return fail("if: missing 'then'");
+    pos++;
+    node.body = parseBlock(['elif', 'else', 'fi'], depth); if (err) return null;
+    while (true) {
+      const k = kw();
+      if (k === 'elif') {
+        const ec = tail(); if (!ec.length) return fail('elif: missing condition');
+        pos++;
+        const econd = simpleFromWords(ec); if (err) return null;
+        if (kw() !== 'then') return fail("elif: missing 'then'");
+        pos++;
+        const ebody = parseBlock(['elif', 'else', 'fi'], depth); if (err) return null;
+        node.elifs.push({ cond: econd, body: ebody });
+      } else if (k === 'else') {
+        pos++;
+        node.elseBody = parseBlock(['fi'], depth); if (err) return null;
+      } else if (k === 'fi') { pos++; return node; }
+      else return fail("if: missing 'fi'");
+    }
+  }
+
+  function parseFor(depth) {
+    const node = { t: 'for', items: [] };
+    const w = stmts[pos];
+    if (w.length < 2 || w[1].length !== 1 || w[1][0].type !== 0 || !isNameStart(w[1][0].text[0])) return fail('for: missing variable');
+    node.var = w[1][0].text;
+    for (const ch of node.var) if (!isNameChar(ch)) return fail('for: bad variable');
+    if (w.length < 3 || !wordIs(w[2], 'in')) return fail("for: missing 'in'");
+    for (let k = 3; k < w.length; k++) node.items.push(w[k]);
+    pos++;
+    if (kw() !== 'do') return fail("for: missing 'do'");
+    pos++;
+    node.body = parseBlock(['done'], depth); if (err) return null;
+    if (kw() !== 'done') return fail("for: missing 'done'");
+    pos++;
+    return node;
+  }
+
+  function parseWhile(depth) {
+    const node = { t: 'while' };
+    const c = tail(); if (!c.length) return fail('while: missing condition');
+    pos++;
+    node.cond = simpleFromWords(c); if (err) return null;
+    if (kw() !== 'do') return fail("while: missing 'do'");
+    pos++;
+    node.body = parseBlock(['done'], depth); if (err) return null;
+    if (kw() !== 'done') return fail("while: missing 'done'");
+    pos++;
+    return node;
+  }
+
+  const prog = parseBlock([], 0);
+  return { prog, err };
+}
+
+function arithEval(expr, vars) {
+  let i = 0; const s = expr;
+  const ws = () => { while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i++; };
+  const varVal = (name) => { const v = vars.get(name); const n = parseInt(v, 10); return Number.isNaN(n) ? 0 : n; };
+  function factor() {
+    ws();
+    if (s[i] === '(') { i++; const v = expr2(); ws(); if (s[i] === ')') i++; return v; }
+    if (s[i] === '-' || s[i] === '+') { const op = s[i++]; const v = factor(); return op === '-' ? -v : v; }
+    if (/[0-9]/.test(s[i] || '')) { let v = 0; while (/[0-9]/.test(s[i] || '')) v = v * 10 + (s.charCodeAt(i++) - 48); return v; }
+    if (isNameStart(s[i] || '')) { let a = i; while (isNameChar(s[i] || '')) i++; return varVal(s.slice(a, i)); }
+    return 0;
+  }
+  function term() {
+    let v = factor();
+    for (;;) { ws(); const c = s[i]; if (c === '*' || c === '/' || c === '%') { i++; const r = factor(); if (c === '*') v *= r; else if (r === 0) v = 0; else if (c === '/') v = Math.trunc(v / r); else v = v % r; } else break; }
+    return v;
+  }
+  function expr2() {
+    let v = term();
+    for (;;) { ws(); const c = s[i]; if (c === '+' || c === '-') { i++; const r = term(); v = c === '+' ? v + r : v - r; } else break; }
+    return v;
+  }
+  return Math.trunc(expr2());
+}
+
+async function scriptRun(cwd, src) {
+  if (!cwd) cwd = '/sd';
+  const lexed = scriptLex(src);
+  if (lexed.err) return { cwd, output: `script: ${lexed.err}\n` };
+  splitTrailingKeywords(lexed.stmts);
+  const parsed = scriptParse(lexed.stmts);
+  if (parsed.err) return { cwd, output: `script: ${parsed.err}\n` };
+
+  const C = { cwd, out: '', vars: new Map(), status: 0, steps: 0, start: Date.now(), exited: false, aborted: false };
+  const outAdd = (s) => { if (C.out.length < SCRIPT_OUT_MAX) C.out += s; };
+  const outLine = (s) => outAdd(s + '\n');
+  const expandWord = (w) => {
+    let r = '';
+    for (const seg of w) {
+      if (seg.type === 0) r += seg.text;
+      else if (seg.type === 1) { if (seg.text === '?') r += String(C.status); else if (C.vars.has(seg.text)) r += C.vars.get(seg.text); }
+      else r += String(arithEval(seg.text, C.vars));
+    }
+    return r;
+  };
+  const checkCaps = () => {
+    if (C.aborted) return true;
+    let why = null;
+    if (++C.steps > SCRIPT_STEP_MAX) why = 'step limit';
+    else if (Date.now() - C.start > SCRIPT_MS_MAX) why = 'time limit';
+    else if (C.out.length >= SCRIPT_OUT_MAX) why = 'output limit';
+    if (why) { C.aborted = true; C.out += `\nscript: aborted (${why})\n`; return true; }
+    return false;
+  };
+  const pathStat = async (arg) => {
+    const api = !arg ? C.cwd : (arg.startsWith('/') ? arg : C.cwd + '/' + arg);
+    const r = resolvePath(api);
+    if (r.error) return null;
+    try { return await fsp.stat(r.abs); } catch { return null; }
+  };
+  const evalTest = async (a) => {
+    const n = a.length;
+    if (n === 0) return 1;
+    if (n === 1) return a[0] ? 0 : 1;
+    if (n === 2) {
+      const op = a[0], x = a[1];
+      if (op === '-z') return x ? 1 : 0;
+      if (op === '-n') return x ? 0 : 1;
+      if (op === '-e' || op === '-f' || op === '-d') {
+        const st = await pathStat(x);
+        if (!st) return 1;
+        if (op === '-d') return st.isDirectory() ? 0 : 1;
+        if (op === '-f') return st.isFile() ? 0 : 1;
+        return 0;
+      }
+      return 2;
+    }
+    if (n === 3) {
+      const x = a[0], op = a[1], y = a[2];
+      if (op === '=' || op === '==') return x === y ? 0 : 1;
+      if (op === '!=') return x !== y ? 0 : 1;
+      const ix = parseInt(x, 10) || 0, iy = parseInt(y, 10) || 0;
+      if (op === '-eq') return ix === iy ? 0 : 1;
+      if (op === '-ne') return ix !== iy ? 0 : 1;
+      if (op === '-lt') return ix < iy ? 0 : 1;
+      if (op === '-le') return ix <= iy ? 0 : 1;
+      if (op === '-gt') return ix > iy ? 0 : 1;
+      if (op === '-ge') return ix >= iy ? 0 : 1;
+      return 2;
+    }
+    return 2;
+  };
+
+  const runArgv = async (argv) => {
+    if (!argv.length) { C.status = 0; return; }
+    const cmd = argv[0];
+    if (cmd === 'help' || cmd === '?') {
+      [
+        'scripting engine — a small sh-like language.',
+        'variables   NAME=value ; expand $NAME ${NAME} $? ; $(( expr )) integer maths',
+        'quoting     \'literal\'   "expands $vars"   # comment to end of line',
+        'echo TEXT   print (expanded)        set    list variables',
+        'test / [ … ]  -z -n -e -f -d, = != -eq -ne -lt -le -gt -ge',
+        'sleep N     wait N seconds          true / false / :   exit status 0 / 1 / 0',
+        'exit [N]    stop the script',
+        'if LIST; then … elif … else … fi',
+        'for NAME in WORDS; do … done        while LIST; do … done',
+        'LIST && LIST   LIST || LIST',
+        'any other command (ls, cat, status, cd, logs, …) runs in the Terminal shell.',
+      ].forEach(outLine);
+      C.status = 0; return;
+    }
+    if (cmd === ':' || cmd === 'true') { C.status = 0; return; }
+    if (cmd === 'false') { C.status = 1; return; }
+    if (cmd === 'exit') { C.exited = true; if (argv.length > 1) C.status = parseInt(argv[1], 10) || 0; return; }
+    if (cmd === 'sleep') {
+      if (argv.length < 2) { outLine('sleep: missing seconds'); C.status = 1; return; }
+      let sec = parseFloat(argv[1]); if (!(sec >= 0)) sec = 0;
+      let ms = Math.floor(sec * 1000); if (ms > SCRIPT_SLEEP_MAX) ms = SCRIPT_SLEEP_MAX;
+      await new Promise((r) => setTimeout(r, ms));
+      C.status = 0; return;
+    }
+    if (cmd === 'set' && argv.length === 1) {
+      const lines = [...C.vars.entries()].map(([k, v]) => `${k}=${v}`).sort();
+      for (const l of lines) outLine(l);
+      C.status = 0; return;
+    }
+    if (cmd === 'test' || cmd === '[') {
+      const a = argv.slice(1);
+      if (cmd === '[') { if (!a.length || a[a.length - 1] !== ']') { outLine("[: missing ']'"); C.status = 2; return; } a.pop(); }
+      C.status = await evalTest(a);
+      return;
+    }
+    // external: reconstruct the line and hand to the Terminal shell (keeps the sandbox)
+    const r = await termExec(C.cwd, argv.join(' '));
+    C.cwd = r.cwd;
+    outAdd(r.output);
+    C.status = 0;
+  };
+
+  const runSimple = async (n) => {
+    if (C.exited || C.aborted) return;
+    if (n.t === 'andor') {
+      await runSimple(n.left);
+      if (C.exited || C.aborted) return;
+      if ((n.op === 0 && C.status === 0) || (n.op === 1 && C.status !== 0)) await runSimple(n.right);
+      return;
+    }
+    for (const a of n.assigns) C.vars.set(a.name, expandWord(a.value));
+    if (!n.argv.length) { C.status = 0; return; }
+    if (checkCaps()) return;
+    await runArgv(n.argv.map(expandWord));
+  };
+
+  const runNodes = async (nodes) => {
+    for (const n of nodes) {
+      if (C.exited || C.aborted) return;
+      if (n.t === 'cmd' || n.t === 'andor') { await runSimple(n); continue; }
+      if (n.t === 'if') {
+        await runSimple(n.cond);
+        if (C.exited || C.aborted) return;
+        if (C.status === 0) { await runNodes(n.body); continue; }
+        let done = false;
+        for (const e of n.elifs) {
+          await runSimple(e.cond);
+          if (C.exited || C.aborted) return;
+          if (C.status === 0) { await runNodes(e.body); done = true; break; }
+        }
+        if (!done && n.elseBody) await runNodes(n.elseBody);
+        continue;
+      }
+      if (n.t === 'for') {
+        for (const item of n.items) {
+          if (checkCaps()) return;
+          C.vars.set(n.var, expandWord(item));
+          await runNodes(n.body);
+          if (C.exited || C.aborted) return;
+        }
+        continue;
+      }
+      if (n.t === 'while') {
+        for (;;) {
+          if (checkCaps()) return;
+          await runSimple(n.cond);
+          if (C.exited || C.aborted) return;
+          if (C.status !== 0) break;
+          await runNodes(n.body);
+          if (C.exited || C.aborted) return;
+        }
+      }
+    }
+  };
+
+  await runNodes(parsed.prog);
+  return { cwd: C.cwd, output: C.out };
+}
+
+async function scriptListNames() {
+  const r = resolvePath(SCRIPT_DIR);
+  if (r.error) return [];
+  let names = [];
+  try { names = await fsp.readdir(r.abs); } catch { return []; }
+  const out = [];
+  for (const nm of names.sort()) {
+    if (!scriptNameOk(nm)) continue;
+    try { const st = await fsp.stat(join(r.abs, nm)); if (st.isFile()) out.push({ name: nm, size: st.size }); } catch { /* skip */ }
+  }
+  return out;
 }
 
 // ---- sessions ----
@@ -1084,6 +1482,42 @@ async function toolsRoute(req, res, url, path) {
   const m = req.method;
   if (path === '/api/monitor' && m === 'GET') return json(res, 200, monitor());
   if (path === '/api/term' && m === 'POST') { const b = await readJSON(req); return json(res, 200, await termExec(typeof b?.cwd === 'string' ? b.cwd : '/sd', typeof b?.line === 'string' ? b.line : '')); }
+  if (path === '/api/script/run' && m === 'POST') {
+    const b = await readJSON(req);
+    const source = typeof b?.source === 'string' ? b.source : '';
+    if (source.length > SCRIPT_SRC_MAX) return fail(res, 400, 'too_large', 'script too large');
+    return json(res, 200, await scriptRun(typeof b?.cwd === 'string' ? b.cwd : '/sd', source));
+  }
+  if (path === '/api/script/list' && m === 'GET') return json(res, 200, { dir: SCRIPT_DIR, scripts: await scriptListNames() });
+  if (path === '/api/script/read' && m === 'GET') {
+    const name = url.searchParams.get('name') || '';
+    if (!scriptNameOk(name)) return fail(res, 400, 'bad_name', 'bad script name');
+    const r = resolvePath(`${SCRIPT_DIR}/${name}`);
+    if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { const src = (await fsp.readFile(r.abs)).toString('utf8').slice(0, SCRIPT_SRC_MAX); return json(res, 200, { name, source: src }); }
+    catch { return fail(res, 404, 'not_found', 'no such script'); }
+  }
+  if (path === '/api/script/save' && m === 'POST') {
+    const b = await readJSON(req);
+    const name = typeof b?.name === 'string' ? b.name : '';
+    const source = typeof b?.source === 'string' ? b.source : '';
+    if (!scriptNameOk(name)) return fail(res, 400, 'bad_name', 'bad script name');
+    if (source.length > SCRIPT_SRC_MAX) return fail(res, 400, 'too_large', 'script too large');
+    const dir = resolvePath(SCRIPT_DIR);
+    if (dir.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { await fsp.mkdir(dir.abs, { recursive: true }); await fsp.writeFile(join(dir.abs, name), source); }
+    catch { return fail(res, 500, 'write_failed', 'could not write script'); }
+    return json(res, 200, { ok: true, name, size: Buffer.byteLength(source) });
+  }
+  if (path === '/api/script/delete' && m === 'POST') {
+    const b = await readJSON(req);
+    const name = typeof b?.name === 'string' ? b.name : '';
+    if (!scriptNameOk(name)) return fail(res, 400, 'bad_name', 'bad script name');
+    const r = resolvePath(`${SCRIPT_DIR}/${name}`);
+    if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
+    try { await fsp.unlink(r.abs); } catch { return fail(res, 404, 'not_found', 'no such script'); }
+    return ok(res);
+  }
   if (path === '/api/logs' && m === 'GET') {
     const after = Number(url.searchParams.get('after') || 0);
     return json(res, 200, { lines: logs.filter((l) => l.n > after), next: logN });

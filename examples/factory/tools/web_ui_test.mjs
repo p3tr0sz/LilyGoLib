@@ -255,6 +255,18 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('clear empties the console', await waitFor('!document.querySelector(".win .term").textContent.includes("working directory")'));
   await js(`document.querySelector('.win .close').click();`);
 
+  // ---- scripts
+  console.log('scripts');
+  await go('#app=scripts');
+  check('Scripts opens from the URL', await waitFor('document.querySelector(".win textarea[aria-label=\\"Script source\\"]")'));
+  await js(`$type(document.querySelector('.win textarea[aria-label="Script source"]'), 'for n in 1 2 3; do echo row-$n; done');`);
+  await js(`$t('.win button', 'Run').click();`);
+  check('Run shows the script output', await waitFor('document.querySelector(".win .scr-out").textContent.includes("row-3")'));
+  await js(`$type(document.querySelector('.win textarea[aria-label="Script source"]'), 'if true; then echo hi');`);
+  await js(`$t('.win button', 'Run').click();`);
+  check('a parse error is shown in the output', await waitFor('document.querySelector(".win .scr-out").textContent.includes("script: if:")'));
+  await js(`document.querySelector('.win .close').click();`);
+
   // ---- files
   console.log('files');
   await go('#app=files');

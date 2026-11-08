@@ -488,6 +488,36 @@ if (caps.includes('ota')) {
   check('POST /api/ota/rollback', r.status === 200 || r.status === 409, r.status);
 }
 
+// ---- scripting engine (web_tool_script.cpp; shares term_exec and the /sd sandbox) ----
+console.log('scripting');
+check('caps has script', caps.includes('script'), caps);
+const srun = async (source) => (await call('POST', '/api/script/run', { source })).json?.output ?? '';
+check('echo + variable expansion', (await srun('x=hi; echo "x is $x"')) === 'x is hi\n');
+check('for over a word list', (await srun('for d in a b c; do echo $d; done')) === 'a\nb\nc\n');
+check('while + $(( )) arithmetic', (await srun('n=3; while [ $n -gt 0 ]; do echo $n; n=$((n-1)); done')) === '3\n2\n1\n');
+check('if / elif / else with test', (await srun('if [ 2 -gt 5 ]; then echo A; elif [ -d /sd ]; then echo B; else echo C; fi')) === 'B\n');
+check('&& and || short-circuit on status', (await srun('false && echo no; true || echo no2; echo done $?')) === 'done 0\n');
+check('single quotes are literal', (await srun("y=5; echo '$y'")) === '$y\n');
+check('# comment ignored', (await srun('echo one # trailing\n# whole line\necho two')) === 'one\ntwo\n');
+check('help lists the language', (await srun('help')).includes('sh-like language'));
+check('parse error is reported', (await srun('if true; then echo hi')).startsWith("script: if: missing 'fi'"));
+check('unknown command falls through to the shell', (await srun('frobnicate')).includes('command not found'));
+r = await call('POST', '/api/script/save', { name: 'bad name.scr', source: 'echo x' });
+check('save rejects a bad name', r.status === 400 && r.json?.error === 'bad_name', r.json);
+r = await call('POST', '/api/script/save', { name: 'api-test.scr', source: 'echo from-saved\nstatus\n' });
+check('POST /api/script/save', r.status === 200 && r.json?.ok === true && r.json.name === 'api-test.scr', r.json);
+r = await call('GET', '/api/script/list');
+check('GET /api/script/list shows the saved script', r.status === 200 && (r.json?.scripts || []).some((s) => s.name === 'api-test.scr'), r.json);
+r = await call('GET', `/api/script/read?name=api-test.scr`);
+check('GET /api/script/read returns the source', r.status === 200 && r.json?.source?.startsWith('echo from-saved'), r.json);
+check('a saved script runs the same', (await srun('echo from-saved\nstatus\n')).startsWith('from-saved\n'));
+r = await call('GET', `/api/script/read?name=missing.scr`);
+check('read of a missing script is 404', r.status === 404, r.status);
+r = await call('POST', '/api/script/delete', { name: 'api-test.scr' });
+check('POST /api/script/delete', r.status === 200 && r.json?.ok === true, r.json);
+r = await call('GET', '/api/script/list');
+check('deleted script is gone', !(r.json?.scripts || []).some((s) => s.name === 'api-test.scr'), r.json);
+
 // ---- P9 security tools (simulator/mock dev hooks drive deterministic hardware fakes) ----
 if (DEV) {
   console.log('P9 security tools');

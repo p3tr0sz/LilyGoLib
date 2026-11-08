@@ -82,7 +82,7 @@ def build(out):
 
 DATA_DIRS = ['data', 'data/ir', 'data/gnss', 'data/nfc', 'data/recordings', 'data/lora',
              'data/sniffer', 'data/link', 'data/evilportal', 'data/evilportal/portals',
-             'data/music']
+             'data/music', 'scripts']
 # The version-controlled seed tree (examples/factory/sdcard/) mirrored onto a card by --sync.
 SEED = os.path.normpath(os.path.join(HERE, '..', 'sdcard'))
 README = """T-Watch Ultra - SD card starter, desktop {version} (web API {api})

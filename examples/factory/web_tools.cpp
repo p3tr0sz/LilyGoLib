@@ -39,6 +39,7 @@ static const web_tool_t *const TOOLS[] = {
     &web_tool_audio,
 #endif
     &web_tool_term,
+    &web_tool_script,
     &web_tool_wifi_scan,
     &web_tool_ble_scan,
     &web_tool_link,
