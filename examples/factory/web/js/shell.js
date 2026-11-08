@@ -55,6 +55,9 @@ export function applyTheme(t) {
 }
 try { applyTheme(JSON.parse(localStorage.getItem(THEME_KEY) || 'null')); } catch {}
 const state = { caps: [], device: null, deviceAt: 0, windows: new Map(), z: 10 };
+// Teardown callbacks for everything startDesktop() wires up (event subs, intervals, document
+// listeners), so a re-pair can re-enter startDesktop() without leaking a second copy of each.
+const teardown = [];
 
 // ---------------------------------------------------------------- boot
 
@@ -78,6 +81,7 @@ async function boot() {
 onUnpaired(() => {
   if (!document.querySelector('.shell')) return;
   events.stop();
+  for (const off of teardown.splice(0)) { try { off(); } catch {} }
   for (const w of state.windows.values()) w.close(true);
   showPairing('Your session ended. Pair again with the PIN on the watch.');
 });
@@ -211,26 +215,34 @@ function startDesktop() {
   root.replaceChildren(h('div', { class: 'shell' }, bar, desk, dock));
   updateLaunchpad();
 
+  // Clear any wiring left over from a previous session before re-wiring (re-pair re-enters here).
+  for (const off of teardown.splice(0)) { try { off(); } catch {} }
+
   refreshDevice();
   events.start();
-  events.onStatus(onLinkStatus);
-  events.on('battery', (d) => { if (state.device) { state.device.battery = d; renderBar(); } });
-  events.on('sd.changed', (d) => {
+  teardown.push(events.onStatus(onLinkStatus));
+  teardown.push(events.on('battery', (d) => { if (state.device) { state.device.battery = d; renderBar(); } }));
+  teardown.push(events.on('sd.changed', (d) => {
     if (state.device) { state.device.sd = { present: d.present, mounted: d.mounted }; renderBar(); }
     pushNote('SD card', d.present ? (d.mounted ? 'Card mounted.' : 'Card inserted (not mounted).') : 'Card removed.');
-  });
-  events.on('net', (d) => { if (state.device) { state.device.net = { ...state.device.net, ...d }; renderBar(); } });
-  events.on('notify', (d) => pushNote(d.title || 'Notification', d.text || d.body || ''));
-  events.on('hello', () => refreshDevice());
-  events.on('theme', (t) => { applyTheme(t); if (state.device) state.device.theme = t; });
-  setInterval(renderClock, 1000);
-  setInterval(refreshDevice, 60000);
+  }));
+  teardown.push(events.on('net', (d) => { if (state.device) { state.device.net = { ...state.device.net, ...d }; renderBar(); } }));
+  teardown.push(events.on('notify', (d) => pushNote(d.title || 'Notification', d.text || d.body || '')));
+  teardown.push(events.on('hello', () => refreshDevice()));
+  teardown.push(events.on('theme', (t) => { applyTheme(t); if (state.device) state.device.theme = t; }));
+  const clockTimer = setInterval(renderClock, 1000);
+  const deviceTimer = setInterval(refreshDevice, 60000);
+  teardown.push(() => clearInterval(clockTimer), () => clearInterval(deviceTimer));
 
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSysMenu(); closeTray(); } });
-  document.addEventListener('pointerdown', (e) => {
+  const onKeydown = (e) => { if (e.key === 'Escape') { closeSysMenu(); closeTray(); } };
+  const onPointerdown = (e) => {
     if (sysMenu && !e.target.closest('.sysmenu') && !e.target.closest('.statuses')) closeSysMenu();
     if (trayPanel && !e.target.closest('.tray-panel') && !e.target.closest('.tray-btn')) closeTray();
-  });
+  };
+  document.addEventListener('keydown', onKeydown);
+  document.addEventListener('pointerdown', onPointerdown);
+  teardown.push(() => document.removeEventListener('keydown', onKeydown),
+                () => document.removeEventListener('pointerdown', onPointerdown));
 
   const want = new URLSearchParams(location.hash.slice(1)).get('app');
   if (want) openApp(want);
