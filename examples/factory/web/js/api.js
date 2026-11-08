@@ -49,6 +49,7 @@ export const api = {
   // Tools (P4)
   monitor: () => request('GET', '/api/monitor'),
   logs: (after = 0) => request('GET', `/api/logs?after=${after}`),
+  term: (line, cwd) => request('POST', '/api/term', { json: { line, cwd } }),
   notify: (body) => request('POST', '/api/notify', { json: body }),
   notifications: () => request('GET', '/api/notify'),
   sensors: () => request('GET', '/api/sensors'),

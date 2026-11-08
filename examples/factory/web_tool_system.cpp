@@ -28,6 +28,15 @@ void web_log_add(const char *line)
     while (s_log.size() > LOG_LINES) s_log.pop_front();
 }
 
+/* The last n console lines, oldest first, one per line — for the Terminal `logs` command. */
+void web_log_tail(int n, std::string &out)
+{
+    std::lock_guard<std::mutex> lk(s_log_mx);
+    size_t start = ((int)s_log.size() > n) ? s_log.size() - n : 0;
+    for (size_t i = start; i < s_log.size(); i++) { out += s_log[i].text; out += '\n'; }
+    if (s_log.empty()) out += "(no log lines yet)\n";
+}
+
 static void get_logs(web_req_t *r)
 {
     char b[24];

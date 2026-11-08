@@ -1105,6 +1105,7 @@ static const struct {
     { "Evil Portal",  "Security" },
     { "Deauth Flood", "Security" },
     { "Beacon Spam",  "Security" },
+    { "Terminal",     "Tools" },
 };
 
 const char *ui_app_category_for(const char *name)
@@ -2258,7 +2259,9 @@ void setupGui()
     extern app_t ui_evilportal_main;
     extern app_t ui_deauthflood_main;
     extern app_t ui_beaconspam_main;
+    extern app_t ui_terminal_main;
 
+    register_app("Terminal", &img_tools, &ui_terminal_main);
     register_app("WiFi Sniffer", &img_wireless, &ui_sniffer_main);
     register_app("Airspace", &img_scan, &ui_airspace_main);
     register_app("Sentinel", &img_bluetooth, &ui_sentinel_main);

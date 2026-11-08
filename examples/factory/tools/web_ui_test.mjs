@@ -237,6 +237,24 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('a setting search result opens and highlights its control', await waitFor('document.querySelector(\'.srow[data-setting=brightness].search-hit input[type=range]\')'));
   await js(`document.querySelector('.win .close').click();`);
 
+  // ---- terminal
+  console.log('terminal');
+  await go('#app=terminal');
+  check('Terminal opens from the URL', await waitFor('document.querySelector(".win .term input")'));
+  check('Terminal shows the working-directory prompt', await waitFor('document.querySelector(".win .term").textContent.includes("/sd $")'));
+  const termType = (cmd) => js(`const i=document.querySelector('.win .term input'); i.value=${JSON.stringify(cmd)}; i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));`);
+  await termType('help');
+  check('help lists commands', await waitFor('document.querySelector(".win .term").textContent.includes("working directory")'));
+  await termType('ls');
+  check('ls lists the SD card', await waitFor('document.querySelector(".win .term").textContent.includes("web/")'));
+  await termType('cd web');
+  check('cd changes the prompt', await waitFor('document.querySelector(".win .term").textContent.includes("/sd/web $")'));
+  await termType('nope');
+  check('unknown command is reported', await waitFor('document.querySelector(".win .term").textContent.includes("command not found")'));
+  await termType('clear');
+  check('clear empties the console', await waitFor('!document.querySelector(".win .term").textContent.includes("working directory")'));
+  await js(`document.querySelector('.win .close').click();`);
+
   // ---- files
   console.log('files');
   await go('#app=files');
