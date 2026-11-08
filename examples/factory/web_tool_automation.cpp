@@ -22,7 +22,10 @@
  */
 #include "web_tools.h"
 
-#if FACTORY_WEB
+/* Disconnected 2026-11-08 pending the headless rule-engine redesign. Gated off by default so the Berry
+ * interpreter (~133 KB flash) is not referenced and --gc-sections drops it; Berry's files stay in-tree.
+ * Define FACTORY_AUTOMATION to re-enable (also restore &web_tool_automation in web_tools.cpp). */
+#if FACTORY_WEB && defined(FACTORY_AUTOMATION)
 
 #include "web_internal.h"
 #include <string>

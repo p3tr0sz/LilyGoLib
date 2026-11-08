@@ -40,7 +40,9 @@ static const web_tool_t *const TOOLS[] = {
 #endif
     &web_tool_term,
     &web_tool_script,
-    &web_tool_automation,
+    /* Berry automation disconnected 2026-11-08: headless rule-engine redesign pending; Berry (~133 KB
+     * flash) unregistered + its TU guarded (FACTORY_AUTOMATION) so --gc-sections drops it. Files kept. */
+    // &web_tool_automation,
     &web_tool_wifi_scan,
     &web_tool_ble_scan,
     &web_tool_link,
