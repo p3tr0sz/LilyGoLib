@@ -142,10 +142,17 @@ export function mount(el, { api, caps: deviceCaps }) {
           h('span', { class: 'when' }, p.lastClient || '')))
       : [h('p', { class: 'muted' }, state.karmaScanning ? 'Listening for directed probe requests…' : 'No probe SSIDs discovered.')]));
 
-    const selectedTemplate = templatePicker.value;
-    templatePicker.replaceChildren(...(state.templates || []).map(t => h('option', { value: String(t.id) }, `${t.name}${t.builtin === false ? ' · SD' : ''}`)));
-    if ([...templatePicker.options].some(o => o.value === selectedTemplate)) templatePicker.value = selectedTemplate;
-    ssidPreset.replaceChildren(h('option', { value: '' }, 'Choose a preset'), ...(state.ssidPresets || []).map(s => h('option', { value: s }, s)));
+    // Don't rebuild a <select> while the user has it open (the 2 s poll would reset/close it).
+    if (document.activeElement !== templatePicker) {
+      const selectedTemplate = templatePicker.value;
+      templatePicker.replaceChildren(...(state.templates || []).map(t => h('option', { value: String(t.id) }, `${t.name}${t.builtin === false ? ' · SD' : ''}`)));
+      if ([...templatePicker.options].some(o => o.value === selectedTemplate)) templatePicker.value = selectedTemplate;
+    }
+    if (document.activeElement !== ssidPreset) {
+      const selectedPreset = ssidPreset.value;
+      ssidPreset.replaceChildren(h('option', { value: '' }, 'Choose a preset'), ...(state.ssidPresets || []).map(s => h('option', { value: s }, s)));
+      if ([...ssidPreset.options].some(o => o.value === selectedPreset)) ssidPreset.value = selectedPreset;
+    }
     const settings = state.settings || {};
     if (document.activeElement !== gatewayInput) gatewayInput.value = settings.gateway || gatewayInput.value;
     pwdMode.value = String(settings.pwdMode ?? 2);

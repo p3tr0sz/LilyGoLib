@@ -63,7 +63,8 @@ const teardown = [];
 
 async function boot() {
   try {
-    api.device().then((d) => applyTheme(d.theme)).catch(() => {});
+    // Theme comes from localStorage above and is refined by refreshDevice() once paired; no
+    // separate /api/device fetch needed here.
     const caps = await api.caps();
     state.caps = caps.caps || [];
     const auth = await api.auth();

