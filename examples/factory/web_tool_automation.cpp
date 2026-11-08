@@ -396,6 +396,74 @@ static void auto_stop(void)
     s_ring_head = s_ring_count = 0;                   /* the sink stays subscribed; just drop the backlog */
 }
 
+/* ---------------------------------------------------------------- on-device app surface
+ * The LVGL Automation app (ui_automation.cpp) lists rules and toggles/deletes them; authoring is the
+ * web app's job. These run on the UI thread. Each change marks the live cache dirty so the engine
+ * picks it up on its next drain. */
+
+void automation_list_rules(std::vector<std::string> &ids, std::vector<std::string> &ons,
+                           std::vector<bool> &enabled)
+{
+    ids.clear();
+    ons.clear();
+    enabled.clear();
+    std::vector<std::string> all;
+    auto_list_ids(all);
+    for (const std::string &id : all) {
+        std::string text;
+        if (!auto_read_file(id, text)) continue;
+        std::string on;
+        bool en = true;
+        web_json_get_str(text, "on", on);
+        web_json_get_bool(text, "enabled", &en);
+        ids.push_back(id);
+        ons.push_back(on);
+        enabled.push_back(en);
+    }
+}
+
+bool automation_set_enabled(const std::string &id, bool enabled)
+{
+    if (!auto_id_ok(id)) return false;
+    std::string rule;
+    if (!auto_read_file(id, rule) || rule.empty()) return false;
+    /* Rebuild the object with "enabled" overridden (keys re-emitted verbatim). */
+    std::vector<std::string> keys;
+    web_json_object_keys(rule, keys);
+    std::string out = "{";
+    bool first = true, wrote = false;
+    for (const std::string &k : keys) {
+        std::string v;
+        web_json_raw(rule, k.c_str(), v);
+        if (!first) out += ",";
+        first = false;
+        web_json_str(out, k.c_str());
+        out += ":";
+        if (k == "enabled") { out += enabled ? "true" : "false"; wrote = true; }
+        else out += v;
+    }
+    if (!wrote) { if (!first) out += ","; out += "\"enabled\":"; out += enabled ? "true" : "false"; }
+    out += "}";
+    std::string host;
+    if (web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host)) return false;
+    FILE *f = fopen(host.c_str(), "wb");
+    if (!f) return false;
+    fwrite(out.data(), 1, out.size(), f);
+    fclose(f);
+    s_rules_dirty = true;
+    return true;
+}
+
+bool automation_delete_rule(const std::string &id)
+{
+    if (!auto_id_ok(id)) return false;
+    std::string host;
+    if (web_fs_resolve(std::string(AUTO_DIR "/" + id + ".json").c_str(), host)) return false;
+    if (remove(host.c_str()) != 0) return false;
+    s_rules_dirty = true;
+    return true;
+}
+
 /* ---------------------------------------------------------------- web endpoints */
 
 static bool automation_handle(web_req_t *r)

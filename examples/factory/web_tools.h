@@ -65,6 +65,13 @@ bool script_read_file(const std::string &name, std::string &src);      /* read o
 void web_notify_raise(const std::string &title, const std::string &body, const std::string &level,
                       bool vibrate, bool on_ui_thread);
 
+/* On-device Automation app surface (ui_automation.cpp): list rules, toggle enabled, delete.
+ * UI thread; each change marks the engine's rule cache dirty. Authoring is the web app's job. */
+void automation_list_rules(std::vector<std::string> &ids, std::vector<std::string> &ons,
+                           std::vector<bool> &enabled);
+bool automation_set_enabled(const std::string &id, bool enabled);
+bool automation_delete_rule(const std::string &id);
+
 /* ---------------------------------------------------------------- shared helpers (web_tools.cpp) */
 
 uint32_t tools_now_ms(void);

@@ -2262,9 +2262,11 @@ void setupGui()
     extern app_t ui_beaconspam_main;
     extern app_t ui_terminal_main;
     extern app_t ui_script_main;
+    extern app_t ui_automation_main;
 
     register_app("Terminal", &img_tools, &ui_terminal_main);
     register_app("Scripts", &img_tools, &ui_script_main);
+    register_app("Automation", &img_tools, &ui_automation_main);
     register_app("WiFi Sniffer", &img_wireless, &ui_sniffer_main);
     register_app("Airspace", &img_scan, &ui_airspace_main);
     register_app("Sentinel", &img_bluetooth, &ui_sentinel_main);
