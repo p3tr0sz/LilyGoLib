@@ -1,5 +1,14 @@
 # Evaluation — loadable native apps (the NucleoOS `.nap` model)
 
+**DECISION (2026-11-08): NO-GO — do not build the loader.** The gate was measured (see the spike branch
+`feat/native-apps-spike`: `docs/native-apps-flash-map.md`): the movable app-tail is **~175 KB**, well under
+the ~300–400 KB threshold below, and ~147 KB of that is a single MP3/FLAC decoder; we have no resident
+games/emulators. The LVGL-opaque ABI + a 3-segment `.nap` compile were spiked and *work*
+(`docs/native-apps-abi-scope.md`, `native/`), so the subsystem is buildable — it just would not pay for
+itself. Cheaper flash levers if ever needed: dedupe the ~346 KB of near-identical launcher icons, and
+lazy-load/drop the ~147 KB audio decoder. Revisit only if a large offloadable app ecosystem (games,
+emulators, third-party apps) becomes a real goal. The evaluation below stands as the rationale.
+
 **Status: evaluation only — not a commitment to build.** This scopes what it would take for us to move a
 *tail* of apps out of the firmware binary onto SD and load them on demand, the way NucleoOS does. Read
 alongside `automation-rule-engine.md` (the cheap, near-term lever) — this is the big, systemic one.
