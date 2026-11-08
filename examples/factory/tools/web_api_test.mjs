@@ -105,6 +105,24 @@ if (caps.includes('desktop.install')) {
   check('desktop install: unknown source 400', r.status === 400, r.status);
 }
 
+// ---- automation event tap (headless path; sim dev hook, run BEFORE any WebSocket opens) ----
+// Proves web_events_dispatch_local reaches an in-process sink with no desktop connected (seat === -1):
+// the one thing the JS mock can't show (it has no firmware event bus). See automation-rule-engine.md.
+if (DEV) {
+  const probe = await call('POST', '/api/_dev/emit', { topic: 'automation.tap.ping' });
+  if (probe.status === 200) {
+    console.log('automation event tap (headless)');
+    const tap1 = probe.json;
+    check('tap: seatless event reaches sink',
+      tap1?.seat === -1 && tap1.events_seen >= 1 && tap1.last_topic === 'automation.tap.ping', tap1);
+    const tap2 = (await call('POST', '/api/_dev/emit', { topic: 'automation.tap.ping2' })).json;
+    check('tap: each publish advances the sink',
+      tap2?.seat === -1 && tap2.events_seen > tap1.events_seen && tap2.last_topic === 'automation.tap.ping2', tap2);
+  } else {
+    console.log('automation event tap: /api/_dev/emit absent (mock) — skipped');
+  }
+}
+
 // ---- events ----
 console.log('events');
 const wsUrl = BASE.replace(/^http/, 'ws') + '/api/events';

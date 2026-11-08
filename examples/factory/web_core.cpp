@@ -47,6 +47,14 @@ static int s_misses = 0;
 static uint32_t s_locked_until = 0;
 static uint32_t s_seq = 0;
 static int s_seat = -1;                  /* connection id of the desktop's event socket */
+
+/* In-process event tap: sinks that receive every published event, seat or no seat (headless
+ * automation). A tiny fixed registry — sinks are registered once at startup, never removed. */
+#define WEB_EVENT_SINKS_MAX 4
+struct web_event_sub_t { web_event_sink_t cb; void *user; };
+static web_event_sub_t s_event_sinks[WEB_EVENT_SINKS_MAX];
+static int s_event_sink_count = 0;
+
 static char s_tz[48] = "UTC";
 static int s_offset_min = 0;
 static bool s_time_set = false;
@@ -746,7 +754,49 @@ void web_events_publish(const char *topic, const char *d_json)
     msg += d_json && *d_json ? d_json : "{}";
     msg += "}";
     if (seat >= 0) web_transport_ws_send(seat, msg.data(), msg.size());
+    /* Headless tap: also deliver to in-process sinks, even when no desktop holds the seat. */
+    web_events_dispatch_local(topic, d_json && *d_json ? d_json : "{}");
 }
+
+void web_events_subscribe(web_event_sink_t cb, void *user)
+{
+    if (!cb) return;
+    std::lock_guard<std::recursive_mutex> lk(s_lock);
+    if (s_event_sink_count >= WEB_EVENT_SINKS_MAX) return;   /* silently ignore overflow */
+    s_event_sinks[s_event_sink_count++] = { cb, user };
+}
+
+void web_events_dispatch_local(const char *topic, const char *d_json)
+{
+    /* Snapshot the registry under the lock, then call the sinks unlocked: a sink must only enqueue,
+     * but calling it outside s_lock keeps a misbehaving sink from deadlocking or re-entering us. */
+    web_event_sub_t subs[WEB_EVENT_SINKS_MAX];
+    int n;
+    {
+        std::lock_guard<std::recursive_mutex> lk(s_lock);
+        n = s_event_sink_count;
+        for (int i = 0; i < n; i++) subs[i] = s_event_sinks[i];
+    }
+    for (int i = 0; i < n; i++) subs[i].cb(topic, d_json ? d_json : "{}", subs[i].user);
+}
+
+#ifndef ARDUINO
+/* Step-1 headless-tap proof (simulator only, docs/automation-rule-engine.md "B step 1"): a count
+ * sink + the /api/_dev/emit hook below show that a published event reaches an in-process sink even
+ * with no desktop WebSocket holding the seat. A test fixture — the real automation module registers
+ * its own sink. Never built for the watch. */
+static std::atomic<uint32_t> s_tap_count{0};
+static char s_tap_last_topic[64] = "";
+static void dev_tap_sink(const char *topic, const char *d_json, void *user)
+{
+    (void)d_json; (void)user;
+    {
+        std::lock_guard<std::recursive_mutex> lk(s_lock);
+        snprintf(s_tap_last_topic, sizeof(s_tap_last_topic), "%s", topic ? topic : "");
+    }
+    s_tap_count.fetch_add(1, std::memory_order_relaxed);
+}
+#endif
 
 bool web_api_ws_open(int conn, const char *cookie)
 {
@@ -1068,6 +1118,28 @@ void web_api_handle(web_req_t *r)
         web_resp_json(r, 200, web_screen_last_input());
         return;
     }
+    if (is(r, "POST", "/api/_dev/emit")) {
+        /* Publish an event server-side (no WebSocket needed) and report the in-process tap's state,
+         * so a test can prove a seatless event still reaches a sink (automation B step 1). */
+        std::string body, topic;
+        web_read_body(r, body, 512);
+        if (!web_json_get_str(body, "topic", topic) || topic.empty()) {
+            web_resp_error(r, 400, "bad_request", "topic");
+            return;
+        }
+        int seat;
+        { std::lock_guard<std::recursive_mutex> lk(s_lock); seat = s_seat; }
+        web_events_publish(topic.c_str(), "{}");
+        std::string j = "{\"events_seen\":";
+        j += std::to_string((unsigned)s_tap_count.load(std::memory_order_relaxed));
+        j += ",\"last_topic\":";
+        { std::lock_guard<std::recursive_mutex> lk(s_lock); web_json_str(j, s_tap_last_topic); }
+        j += ",\"seat\":";
+        j += std::to_string(seat);
+        j += "}";
+        web_resp_json(r, 200, j);
+        return;
+    }
     if (is(r, "POST", "/api/_dev/sd")) {
         std::string body;
         bool present = true;
@@ -1148,6 +1220,10 @@ bool web_server_start(void)
         return false;
     }
     s_running = true;
+#ifndef ARDUINO
+    static bool s_tap_subscribed = false;
+    if (!s_tap_subscribed) { web_events_subscribe(dev_tap_sink, NULL); s_tap_subscribed = true; }
+#endif
     web_tools_start();
     s_last_request_ms = now_ms();
     s_card_seen = false;                /* the monitor checks the desktop on the card */

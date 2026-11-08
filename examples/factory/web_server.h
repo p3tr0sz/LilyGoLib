@@ -34,6 +34,16 @@ const char *web_server_pin(void);
  * Thread-safe. */
 void web_events_publish(const char *topic, const char *d_json);
 
+/* In-process event tap (headless automation — docs/automation-rule-engine.md).
+ * Every web_events_publish() also dispatches to the sinks registered here, regardless of whether
+ * a desktop WebSocket is connected. Closing that drop is what lets rules run with nothing attached.
+ * The sink is invoked on the publishing thread (any thread, possibly the UI thread): it MUST be
+ * cheap and non-blocking and MUST NOT call back into web_events_publish — it should only enqueue the
+ * (topic, d_json) for later processing on the UI tick. Register once at startup; no unsubscribe. */
+typedef void (*web_event_sink_t)(const char *topic, const char *d_json, void *user);
+void web_events_subscribe(web_event_sink_t cb, void *user);
+void web_events_dispatch_local(const char *topic, const char *d_json);
+
 /* Whether the server starts at boot (saved on the flash). Off by default on the watch,
  * on in the simulator. Setting it also starts or stops the server. UI thread. */
 bool web_server_enabled(void);
