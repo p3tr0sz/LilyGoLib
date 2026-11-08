@@ -21,6 +21,15 @@ Context you may not have in front of you:
 
 ## 1. Build and flash
 
+On a brand-new board, **back up the factory flash first** — the generic factory `.bin` cannot
+restore this unit's own NVS (pairing, calibration). From this repo:
+
+```bash
+tools/backup_firmware.sh --port /dev/cu.usbmodemXXXX   # -> firmware-backup-esp32s3-<date>.bin (+ .sha256)
+```
+
+- [ ] Backup file written and kept somewhere safe (restore with `tools/restore_firmware.sh --in <file>`).
+
 From the PlatformIO project (not this repo):
 
 ```bash
@@ -50,8 +59,14 @@ The watch serves the desktop from `/sd/web/`. Three ways (any one):
 cd examples/factory/tools
 python3 web_build.py --zip dist        # -> dist/twatch-sd-<version>.zip  (web/ + data/ + README)
 #   ...unzip dist/twatch-sd-*.zip to the card root with a reader, OR
-python3 web_build.py --install /Volumes/<SDCARD>    # build straight onto a mounted card
+python3 web_build.py --install /Volumes/<SDCARD>    # build straight onto a mounted card (desktop only)
+python3 web_build.py --sync    /Volumes/<SDCARD>    # desktop + seed content (radio presets, portal
+                                                    # templates) + all data/ folders; keeps your captures
 ```
+
+Use `--sync` to provision repo-tracked content (the `examples/factory/sdcard/` seed tree) as well as the
+desktop. It copies seed files only when absent — re-running it never clobbers captures or your edits;
+pass `--force` to overwrite the seed files with the repo's copies.
 
 - [ ] Card has `/sd/web/manifest.json` and the desktop files. (Or skip this and use `/rescue` in step 5
   to install from the browser — that path is worth testing too.)
@@ -139,11 +154,16 @@ Two real 4 MB slots make this a genuine test.
 ## 9. Desktop self-install over the internet — blocked on a release
 
 The watch can download and install the desktop ZIP itself over HTTPS. This needs the GitHub release
-published first (still deferred — awaiting go-ahead):
+published first.
+
+The release is automated by **`.github/workflows/release.yml`** — push a `desktop-v*` tag (or run it
+from the Actions tab). It refuses to release if the pinned headers are stale, builds the deterministic
+SD ZIP, checks it against `web_desktop_pin.h`, optionally builds the `twatch_ultra` firmware from the
+sibling PlatformIO repo, and attaches both to the release. To cut one by hand instead:
 
 ```bash
 cd examples/factory/tools
-python3 web_build.py --rescue                       # regenerate web_desktop_pin.h (commit it)
+python3 web_build.py --rescue                       # regenerate web_desktop_pin.h + web_rescue.h (commit them)
 python3 web_build.py --zip dist
 gh release create desktop-v0.1.0 dist/twatch-sd-0.1.0.zip
 ```

@@ -59,6 +59,28 @@
 [7]: https://lilygo.cc/products/t-watch-2020-v3
 [8]: https://lilygo.cc/products
 
+## 🛟 Back up your board before flashing
+
+The factory `.bin` files above are the *generic* images. They do **not** contain your specific
+unit's stored data (Wi-Fi/BLE pairing, calibration, per-device NVS). On a brand-new board, read the
+full flash once and keep the file — it is the only way to put the board back exactly as it shipped:
+
+```bash
+# one-time: pip install --upgrade esptool
+tools/backup_firmware.sh --port /dev/cu.usbmodemXXXX           # ESP32-S3 boards, 16 MB (Ultra/S3/Deck/Pager)
+tools/backup_firmware.sh --port /dev/cu.usbmodemXXXX --chip esp32 --size 0x400000   # T-Watch 2020-V3
+```
+
+It writes `firmware-backup-<chip>-<date>.bin` plus a `.sha256`. If the USB port keeps dropping, put
+the board in [download mode](../docs/lilygo-t-watch-ultra.md#t-watch-ultra-enter-download-mode) first
+(hold **BOOT**, tap **RST**, release **BOOT**), then tap **RST** when the read finishes.
+
+Restore it later with:
+
+```bash
+tools/restore_firmware.sh --in firmware-backup-esp32s3-YYYYMMDD-HHMMSS.bin --port /dev/cu.usbmodemXXXX
+```
+
 ## 2️⃣How to Flash ?
 
 > \[!IMPORTANT]

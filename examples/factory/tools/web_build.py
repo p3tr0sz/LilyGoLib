@@ -7,6 +7,9 @@ Content-Encoding: gzip) and a manifest.json listing every file with its size and
     python3 web_build.py --out <dir>          build into <dir> (replaced)
     python3 web_build.py --install <sd-root>  build into <sd-root>/web.new, then swap it in as <sd-root>/web
                                               (the old desktop stays until the new one is complete)
+    python3 web_build.py --sync <sd-root>     like --install, and also mirror the version-controlled seed tree
+                                              (../sdcard: radio presets, portal templates, data folders) onto the
+                                              card. Seed files are copied only when absent; --force overwrites them.
     python3 web_build.py --zip <dir>          the starter SD-card ZIP, <dir>/twatch-sd-<version>.zip: web/ (the desktop),
                                               the empty data/ folders and a README. Unpack it to the card root, or
                                               choose it on the watch's /rescue page
@@ -77,7 +80,11 @@ def build(out):
     return manifest, total, gz_total
 
 
-DATA_DIRS = ['data', 'data/ir', 'data/gnss', 'data/nfc', 'data/recordings', 'data/lora']
+DATA_DIRS = ['data', 'data/ir', 'data/gnss', 'data/nfc', 'data/recordings', 'data/lora',
+             'data/sniffer', 'data/link', 'data/evilportal', 'data/evilportal/portals',
+             'data/music']
+# The version-controlled seed tree (examples/factory/sdcard/) mirrored onto a card by --sync.
+SEED = os.path.normpath(os.path.join(HERE, '..', 'sdcard'))
 README = """T-Watch Ultra - SD card starter, desktop {version} (web API {api})
 
 Two ways to use this ZIP:
@@ -179,19 +186,65 @@ static const size_t WEB_RESCUE_HTML_GZ_LEN = sizeof(WEB_RESCUE_HTML_GZ);
     print(f'rescue page: {len(data)} bytes, {len(packed)} gzipped -> {RESCUE_HDR}')
 
 
+def swap_web(root):
+    """Build the desktop into <root>/web.new, then atomically swap it in as <root>/web.
+    The old desktop stays until the new one is complete. Returns the build stats."""
+    new, cur, old = (os.path.join(root, n) for n in ('web.new', 'web', 'web.old'))
+    stats = build(new)
+    if os.path.exists(old):
+        shutil.rmtree(old)
+    if os.path.exists(cur):
+        os.rename(cur, old)
+    os.rename(new, cur)
+    if os.path.exists(old):
+        shutil.rmtree(old)
+    return stats
+
+
+def seed_card(root, force=False):
+    """Create the data/ capture folders and mirror the version-controlled seed tree
+    (examples/factory/sdcard/) onto the card. Seed files are copied only when absent,
+    so captures and edits on the card are never clobbered; --force overwrites them.
+    Returns (copied, skipped)."""
+    for d in DATA_DIRS:
+        os.makedirs(os.path.join(root, d), exist_ok=True)
+    copied = skipped = 0
+    if os.path.isdir(SEED):
+        for base, dirs, names in os.walk(SEED):
+            dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
+            rel_dir = os.path.relpath(base, SEED)
+            dst_dir = root if rel_dir == '.' else os.path.join(root, rel_dir)
+            os.makedirs(dst_dir, exist_ok=True)
+            for name in sorted(names):
+                if name.startswith('.'):
+                    continue
+                dst = os.path.join(dst_dir, name)
+                if os.path.exists(dst) and not force:
+                    skipped += 1
+                    continue
+                shutil.copy2(os.path.join(base, name), dst)
+                copied += 1
+    return copied, skipped
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     g = p.add_mutually_exclusive_group()
     g.add_argument('--out', help='build into this folder')
     g.add_argument('--install', metavar='SD_ROOT', help='build and install as <SD_ROOT>/web')
+    g.add_argument('--sync', metavar='SD_ROOT', help='install the desktop AND mirror the seed tree '
+                   '(radio presets, portal templates, data folders) onto the card')
     g.add_argument('--zip', metavar='DIR', help='write the starter SD-card ZIP into DIR')
     p.add_argument('--rescue', action='store_true', help='regenerate web_rescue.h and web_desktop_pin.h')
+    p.add_argument('--force', action='store_true', help='with --sync, overwrite existing seed files on the card')
     p.add_argument('--version', help='build as this version (tests)')
     a = p.parse_args()
     global VERSION_OVERRIDE
     VERSION_OVERRIDE = a.version
-    if not (a.out or a.install or a.zip or a.rescue):
-        p.error('give --out, --install, --zip or --rescue')
+    if not (a.out or a.install or a.sync or a.zip or a.rescue):
+        p.error('give --out, --install, --sync, --zip or --rescue')
+    if a.force and not a.sync:
+        p.error('--force only applies to --sync')
     if a.rescue:
         if a.version:
             p.error('--rescue pins the real version; drop --version')
@@ -200,28 +253,24 @@ def main():
     if a.zip:
         make_zip(a.zip)
         return
-    if not (a.out or a.install):
+    if not (a.out or a.install or a.sync):
         return
 
     if a.out:
         manifest, total, gz_total = build(a.out)
         where = a.out
     else:
-        root = a.install
+        root = a.install or a.sync
         if not os.path.isdir(root):
             sys.exit(f'{root} is not a folder')
-        new, cur, old = (os.path.join(root, n) for n in ('web.new', 'web', 'web.old'))
-        manifest, total, gz_total = build(new)
-        if os.path.exists(old):
-            shutil.rmtree(old)
-        if os.path.exists(cur):
-            os.rename(cur, old)
-        os.rename(new, cur)
-        if os.path.exists(old):
-            shutil.rmtree(old)
-        where = cur
+        manifest, total, gz_total = swap_web(root)
+        where = os.path.join(root, 'web')
     print(f"desktop {manifest.get('version')} (API {manifest.get('api')}): {len(manifest['files'])} files, "
           f"{total / 1024:.0f} KB, {gz_total / 1024:.0f} KB as served -> {where}")
+    if a.sync:
+        copied, skipped = seed_card(a.sync, force=a.force)
+        print(f"seed: {copied} file(s) copied, {skipped} left as-is"
+              f"{' (--force: overwrote existing)' if a.force else ''}; data folders ready -> {a.sync}")
 
 
 if __name__ == '__main__':

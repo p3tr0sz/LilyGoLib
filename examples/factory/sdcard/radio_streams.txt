@@ -1,0 +1,6 @@
+# LilyGo network audio streams
+# Format: Name|http://host/path
+Groove Salad|http://ice3.somafm.com/groovesalad-128-mp3
+Drone Zone|http://ice3.somafm.com/dronezone-128-mp3
+Deep Space One|http://ice3.somafm.com/deepspaceone-128-mp3
+Secret Agent|http://ice3.somafm.com/secretagent-128-mp3

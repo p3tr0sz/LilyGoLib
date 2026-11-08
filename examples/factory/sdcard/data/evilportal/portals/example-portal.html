@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!--
+  Example custom captive-portal template for the factory firmware's Evil Portal
+  tool (authorized Wi-Fi security testing only). Drop more .html files beside
+  this one; each becomes a selectable template named after its filename
+  (letters, digits, - _ . only; no spaces). Submitted fields are logged to
+  data/evilportal/ on the card. This file just shows the mechanism works.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wi-Fi Login</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #0f1115; color: #e8eaed;
+           display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+    .card { background: #1a1d24; padding: 28px 24px; border-radius: 14px; width: 300px;
+            box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    p { font-size: 13px; color: #9aa0a6; margin: 0 0 18px; }
+    label { font-size: 12px; color: #9aa0a6; display: block; margin: 12px 0 4px; }
+    input { width: 100%; box-sizing: border-box; padding: 11px; border: 1px solid #2a2e37;
+            border-radius: 8px; background: #0f1115; color: #e8eaed; font-size: 15px; }
+    button { width: 100%; margin-top: 20px; padding: 12px; border: 0; border-radius: 8px;
+             background: #4c8bf5; color: #fff; font-size: 15px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <form class="card" method="POST" action="/login">
+    <h1>Connect to Wi-Fi</h1>
+    <p>Sign in to continue to the internet.</p>
+    <label for="u">Username or email</label>
+    <input id="u" name="username" type="text" autocomplete="username">
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password">
+    <button type="submit">Connect</button>
+  </form>
+</body>
+</html>

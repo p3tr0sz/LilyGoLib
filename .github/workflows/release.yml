@@ -1,0 +1,151 @@
+# Cut a desktop + firmware release.
+#
+# What it does, in order:
+#   1. Fails fast if the pinned headers (web_desktop_pin.h / web_rescue.h) are out of
+#      date — i.e. someone changed web/ or the build without running
+#      `tools/web_build.py --rescue` and committing the result. This is the drift that
+#      silently breaks the watch's "download the desktop itself" path.
+#   2. Builds the deterministic SD-card starter ZIP and checks its size + SHA-256 match
+#      the committed pin, so the firmware that is already in the field will accept it.
+#   3. (optional) Builds the T-Watch Ultra firmware from the sibling PlatformIO repo.
+#   4. Publishes a GitHub release with the SD ZIP (and firmware .bin if built) attached.
+#      The desktop self-install path (docs/web-device-bringup.md §9) wants a release whose
+#      asset is named exactly twatch-sd-<version>.zip — which is what step 2 produces.
+#
+# Trigger it by pushing a tag like `desktop-v0.1.0`, or from the Actions tab
+# (Run workflow) with an explicit tag.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. desktop-v0.1.0)'
+        required: true
+      build_firmware:
+        description: 'Also build + attach the T-Watch Ultra firmware'
+        type: boolean
+        default: true
+      firmware_repo:
+        description: 'owner/repo of the PlatformIO firmware'
+        default: 'p3tr0sz/LilyGoLib-PlatformIO'
+      firmware_ref:
+        description: 'branch/tag of the firmware repo to build'
+        default: 'master'
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+      zip: ${{ steps.build.outputs.zip }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify pinned headers are up to date
+        working-directory: examples/factory/tools
+        run: |
+          python3 web_build.py --rescue
+          if ! git diff --quiet -- ../web_desktop_pin.h ../web_rescue.h; then
+            echo "::error::web_desktop_pin.h / web_rescue.h are stale."
+            echo "Run 'python3 examples/factory/tools/web_build.py --rescue' and commit the result."
+            git --no-pager diff -- ../web_desktop_pin.h ../web_rescue.h
+            exit 1
+          fi
+
+      - name: Build SD starter ZIP and check it matches the pin
+        id: build
+        working-directory: examples/factory/tools
+        run: |
+          python3 web_build.py --zip dist
+          version=$(python3 -c "import json;print(json.load(open('../web/manifest.json'))['version'])")
+          zip="dist/twatch-sd-${version}.zip"
+          test -f "$zip" || { echo "::error::expected $zip"; exit 1; }
+          # The firmware only installs the exact ZIP named in the pin header.
+          pin_size=$(grep -oE 'WEB_DESKTOP_ZIP_SIZE[[:space:]]+[0-9]+' ../web_desktop_pin.h | grep -oE '[0-9]+')
+          pin_sha=$(grep -oE 'WEB_DESKTOP_ZIP_SHA256[[:space:]]+"[0-9a-f]+"' ../web_desktop_pin.h | grep -oE '[0-9a-f]{64}')
+          got_size=$(wc -c < "$zip" | tr -d ' ')
+          got_sha=$(sha256sum "$zip" | cut -d' ' -f1)
+          echo "pin  size=$pin_size sha=$pin_sha"
+          echo "zip  size=$got_size sha=$got_sha"
+          if [ "$pin_size" != "$got_size" ] || [ "$pin_sha" != "$got_sha" ]; then
+            echo "::error::built ZIP does not match web_desktop_pin.h (re-run --rescue and commit)"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=examples/factory/tools/$zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sd-zip
+          path: examples/factory/tools/dist/*.zip
+          if-no-files-found: error
+
+  firmware:
+    needs: desktop
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_firmware }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the firmware repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.firmware_repo || 'p3tr0sz/LilyGoLib-PlatformIO' }}
+          ref: ${{ github.event.inputs.firmware_ref || 'master' }}
+          # The firmware lives in a separate (private) repo, so the default GITHUB_TOKEN
+          # cannot read it. Add a repo secret FIRMWARE_REPO_TOKEN (a PAT with read access)
+          # for cross-repo checkout; without it this job fails and the release job runs
+          # with the SD ZIP only.
+          token: ${{ secrets.FIRMWARE_REPO_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+      - name: Build twatch_ultra firmware
+        run: pio run -e twatch_ultra
+      - name: Collect the firmware image
+        run: |
+          mkdir -p out
+          cp .pio/build/twatch_ultra/firmware.bin "out/twatch-ultra-firmware-${{ needs.desktop.outputs.version }}.bin"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-bin
+          path: out/*.bin
+          if-no-files-found: error
+
+  release:
+    needs: [desktop, firmware]
+    # Release as long as the desktop ZIP built; firmware may have been skipped or failed.
+    if: ${{ always() && needs.desktop.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+          VERSION: ${{ needs.desktop.outputs.version }}
+          PRERELEASE: ${{ github.event.inputs.prerelease }}
+        run: |
+          ls -la assets
+          args=(--repo "$REPO" --title "Desktop $VERSION" --generate-notes)
+          [ "$PRERELEASE" = "true" ] && args+=(--prerelease)
+          gh release create "$TAG" "${args[@]}" assets/* \
+            || gh release upload "$TAG" assets/* --clobber --repo "$REPO"
