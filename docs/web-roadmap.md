@@ -125,7 +125,24 @@ Latest verification: watch build RAM 55.1% / flash 93.0% (the scripting engine a
 
 **Scripts (2026-11-08).** A sandboxed **scripting engine** — the top remaining gap vs NucleoOS/Bruce — is now in both planes: a web Scripts app (edit + run) and an on-device LVGL Scripts app (list + run), sharing one firmware engine (`script_run` in `web_tool_script.cpp`, `POST /api/script/run`, cap `script`). It is a small, deliberately-scoped **sh-like language**, not bash: `#` comments; `;`/newline separators; `NAME=value` with `$NAME`/`${NAME}`/`$?` expansion; `$(( ))` integer arithmetic; `'`/`"` quoting; builtins `echo`, `set`, `sleep`, `test`/`[ … ]`, `true`/`false`/`:`, `exit`, `help`; control flow `if/elif/else/fi`, `for … in … do … done`, `while … do … done`; and `&&`/`||`. Every non-builtin line is dispatched to the Terminal shell (`term_exec`), so it reuses the exact command set and stays sandboxed to `/sd` and `/flash`; external-command exit status is always success in this slice (use `test`/`[ … ]` for conditionals). Scripts are stored in `/sd/scripts/` as `.scr` files (`GET/POST /api/script/{list,read,save,delete}`); a run is bounded by step, wall-clock, output and per-sleep caps so a runaway loop cannot hang the device. Our own code — not a vendored interpreter. **Follow-up considered and deferred (decision 2026-11-08):** for *full* programmability (functions, data structures, a standard library) the established path is embedding a proven interpreter rather than growing this DSL — **mJS** (Cesanta, Apache-2.0, used by Flipper Zero; <50 KB flash) or **Berry** (MIT, used by Tasmota) are the best fits, **Duktape** (MIT, used by Bruce) and **Lua** (MIT) the heavier full options. The plan is to add that as a *separate* "automation" app, not to extend the shell DSL into a half-made language. See `handoff-scripting.md`.
 
-Remaining NucleoOS/Bruce gaps worth taking next (feasible on this hardware), roughly in value order: a **unified file manager** (move/copy/delete + USB-MSC mount), **wardriving → WiGLE CSV**, dynamic per-probe **Karma**, a **TOTP authenticator**, and a **notepad/editor**.
+### Next feature work
+
+Near-term work now that the Terminal and the scripting engine have landed, in rough value order. This
+is the **feature** backlog; the **hardware-validation** gates for the P9 security tools are the
+separate P9.1–P9.7 table below. Each item follows the house pattern — shared firmware core, native +
+desktop front-ends, mock parity, tests on both planes — and must respect the flash budget (watch build
+is at **93.0%**, ~293 KB free).
+
+| Order | Work package | Why / notes |
+|---|---|---|
+| 1 | **Command exit status for `term_exec`** | Small enabler: give the shell a real exit status so the Scripts DSL's `if cmd`, `while cmd`, `&&`/`||` work on actual success, not just `test`/`[ … ]`. Removes the main v1 scripting limitation. |
+| 2 | **Automation app — embedded interpreter** | The deferred full-programmability path (functions, data, stdlib): a *separate* app around **mJS** (Apache-2.0, Flipper precedent, <50 KB — fits the budget) or **Berry** (MIT, Tasmota). Not an extension of the shell DSL. Binds a safe device API (`print`, `delay`, `sys.*`, sandboxed `fs.*`, later radio/attack verbs behind the P9 claim gates). Tested against the simulator, since the JS mock cannot re-run a native interpreter. See `handoff-scripting.md`. |
+| 3 | **Unified file manager** | move / copy / delete across `/sd` and `/flash`, plus a USB-MSC mount so a host PC sees the card. |
+| 4 | **Wardriving → WiGLE CSV** | Log scanned APs with GNSS fixes to the WiGLE CSV format for upload. |
+| 5 | **Dynamic per-probe Karma** | The remaining Evil Portal gap vs the reference: respond to each probed SSID, not only a selected one. |
+| 6 | **TOTP authenticator** | RFC 6238 codes from secrets stored on the watch; a small, self-contained app. |
+| 7 | **Notepad / editor** | A plain-text editor over the file API — also makes on-device `.scr` editing viable. |
+| 8 | **Per-app help / info** | One shared help registry (a short "what this does, web vs device" blurb per app) surfaced as a `?` in each desktop window's title bar and an on-device help page, sourced from a single file so it cannot drift. |
 
 ### Next steps to NucleoOS parity
 
