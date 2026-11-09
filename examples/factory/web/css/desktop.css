@@ -465,3 +465,21 @@ textarea.field { min-height: 80px; resize: vertical; }
 .chanbar.best i { background: var(--accent); }
 .chanbar .sub { font-size: 11px; }
 textarea.mono { font-family: var(--mono); line-height: 1.4; }
+
+/* TOTP authenticator */
+.totp-list { display: flex; flex-direction: column; gap: 8px; }
+.totp-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-s); }
+.totp-meta { flex: 1; min-width: 0; }
+.totp-issuer { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.totp-account { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.totp-code { font-family: var(--mono); font-size: 24px; letter-spacing: 2px; font-variant-numeric: tabular-nums; color: var(--accent); background: none; border: 0; padding: 2px 6px; border-radius: 6px; cursor: pointer; }
+.totp-code:hover { background: var(--card-hi); }
+.totp-code.soon { color: var(--warn); }
+.totp-ring { position: relative; width: 34px; height: 34px; flex: none; display: grid; place-items: center;
+  border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--frac) * 360deg), var(--line) 0); }
+.totp-ring::before { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--card); }
+.totp-ring-n { position: relative; z-index: 1; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.totp-form { display: flex; flex-direction: column; gap: 8px; }
+.totp-form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.totp-preview { font-variant-numeric: tabular-nums; }
+.totp-note { font-size: 12px; margin-top: 10px; }

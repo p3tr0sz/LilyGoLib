@@ -322,6 +322,24 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('a change made elsewhere shows up by itself', await waitFor('$row("from-outside.txt")'));
   await shot('3-files');
 
+  // ---- TOTP authenticator
+  console.log('totp');
+  await call('DELETE', '/api/files?path=%2Fsd%2Ftotp&recursive=1');
+  await go('#app=totp');
+  check('Authenticator opens', await waitFor('document.querySelector(".win .totp-form")'));
+  await js(`$type(document.querySelector('.win [aria-label="Secret"]'), 'otpauth://totp/ACME:alice@example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=ACME&digits=8&period=30');`);
+  check('otpauth paste fills the issuer', await waitFor(`document.querySelector('.win [aria-label="Issuer"]').value === 'ACME'`));
+  check('otpauth paste extracts the raw secret', await waitFor(`document.querySelector('.win [aria-label="Secret"]').value === 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'`));
+  await js(`$t('.win .btn', 'Add').click();`);
+  check('account appears with a live code', await waitFor(`[...document.querySelectorAll('.win .totp-card')].some((c) => c.querySelector('.totp-issuer')?.textContent === 'ACME' && /\\d/.test(c.querySelector('.totp-code')?.textContent || ''))`));
+  await js(`document.querySelector('.win [aria-label="Remove ACME"]').click();`);
+  await waitFor('document.querySelector(".dialog")');
+  await js(`$t('.dialog .btn', 'Remove').click();`);
+  check('removing the account clears it', await waitFor(`![...document.querySelectorAll('.win .totp-card')].some((c) => c.querySelector('.totp-issuer')?.textContent === 'ACME')`));
+  await shot('4-totp');
+  await go('#app=files');                 // reopen Files so the SD-removal checks below see it
+  await waitFor('document.querySelector(".win .frow")');
+
   // ---- SD removal
   console.log('sd');
   await call('POST', '/api/_dev/sd', { present: false });
