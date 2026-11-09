@@ -335,6 +335,36 @@ static bool totp_handle(web_req_t *r)
     return false;
 }
 
+/* ---------------------------------------------------------------- native app helpers (ui_totp.cpp) */
+
+/* List accounts with their current code and seconds remaining, for the on-device app. */
+void totp_list(std::vector<std::string> &labels, std::vector<std::string> &codes, std::vector<int> &remaining)
+{
+    labels.clear(); codes.clear(); remaining.clear();
+    std::vector<totp_acct> list;
+    load_accounts(list);
+    long long epoch = tools_epoch();
+    for (totp_acct &a : list) {
+        std::string label = a.issuer;
+        if (!a.account.empty()) label += (label.empty() ? "" : " - ") + a.account;
+        if (label.empty()) label = "(account)";
+        labels.push_back(label);
+        char code[9] = {0};
+        codes.push_back(totp_code(a.secret, epoch, a.digits, a.period, code) ? std::string(code) : std::string("------"));
+        remaining.push_back((int)(a.period - (epoch % a.period)));
+    }
+}
+
+/* Delete the account at a list index (same ordering as totp_list / GET /api/totp). */
+bool totp_delete_index(int id)
+{
+    std::vector<totp_acct> list;
+    load_accounts(list);
+    if (id < 0 || id >= (int)list.size()) return false;
+    list.erase(list.begin() + id);
+    return save_accounts(list);
+}
+
 static const char *const TOTP_CAPS[] = { "totp", NULL };
 const web_tool_t web_tool_totp = { TOTP_CAPS, totp_handle, NULL, NULL, NULL };
 
