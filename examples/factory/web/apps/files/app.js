@@ -16,7 +16,7 @@ const parent = (p) => p.slice(0, p.lastIndexOf('/')) || p;
 const badName = (n) => !n ? 'Enter a name' : /[\\/:*?"<>|]/.test(n) ? 'A name cannot contain \\ / : * ? " < > |' : n === '.' || n === '..' ? 'Not a valid name' : null;
 
 export function mount(el, ctx) {
-  const { api, events, caps } = ctx;
+  const { api, events, caps, openApp } = ctx;
   const roots = ROOTS.filter((r) => caps.includes(r.cap));
   let cwd = `/${roots[0]?.id || 'sd'}`;
   let entries = [];
@@ -295,6 +295,7 @@ export function mount(el, ctx) {
         h('div', { class: 'preview-body' }, content),
         h('div', { class: 'actions' },
           h('button', { class: 'btn', onclick: () => download(path, e.name) }, icon('download'), 'Download'),
+          TEXT.test(e.name) && openApp ? h('button', { class: 'btn', onclick: () => { close(); openApp('notepad', { path }); } }, icon('rename'), 'Edit') : null,
           h('button', { class: 'btn primary', onclick: () => close() }, 'Close')));
     }, { wide: true });
   }

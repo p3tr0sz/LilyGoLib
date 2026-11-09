@@ -483,3 +483,11 @@ textarea.mono { font-family: var(--mono); line-height: 1.4; }
 .totp-form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .totp-preview { font-variant-numeric: tabular-nums; }
 .totp-note { font-size: 12px; margin-top: 10px; }
+
+/* Notepad editor */
+.app.np { display: flex; flex-direction: column; height: 100%; }
+.np-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.np-path { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.np-editor { flex: 1; min-height: 160px; resize: none; border: 0; outline: none; padding: 12px;
+  background: var(--card); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.5; white-space: pre; overflow: auto; }
+.np-name-row { margin-top: 10px; }

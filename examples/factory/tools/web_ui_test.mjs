@@ -337,6 +337,24 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await js(`$t('.dialog .btn', 'Remove').click();`);
   check('removing the account clears it', await waitFor(`![...document.querySelectorAll('.win .totp-card')].some((c) => c.querySelector('.totp-issuer')?.textContent === 'ACME')`));
   await shot('4-totp');
+
+  // ---- Notepad editor
+  console.log('notepad');
+  await call('PUT', '/api/files/content?path=%2Fsd%2Fnp-test.txt', 'first line', true);
+  await go('#app=notepad');
+  check('Notepad opens', await waitFor('document.querySelector(".win .np-editor")'));
+  await js(`$t('.win .btn', 'Open').click();`);
+  await waitFor(`$t('.dialog .frow', 'np-test.txt')`);
+  await js(`$t('.dialog .frow', 'np-test.txt').click();`);
+  check('Open loads the file text', await waitFor(`document.querySelector('.win .np-editor').value === 'first line'`));
+  await js(`$type(document.querySelector('.win .np-editor'), 'first line\\nsecond line');`);
+  await js(`$t('.win .btn', 'Save').click();`);
+  let npSaved = '';
+  for (let i = 0; i < 20 && npSaved !== 'first line\nsecond line'; i++) { await sleep(100); npSaved = await (await call('GET', '/api/files/content?path=%2Fsd%2Fnp-test.txt')).text(); }
+  check('Save writes the edits back', npSaved === 'first line\nsecond line', npSaved);
+  await shot('5-notepad');
+  await call('DELETE', '/api/files?path=%2Fsd%2Fnp-test.txt');
+
   await go('#app=files');                 // reopen Files so the SD-removal checks below see it
   await waitFor('document.querySelector(".win .frow")');
 
