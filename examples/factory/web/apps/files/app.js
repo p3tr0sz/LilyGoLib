@@ -164,6 +164,74 @@ export function mount(el, ctx) {
     try { await api.copy(path, join(cwd, name)); load(); } catch (err) { toast(err.message, 'error'); }
   }
 
+  // A modal folder browser (roots + subfolders). Resolves the chosen folder path, or null.
+  // `disable` marks a folder (and its subtree) that cannot be chosen — the source of a move/copy.
+  function pickFolder({ title, okLabel, start, disable = null }) {
+    const under = (p, base) => p === base || p.startsWith(`${base}/`);
+    return dialog((box, close) => {
+      let dir = start;
+      const rootBar = h('div', { class: 'seg', role: 'tablist' });
+      const crumb = h('nav', { class: 'crumbs', 'aria-label': 'Destination folder' });
+      const flist = h('div', { class: 'files-list', style: { maxHeight: '42vh', overflow: 'auto' } });
+      const okBtn = h('button', { class: 'btn primary', onclick: () => close(dir) }, okLabel);
+
+      async function show(d) {
+        dir = d;
+        rootBar.replaceChildren(...roots.map((r) => h('button', {
+          class: dir.split('/')[1] === r.id ? 'on' : '', role: 'tab', onclick: () => show(`/${r.id}`),
+        }, r.label)));
+        const parts = dir.split('/').filter(Boolean);
+        crumb.replaceChildren(...parts.map((p, i) => {
+          const dpath = `/${parts.slice(0, i + 1).join('/')}`;
+          return h('button', { onclick: () => show(dpath) }, i === 0 ? (roots.find((r) => r.id === p)?.label || p) : p);
+        }));
+        const blocked = disable && under(dir, disable);
+        okBtn.disabled = !!blocked;
+        okBtn.title = blocked ? 'Cannot use this folder' : '';
+        let subs = [];
+        try { subs = ((await api.list(dir)).entries || []).filter((x) => x.dir); } catch (err) { toast(err.message, 'error'); }
+        const rows = subs.map((x) => {
+          const p = join(dir, x.name);
+          const dis = disable && under(p, disable);
+          return h('div', {
+            class: `frow${dis ? ' muted' : ''}`, role: 'button', tabindex: '0',
+            onclick: () => show(p), onkeydown: (ev) => { if (ev.key === 'Enter') show(p); },
+          }, h('span', { class: 'ficon dir' }, icon('folder')), h('span', { class: 'fname' }, x.name));
+        });
+        flist.replaceChildren(...(rows.length ? rows : [h('div', { class: 'empty' }, 'No subfolders here')]));
+      }
+
+      box.append(h('h2', {}, title), rootBar, crumb, flist,
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => close(null) }, 'Cancel'),
+          okBtn));
+      show(start);
+    }, { label: title, wide: true });
+  }
+
+  async function transfer(e, path, mode) {       // mode: 'move' | 'copy'
+    const here = parent(path);
+    const dest = await pickFolder({
+      title: `${mode === 'move' ? 'Move' : 'Copy'} "${e.name}" to…`,
+      okLabel: mode === 'move' ? 'Move here' : 'Copy here',
+      start: here,
+      disable: e.dir ? path : null,             // a folder cannot go into itself or its subtree
+    });
+    if (!dest) return;
+    if (dest === here) { toast(mode === 'move' ? 'Already in that folder' : 'Use Duplicate to copy within a folder'); return; }
+    const to = join(dest, e.name);
+    const run = (overwrite) => (mode === 'move' ? api.move(path, to, overwrite) : api.copy(path, to, overwrite));
+    try {
+      await run(false);
+      load();
+    } catch (err) {
+      if (err.status !== 409) { toast(err.message, 'error'); return; }
+      const ok = await confirmDialog(`"${e.name}" already exists there`, 'Replace it?', 'Replace', true);
+      if (!ok) return;
+      try { await run(true); load(); } catch (err2) { toast(err2.message, 'error'); }
+    }
+  }
+
   async function more(e, path) {
     await dialog((box, close) => {
       const b = (label, fn, cls = '') => h('button', { class: `btn ${cls}`, style: { width: '100%' }, onclick: () => { close(); fn(); } }, label);
@@ -173,6 +241,8 @@ export function mount(el, ctx) {
           e.dir ? null : b('Download', () => download(path, e.name)),
           b('Rename', () => rename(e, path)),
           b('Duplicate', () => duplicate(e, path)),
+          b('Move to…', () => transfer(e, path, 'move')),
+          b('Copy to…', () => transfer(e, path, 'copy')),
           b('Delete', () => del(e, path), 'danger'),
           b('Cancel', () => {}, 'ghost')));
     });

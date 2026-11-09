@@ -160,15 +160,17 @@ Item 1 (**command exit status for `term_exec`**) landed on 2026-11-08 — see th
 /api/files/copy`** `{from, to, overwrite?}`, is now in the shared firmware core (`web_fs.cpp`, reusing the
 existing `copy_tree`; rejects copying a root, a missing source, or a destination inside the source) and
 mirrored in the JS mock. The Files desktop app gained a **Duplicate** action (same-folder copy with an
-auto-suggested "… copy" name) via a new `api.copy`. Verified on both planes — firmware sim API **373/373**
-(eight new copy checks), mock API **366/366**, desktop UI **181/181** (new `duplicate (copy)` click-through).
-What remains for item 2 is **USB-MSC** (host PC mounts the card) and a cross-folder move/copy destination
-picker in the UI — USB-MSC is hardware-gated and not needed on an unmodified watch.
+auto-suggested "… copy" name), plus **Move to… / Copy to…** actions backed by a modal folder picker that
+browses across both roots (`/sd` and `/flash`) and blocks choosing a folder's own subtree — all via a new
+`api.copy`/`api.move`. Verified on both planes — firmware sim API **373/373** (eight new copy checks), mock
+API **366/366**, desktop UI **183/183** (new `duplicate (copy)` and cross-folder `move to subfolder`
+click-throughs). The only remaining item-2 work is **USB-MSC** (host PC mounts the card), which is
+hardware-gated and not needed on an unmodified watch.
 
 | Order | Work package | Why / notes |
 |---|---|---|
 | 1 | **Automation app — headless rule engine** (Berry disconnected 2026-11-08, `a7541d7`; flash back to 93.0%) | Direction changed from an embedded interpreter to a small **trigger → condition → action** rule engine that runs headless. **Next steps (in order):** (1) in-process event sink on `web_events_publish` + a sim check that a disconnected event reaches it; (2) the JSON rule matcher drained on the UI `tick`; (3) `/api/automation/{list,read,save,delete,test}`; (4) web Automation app (JS authoring) + on-device LVGL list/enable. Matcher is pure logic, so the **JS mock mirrors it** (dual-plane testing is back). Design: `automation-rule-engine.md`. Bigger, gated lever (loadable native `.nap` apps): `eval-loadable-native-apps.md`. |
-| 2 | **Unified file manager** (move/copy/delete core landed 2026-11-09) | move / copy / delete across `/sd` and `/flash` **done** (`/api/files/copy` + Files-app Duplicate, dual-plane); **remaining:** a USB-MSC mount so a host PC sees the card (hardware-gated) and a cross-folder move/copy picker in the UI. |
+| 2 | **Unified file manager** (move/copy/delete landed 2026-11-09) | move / copy / delete across `/sd` and `/flash` **done** (`/api/files/copy` + Files-app Duplicate and a cross-root Move to…/Copy to… picker, dual-plane); **remaining:** a USB-MSC mount so a host PC sees the card (hardware-gated). |
 | 3 | **Wardriving → WiGLE CSV** | Log scanned APs with GNSS fixes to the WiGLE CSV format for upload. |
 | 4 | **Dynamic per-probe Karma** | The remaining Evil Portal gap vs the reference: respond to each probed SSID, not only a selected one. |
 | 5 | **TOTP authenticator** | RFC 6238 codes from secrets stored on the watch; a small, self-contained app. |

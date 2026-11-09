@@ -301,6 +301,19 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   check('upload', await waitFor('$row("hello.txt")'));
   const up = await (await call('GET', '/api/files/content?path=%2Fsd%2Fui-test%2Fnotes%2Fhello.txt')).text();
   check('uploaded file has the right content', up === 'uploaded from the browser', up);
+  // move a file into a subfolder with the "Move to…" picker
+  await js(`$row('todo-2 copy.txt').querySelector('[title="More"]').click();`);
+  await waitFor(`$t('.dialog .btn', 'Move to…')`);
+  await js(`$t('.dialog .btn', 'Move to…').click();`);
+  await waitFor(`$t('.dialog .frow', 'sub')`);                 // picker lists the subfolders
+  await js(`$t('.dialog .frow', 'sub').click();`);             // descend into sub
+  await waitFor(`$t('.dialog .btn', 'Move here')`);
+  await js(`$t('.dialog .btn', 'Move here').click();`);
+  check('move to subfolder removes it from here', await waitFor('!$row("todo-2 copy.txt")'));
+  await js(`$row('sub').click();`);
+  check('moved file is now in the subfolder', await waitFor('$row("todo-2 copy.txt")'));
+  await js(`document.querySelector('[aria-label="Up one folder"]').click();`);
+  await waitFor('$row("sub")');
   await js(`$row('sub').querySelector('[title="Delete"]').click();`);
   await waitFor('document.querySelector(".dialog")');
   await js(`$t('.dialog .btn', 'Delete').click();`);
