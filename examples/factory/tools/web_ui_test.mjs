@@ -282,6 +282,12 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await waitFor('document.querySelector(".dialog input")');
   await js(`$type(document.querySelector('.dialog input'), 'todo-2.txt'); $t('.dialog .btn', 'Rename').click();`);
   check('rename', await waitFor('$row("todo-2.txt") && !$row("todo.txt")'));
+  await js(`$row('todo-2.txt').querySelector('[title="More"]').click();`);
+  await waitFor(`$t('.dialog .btn', 'Duplicate')`);
+  await js(`$t('.dialog .btn', 'Duplicate').click();`);
+  await waitFor('document.querySelector(".dialog input")');
+  await js(`$t('.dialog .btn', 'Duplicate').click();`);          // accept the suggested "… copy" name
+  check('duplicate (copy)', await waitFor('$row("todo-2 copy.txt") && $row("todo-2.txt")'));
   await js(`document.querySelector('[aria-label="New folder"]').click();`);
   await waitFor('document.querySelector(".dialog input")');
   await js(`$type(document.querySelector('.dialog input'), 'sub'); $t('.dialog .btn', 'Create').click();`);

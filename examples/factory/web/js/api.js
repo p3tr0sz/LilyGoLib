@@ -120,6 +120,7 @@ export const api = {
   list: (path) => request('GET', `/api/files?path=${q(path)}`),
   mkdir: (path) => request('POST', '/api/files/mkdir', { json: { path } }),
   move: (from, to, overwrite = false) => request('POST', '/api/files/move', { json: { from, to, overwrite } }),
+  copy: (from, to, overwrite = false) => request('POST', '/api/files/copy', { json: { from, to, overwrite } }),
   remove: (path, recursive = false) => request('DELETE', `/api/files?path=${q(path)}${recursive ? '&recursive=1' : ''}`),
   contentUrl: (path) => `/api/files/content?path=${q(path)}`,
   readText: async (path, max = 1 << 20) => {

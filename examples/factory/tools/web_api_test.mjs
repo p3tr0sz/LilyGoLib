@@ -178,6 +178,22 @@ r = await call('POST', '/api/files/move', { from: T + '/c/x.txt', to: T + '/c/hi
 check('move onto existing without overwrite: 409', r.status === 409, r.status);
 r = await call('POST', '/api/files/move', { from: T + '/c/x.txt', to: T + '/c/hi.txt', overwrite: true });
 check('move with overwrite', r.status === 200, r.json);
+r = await call('POST', '/api/files/copy', { from: T + '/c/hi.txt', to: T + '/c/copy.txt' });
+check('copy file', r.status === 200, r.json);
+r = await call('GET', `/api/files/content?path=${q(T + '/c/copy.txt')}`);
+check('copy made a readable duplicate', r.status === 200 && r.text === 'x', r.text);
+r = await call('GET', `/api/files/content?path=${q(T + '/c/hi.txt')}`);
+check('copy leaves the source in place', r.status === 200 && r.text === 'x', r.text);
+r = await call('POST', '/api/files/copy', { from: T + '/c/copy.txt', to: T + '/c/hi.txt' });
+check('copy onto existing without overwrite: 409', r.status === 409, r.status);
+r = await call('POST', '/api/files/copy', { from: T + '/c/copy.txt', to: T + '/c/hi.txt', overwrite: true });
+check('copy with overwrite', r.status === 200, r.json);
+r = await call('POST', '/api/files/copy', { from: T + '/c', to: T + '/c/inside' });
+check('copy a folder into itself: 400', r.status === 400, r.status);
+r = await call('POST', '/api/files/copy', { from: T + '/c', to: T + '/d' });
+check('copy a folder', r.status === 200, r.json);
+r = await call('GET', `/api/files?path=${q(T + '/d')}`);
+check('copied folder has its files', r.status === 200 && r.json?.entries?.map((e) => e.name).sort().join() === 'copy.txt,hi.txt', r.json);
 r = await call('GET', `/api/files/content?path=${q(T + '/nope.txt')}`);
 check('missing file: 404', r.status === 404 && r.json?.error === 'not_found', r.status);
 r = await call('GET', `/api/files?path=${q(T + '/../')}`);
@@ -193,7 +209,7 @@ check('deleted', r.status === 404, r.status);
 
 await new Promise((x) => setTimeout(x, 300));
 const ops = msgs.filter((m) => m.t === 'files.changed').map((m) => m.d.op);
-check('files.changed events', ['write', 'mkdir', 'move', 'delete'].every((o) => ops.includes(o)), ops);
+check('files.changed events', ['write', 'mkdir', 'move', 'copy', 'delete'].every((o) => ops.includes(o)), ops);
 check('events seq increases', msgs.slice(1).every((m, i) => m.seq > msgs[i].seq), msgs.map((m) => m.seq));
 
 // ---- screen, input, display

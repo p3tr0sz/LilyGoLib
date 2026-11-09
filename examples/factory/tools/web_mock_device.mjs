@@ -32,7 +32,7 @@
 import { createServer } from 'node:http';
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { promises as fsp, existsSync, mkdirSync, statfsSync, createReadStream } from 'node:fs';
-import { join, normalize, extname, dirname, resolve } from 'node:path';
+import { join, normalize, extname, dirname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -1045,7 +1045,7 @@ function device(paired) {
 // ---- files ----
 async function filesRoute(req, res, url, path) {
   const isContent = path === '/api/files/content';
-  if (path === '/api/files/mkdir' || path === '/api/files/move') {
+  if (path === '/api/files/mkdir' || path === '/api/files/move' || path === '/api/files/copy') {
     if (req.method !== 'POST') return fail(res, 405, 'bad_request', 'POST');
     const b = await readJSON(req);
     if (!b) return fail(res, 400, 'bad_request', 'bad JSON');
@@ -1060,12 +1060,19 @@ async function filesRoute(req, res, url, path) {
     const f = resolvePath(b.from), t = resolvePath(b.to);
     if (f.error) return pathError(res, f.error);
     if (t.error) return pathError(res, t.error);
+    if (f.abs === ROOTS[f.root] || t.abs === ROOTS[t.root]) return fail(res, 400, 'bad_request', path === '/api/files/copy' ? 'cannot copy a root' : 'cannot move a root');
     if (!existsSync(f.abs)) return fail(res, 404, 'not_found');
+    if (path === '/api/files/copy' && (t.abs === f.abs || t.abs.startsWith(f.abs + sep))) return fail(res, 400, 'bad_request', 'cannot copy into itself');
     if (existsSync(t.abs)) {
       if (!b.overwrite) return fail(res, 409, 'conflict', 'destination exists');
       await fsp.rm(t.abs, { recursive: true, force: true });
     }
     await fsp.mkdir(dirname(t.abs), { recursive: true });
+    if (path === '/api/files/copy') {
+      await fsp.cp(f.abs, t.abs, { recursive: true });
+      publish('files.changed', { op: 'copy', path: b.from, to: b.to });
+      return ok(res);
+    }
     if (f.root === t.root) await fsp.rename(f.abs, t.abs);
     else { await fsp.cp(f.abs, t.abs, { recursive: true }); await fsp.rm(f.abs, { recursive: true, force: true }); }
     publish('files.changed', { op: 'move', path: b.from, to: b.to });

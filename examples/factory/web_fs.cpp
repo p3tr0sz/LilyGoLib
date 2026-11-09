@@ -530,6 +530,55 @@ static void handle_move(web_req_t *r)
     web_resp_ok(r);
 }
 
+static void handle_copy(web_req_t *r)
+{
+    std::string body, from, to, hf, ht, rf, rt;
+    if (!web_read_body(r, body, 4096) || !web_json_get_str(body, "from", from) || !web_json_get_str(body, "to", to)) {
+        web_resp_error(r, 400, "bad_request", "from, to");
+        return;
+    }
+    bool overwrite = false;
+    web_json_get_bool(body, "overwrite", &overwrite);
+    int e = web_fs_resolve(from.c_str(), hf, &rf);
+    if (!e) e = web_fs_resolve(to.c_str(), ht, &rt);
+    if (e) {
+        fs_error(r, e);
+        return;
+    }
+    if (is_root(hf) || is_root(ht)) {
+        web_resp_error(r, 400, "bad_request", "cannot copy a root");
+        return;
+    }
+    struct stat st;
+    if (!stat_path(hf, &st)) {
+        web_resp_error(r, 404, "not_found");
+        return;
+    }
+    /* A copy whose destination is the source itself, or inside it, would recurse forever. */
+    if (ht == hf || (ht.size() > hf.size() && !ht.compare(0, hf.size(), hf) && ht[hf.size()] == '/')) {
+        web_resp_error(r, 400, "bad_request", "cannot copy into itself");
+        return;
+    }
+    if (stat_path(ht, &st)) {
+        if (!overwrite) {
+            web_resp_error(r, 409, "conflict", "destination exists");
+            return;
+        }
+        if (!remove_tree(ht)) {
+            web_resp_error(r, 500, "io_error", "could not replace the destination");
+            return;
+        }
+    }
+    size_t slash = ht.rfind('/');
+    if (slash != std::string::npos && slash > 0) mkdirs(ht.substr(0, slash));
+    if (!copy_tree(hf, ht)) {
+        web_resp_error(r, 500, "io_error", "copy");
+        return;
+    }
+    publish_change("copy", from.c_str(), to.c_str());
+    web_resp_ok(r);
+}
+
 void web_fs_handle(web_req_t *r)
 {
     if (!strcmp(r->path, "/api/files/mkdir")) {
@@ -539,6 +588,10 @@ void web_fs_handle(web_req_t *r)
     if (!strcmp(r->path, "/api/files/move")) {
         if (strcmp(r->method, "POST")) return (void)web_resp_error(r, 405, "bad_request", "POST");
         return handle_move(r);
+    }
+    if (!strcmp(r->path, "/api/files/copy")) {
+        if (strcmp(r->method, "POST")) return (void)web_resp_error(r, 405, "bad_request", "POST");
+        return handle_copy(r);
     }
     bool content = !strcmp(r->path, "/api/files/content");
     if (!content && strcmp(r->path, "/api/files")) return (void)web_resp_error(r, 404, "not_found");

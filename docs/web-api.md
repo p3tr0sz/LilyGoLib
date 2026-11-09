@@ -84,6 +84,7 @@ Paths are absolute and start with a root: `/sd/...` (SD card) or `/flash/...` (i
 | `PUT /api/files/content?path=&offset=N` | paired | appends at byte N for resumable uploads: only if the file is exactly N bytes, else `409 conflict` with `size`. Not atomic |
 | `POST /api/files/mkdir` | paired | `{path}` → `{ok}`; existing folder is fine |
 | `POST /api/files/move` | paired | `{from, to, overwrite?}` → `{ok}`. Existing `to` without `overwrite`: `409` |
+| `POST /api/files/copy` | paired | `{from, to, overwrite?}` → `{ok}`. Copies a file or folder (works across `/sd`↔`/flash`). Existing `to` without `overwrite`: `409`; a `to` equal to or inside `from`: `400` |
 | `DELETE /api/files?path=` | paired | → `{ok}`. A non-empty folder needs `&recursive=1`, else `409` |
 
 ## Tools (P4)

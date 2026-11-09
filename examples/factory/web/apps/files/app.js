@@ -1,4 +1,4 @@
-// Files: browse, upload, download, rename, move, delete and preview files on the SD card and the flash.
+// Files: browse, upload, download, rename, move, duplicate (copy), delete and preview files on the SD card and the flash.
 import { h, icon, fmtBytes, fmtDate, toast, progressToast, confirmDialog, promptDialog, dialog } from '../../js/ui.js';
 
 const TEXT = /\.(txt|md|json|csv|log|ini|cfg|conf|yaml|yml|xml|html|css|js|mjs|gpx|nmea|ir|c|h|cpp|py|sh)$/i;
@@ -148,6 +148,22 @@ export function mount(el, ctx) {
     try { await api.remove(path, e.dir); load(); } catch (err) { toast(err.message, 'error'); }
   }
 
+  function suggestCopyName(name) {
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    let base = `${stem} copy${ext}`;
+    for (let n = 2; entries.some((x) => x.name === base); n++) base = `${stem} copy ${n}${ext}`;
+    return base;
+  }
+
+  async function duplicate(e, path) {
+    const name = await promptDialog(`Duplicate ${e.dir ? 'folder' : 'file'}`, suggestCopyName(e.name), 'Duplicate',
+      (v) => badName(v) || (entries.some((x) => x.name === v) ? 'That name is taken here' : null));
+    if (!name) return;
+    try { await api.copy(path, join(cwd, name)); load(); } catch (err) { toast(err.message, 'error'); }
+  }
+
   async function more(e, path) {
     await dialog((box, close) => {
       const b = (label, fn, cls = '') => h('button', { class: `btn ${cls}`, style: { width: '100%' }, onclick: () => { close(); fn(); } }, label);
@@ -156,6 +172,7 @@ export function mount(el, ctx) {
           e.dir ? b('Open', () => go(path)) : b('Preview', () => preview(e, path)),
           e.dir ? null : b('Download', () => download(path, e.name)),
           b('Rename', () => rename(e, path)),
+          b('Duplicate', () => duplicate(e, path)),
           b('Delete', () => del(e, path), 'danger'),
           b('Cancel', () => {}, 'ghost')));
     });
