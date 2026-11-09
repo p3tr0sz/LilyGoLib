@@ -30,7 +30,7 @@
 // Needs Node 18+.
 
 import { createServer } from 'node:http';
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt } from 'node:crypto';
 import { promises as fsp, existsSync, mkdirSync, statfsSync, createReadStream } from 'node:fs';
 import { join, normalize, extname, dirname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -60,7 +60,7 @@ const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
   'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'deauth.campaign', 'deauth.health',
-  'beacon.spam', 'beacon.campaign', 'beacon.health'];
+  'beacon.spam', 'beacon.campaign', 'beacon.health', 'totp'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -172,6 +172,61 @@ async function termExec(cwd, line) {
 // ---- scripting engine (mirrors web_tool_script.cpp script_run so mock and firmware agree) ----
 const SCRIPT_SRC_MAX = 16 * 1024, SCRIPT_OUT_MAX = 32 * 1024, SCRIPT_STEP_MAX = 20000;
 const SCRIPT_MS_MAX = 8000, SCRIPT_SLEEP_MAX = 5000, SCRIPT_DEPTH_MAX = 24, SCRIPT_DIR = '/sd/scripts';
+
+// ---- TOTP authenticator (RFC 6238; mirrors web_tool_totp.cpp so both planes agree) ----
+const TOTP_DIR = '/sd/totp', TOTP_FILE = '/sd/totp/accounts.tsv', TOTP_MAX = 50, TOTP_FIELD_MAX = 64, TOTP_SECRET_MAX = 128;
+function base32Decode(s) {                         // RFC 4648, case-insensitive; null on illegal char
+  let bits = 0, val = 0; const out = [];
+  for (const ch of s) {
+    if ('= -\t\r\n'.includes(ch)) continue;
+    const c = ch.toUpperCase();
+    let d;
+    if (c >= 'A' && c <= 'Z') d = c.charCodeAt(0) - 65;
+    else if (c >= '2' && c <= '7') d = c.charCodeAt(0) - 50 + 26;
+    else return null;
+    val = (val << 5) | d; bits += 5;
+    if (bits >= 8) { bits -= 8; out.push((val >> bits) & 0xFF); if (out.length > TOTP_SECRET_MAX) return null; }
+  }
+  return out.length ? Buffer.from(out) : null;
+}
+function totpCode(secretB32, epoch, digits, period) {
+  if (digits < 6 || digits > 8 || period < 1) return null;
+  const key = base32Decode(secretB32);
+  if (!key) return null;
+  let counter = Math.floor(epoch / period);
+  if (counter < 0) counter = 0;
+  const msg = Buffer.alloc(8); msg.writeBigUInt64BE(BigInt(counter));
+  const mac = createHmac('sha1', key).update(msg).digest();
+  const off = mac[19] & 0x0f;
+  const bin = ((mac[off] & 0x7f) * 0x1000000) + (mac[off + 1] << 16) + (mac[off + 2] << 8) + mac[off + 3];
+  return String(bin % 10 ** digits).padStart(digits, '0');
+}
+const totpNormSecret = (s) => [...(s || '')].filter((c) => c !== ' ' && c !== '-' && c !== '=').join('').toUpperCase();
+const totpFieldOk = (s) => s.length <= TOTP_FIELD_MAX && ![...s].some((c) => c === '\t' || c === '\n' || c === '\r' || c.charCodeAt(0) < 0x20);
+async function totpLoad() {
+  const r = resolvePath(TOTP_FILE);
+  if (r.error) return [];
+  let all; try { all = (await fsp.readFile(r.abs)).toString('utf8'); } catch { return []; }
+  const list = [];
+  for (const line of all.split('\n')) {
+    if (!line) continue;
+    const f = line.split('\t');
+    if (f.length < 5) continue;
+    let digits = parseInt(f[3], 10) || 6, period = parseInt(f[4], 10) || 30;
+    if (digits < 6 || digits > 8) digits = 6;
+    if (period < 1) period = 30;
+    list.push({ issuer: f[0], account: f[1], secret: f[2], digits, period });
+    if (list.length >= TOTP_MAX) break;
+  }
+  return list;
+}
+async function totpSave(list) {
+  const dir = resolvePath(TOTP_DIR); if (dir.error) return false;
+  await fsp.mkdir(dir.abs, { recursive: true });
+  const r = resolvePath(TOTP_FILE); if (r.error) return false;
+  const body = list.map((a) => [a.issuer, a.account, a.secret, a.digits, a.period].join('\t')).join('\n') + (list.length ? '\n' : '');
+  try { await fsp.writeFile(r.abs, body); return true; } catch { return false; }
+}
 const isNameStart = (c) => /[A-Za-z_]/.test(c);
 const isNameChar = (c) => /[A-Za-z0-9_]/.test(c);
 const scriptNameOk = (n) => typeof n === 'string' && /^[A-Za-z0-9._-]{1,48}$/.test(n) && !n.includes('..') && n.endsWith('.scr');
@@ -1631,6 +1686,51 @@ async function toolsRoute(req, res, url, path) {
     if (r.error) return fail(res, 503, 'sd_missing', 'SD card not mounted');
     try { await fsp.unlink(r.abs); } catch { return fail(res, 404, 'not_found', 'no such rule'); }
     return ok(res);
+  }
+  if (path === '/api/totp' && m === 'GET') {
+    const atq = url.searchParams.get('at');
+    const epoch = atq && +atq > 0 ? +atq : nowEpoch();
+    const accounts = (await totpLoad()).map((a, id) => ({
+      id, issuer: a.issuer, account: a.account, digits: a.digits, period: a.period,
+      code: totpCode(a.secret, epoch, a.digits, a.period), remaining_s: a.period - (epoch % a.period),
+    }));
+    return json(res, 200, { epoch, accounts });
+  }
+  if (path === '/api/totp/add' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    const issuer = typeof b.issuer === 'string' ? b.issuer : '', account = typeof b.account === 'string' ? b.account : '';
+    const digits = b.digits == null ? 6 : b.digits | 0, period = b.period == null ? 30 : b.period | 0;
+    if (digits < 6 || digits > 8) return fail(res, 400, 'bad_request', 'digits must be 6-8');
+    if (period < 10 || period > 120) return fail(res, 400, 'bad_request', 'period must be 10-120');
+    if (!issuer && !account) return fail(res, 400, 'bad_request', 'issuer or account required');
+    if (!totpFieldOk(issuer) || !totpFieldOk(account)) return fail(res, 400, 'bad_request', 'issuer/account too long or has control chars');
+    const norm = totpNormSecret(typeof b.secret === 'string' ? b.secret : '');
+    if (!base32Decode(norm)) return fail(res, 400, 'bad_secret', 'not a valid Base32 secret');
+    const list = await totpLoad();
+    if (list.length >= TOTP_MAX) return fail(res, 409, 'full', 'too many accounts');
+    list.push({ issuer, account, secret: norm, digits, period });
+    if (!(await totpSave(list))) return fail(res, 503, 'sd_missing', 'could not write to SD');
+    return json(res, 200, { ok: true, id: list.length - 1 });
+  }
+  if (path === '/api/totp/delete' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    if (typeof b.id !== 'number') return fail(res, 400, 'bad_request', 'id');
+    const id = b.id | 0;
+    const list = await totpLoad();
+    if (id < 0 || id >= list.length) return fail(res, 404, 'not_found', 'no such account');
+    list.splice(id, 1);
+    if (!(await totpSave(list))) return fail(res, 503, 'sd_missing', 'could not write to SD');
+    return ok(res);
+  }
+  if (path === '/api/totp/preview' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    const digits = b.digits == null ? 6 : b.digits | 0, period = b.period == null ? 30 : b.period | 0;
+    if (digits < 6 || digits > 8) return fail(res, 400, 'bad_request', 'digits must be 6-8');
+    if (period < 1) return fail(res, 400, 'bad_request', 'period');
+    const epoch = b.at > 0 ? Math.floor(b.at) : nowEpoch();
+    const code = totpCode(totpNormSecret(typeof b.secret === 'string' ? b.secret : ''), epoch, digits, period);
+    if (!code) return fail(res, 400, 'bad_secret', 'not a valid Base32 secret');
+    return json(res, 200, { code, remaining_s: period - (epoch % period) });
   }
   if (path === '/api/logs' && m === 'GET') {
     const after = Number(url.searchParams.get('after') || 0);

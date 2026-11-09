@@ -41,6 +41,7 @@ static const web_tool_t *const TOOLS[] = {
     &web_tool_term,
     &web_tool_script,
     &web_tool_automation,          /* headless rule engine (docs/automation-rule-engine.md) */
+    &web_tool_totp,                /* RFC 6238 authenticator (docs/web-api.md, TOTP) */
     &web_tool_wifi_scan,
     &web_tool_ble_scan,
     &web_tool_link,

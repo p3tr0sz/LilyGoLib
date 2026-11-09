@@ -212,6 +212,50 @@ const ops = msgs.filter((m) => m.t === 'files.changed').map((m) => m.d.op);
 check('files.changed events', ['write', 'mkdir', 'move', 'copy', 'delete'].every((o) => ops.includes(o)), ops);
 check('events seq increases', msgs.slice(1).every((m, i) => m.seq > msgs[i].seq), msgs.map((m) => m.seq));
 
+// ---- TOTP authenticator (RFC 6238 test vectors, seed "12345678901234567890")
+console.log('totp');
+const RFC = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';         // Base32 of the RFC 6238 SHA-1 seed
+await call('DELETE', `/api/files?path=${q('/sd/totp')}&recursive=1`);
+r = await call('POST', '/api/totp/preview', { secret: RFC, digits: 8, at: 59 });
+check('preview matches RFC vector @59', r.status === 200 && r.json?.code === '94287082', r.json);
+r = await call('POST', '/api/totp/preview', { secret: RFC, digits: 8, at: 1234567890 });
+check('preview matches RFC vector @1234567890', r.json?.code === '89005924', r.json);
+r = await call('POST', '/api/totp/preview', { secret: RFC, digits: 8, at: 20000000000 });
+check('preview matches RFC vector @20000000000 (64-bit counter)', r.json?.code === '65353130', r.json);
+r = await call('POST', '/api/totp/preview', { secret: RFC, at: 59 });
+check('preview defaults to 6 digits', r.json?.code === '287082', r.json);
+r = await call('POST', '/api/totp/preview', { secret: 'gezd gnbv-gy3t qojq gezdgnbvgy3tqojq', digits: 8, at: 59 });
+check('preview normalises spaces/dashes/case', r.json?.code === '94287082', r.json);
+r = await call('POST', '/api/totp/preview', { secret: 'not valid 1!0', at: 59 });
+check('preview rejects a bad Base32 secret: 400', r.status === 400 && r.json?.error === 'bad_secret', r.json);
+r = await call('GET', '/api/totp');
+check('totp starts empty', r.status === 200 && Array.isArray(r.json?.accounts) && r.json.accounts.length === 0, r.json);
+r = await call('POST', '/api/totp/add', { issuer: 'ACME', account: 'alice', secret: RFC, digits: 8 });
+check('add account', r.status === 200 && r.json?.ok === true && r.json?.id === 0, r.json);
+r = await call('POST', '/api/totp/add', { issuer: 'bad', account: 'x', secret: RFC, digits: 5 });
+check('add rejects digits out of range: 400', r.status === 400, r.status);
+r = await call('POST', '/api/totp/add', { issuer: 'bad', account: 'x', secret: RFC, period: 5 });
+check('add rejects period out of range: 400', r.status === 400, r.status);
+r = await call('POST', '/api/totp/add', { secret: RFC });
+check('add requires an issuer or account: 400', r.status === 400, r.status);
+r = await call('POST', '/api/totp/add', { issuer: 'bad', secret: 'nope!' });
+check('add rejects a bad secret: 400', r.status === 400 && r.json?.error === 'bad_secret', r.json);
+r = await call('GET', '/api/totp?at=59');
+let acc = r.json?.accounts?.[0];
+check('listed account carries the current code, not the secret', acc?.code === '94287082' && acc.issuer === 'ACME' && acc.account === 'alice' && acc.secret === undefined, r.json);
+check('remaining_s is within the period', acc && acc.remaining_s === 1, acc);         // 30 - (59 % 30)
+r = await call('POST', '/api/totp/add', { issuer: 'GitHub', account: 'bob', secret: RFC });
+check('add a second account', r.json?.id === 1, r.json);
+r = await call('GET', '/api/totp');
+check('both accounts are listed', r.json?.accounts?.length === 2, r.json);
+r = await call('POST', '/api/totp/delete', { id: 0 });
+check('delete by id', r.status === 200, r.json);
+r = await call('GET', '/api/totp?at=59');
+check('delete removes the right account and reindexes', r.json?.accounts?.length === 1 && r.json.accounts[0].issuer === 'GitHub' && r.json.accounts[0].code === '287082', r.json);
+r = await call('POST', '/api/totp/delete', { id: 9 });
+check('delete of a missing id: 404', r.status === 404, r.status);
+await call('DELETE', `/api/files?path=${q('/sd/totp')}&recursive=1`);
+
 // ---- screen, input, display
 console.log('screen');
 const decodeRle = (buf) => { let n = 0; for (let i = 0; i + 3 < buf.length; i += 4) n += buf.readUInt16LE(i); return n; };

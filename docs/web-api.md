@@ -241,6 +241,17 @@ Replace the firmware over the air, into the spare app slot, with a roll-back to 
 
 After a reboot into a new build, the watch marks it good once it reaches the UI; a build that crashes first is rolled back by the bootloader on the next power-up. Events: `ota` on each state and progress change.
 
+### TOTP authenticator (`totp`)
+
+Time-based one-time codes (RFC 6238 / RFC 4226, HMAC-SHA1). Secrets live on the watch (`/sd/totp/accounts.tsv`) and codes are computed on the watch from its own clock, so a shared secret never has to leave the device to be useful; the desktop and the on-device app only display the codes. Self-contained crypto (a small SHA-1 + HMAC-SHA1 and a Base32 decoder) keeps the firmware and the simulator byte-identical with no platform crypto dependency. v1 is HMAC-SHA1 only. `otpauth://` URIs are parsed in the browser into these fields.
+
+| Route | Auth | Body → answer |
+|---|---|---|
+| `GET /api/totp` | paired | `{epoch, accounts:[{id, issuer, account, digits, period, code, remaining_s}]}` — the current code for each stored account; the secret is never returned. `?at=<epoch>` computes at a given time (for testing against RFC vectors) |
+| `POST /api/totp/add` | paired | `{issuer?, account?, secret, digits?, period?}` → `{ok, id}`. `secret` is Base32 (spaces/dashes/case ignored); `digits` 6–8 (default 6), `period` 10–120 s (default 30). At least one of `issuer`/`account` is required. Bad Base32 → `400 bad_secret`; too many accounts → `409 full` |
+| `POST /api/totp/delete` | paired | `{id}` → `{ok}`. `404` if the id is out of range |
+| `POST /api/totp/preview` | paired | `{secret, at?, digits?, period?}` → `{code, remaining_s}` without storing anything — used by the add form to confirm a secret produces the code the user's other app shows |
+
 ### Assistant (`assistant`) — later
 
 Voice to the watch, an answer spoken back: record on the watch (`recorder`), the browser does speech-to-text, the language model and text-to-speech, the reply plays on the watch (`audio.play`). It needs a model endpoint and a key, so it waits until the desktop has a settings place for those. No firmware routes of its own; it is built on the P4 recorder and player.
