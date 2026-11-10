@@ -1,0 +1,30 @@
+# Per-app help for the web desktop (? in each window) and the on-device Help app.
+# One line per app: id<TAB>title<TAB>one-line blurb. Single source so the two planes cannot drift.
+files	Files	Browse, upload, download, rename, move, copy and delete files on the SD card and flash.
+terminal	Terminal	A command console for the watch. The same shell runs here and in the on-device Terminal app.
+scripts	Scripts	Edit and run small sh-like .scr scripts. Editing is done here; the watch runs them.
+automation	Automation	Build headless trigger-condition-action rules. They run on the watch with nothing connected.
+totp	Authenticator	RFC 6238 two-factor codes. Secrets stay on the watch; codes are computed there and shown on both.
+notepad	Notepad	A plain-text editor over the file API. Open, edit and save any text file on the watch.
+screen	Screen	Mirror the watch screen in the browser and tap or type into its on-device UI from here.
+notify	Notify	Send a notification to the watch and see the ones it is holding.
+monitor	Monitor	Live battery, memory, CPU and uptime, with the watch log stream.
+sensors	Sensors	Read the motion sensor (IMU): orientation and movement from the watch.
+gnss	GNSS	The GNSS fix: position, altitude, speed and satellites, plotted in the browser.
+lora	LoRa	Send and receive LoRa packets and set the radio parameters.
+nfc	NFC	Read NFC tags and save their contents as files.
+recorder	Recorder	Record audio on the watch mic to a WAV on the SD card, and play it back.
+scanners	Scanners	List nearby Wi-Fi access points and Bluetooth devices the watch can see.
+link	Link	Send and receive files between two watches over ESP-NOW.
+hid	BadUSB	Run a USB keyboard script when the watch is plugged into a computer (authorized testing).
+wifitools	Net Tools	Network helpers over the watch Wi-Fi: reach and look up hosts on the local network.
+ota	Update	Replace the firmware over the air into the spare slot, with a roll-back if it fails to start.
+sniffer	Wi-Fi Sniffer	Passively capture 802.11 frames to a PCAP file for analysis (authorized testing only).
+airspace	Airspace	Survey the Wi-Fi channels around the watch: who is on air and how busy each channel is.
+sentinel	Sentinel	Watch for nearby Bluetooth devices and flag ones that appear or linger.
+presence	Presence	Detect motion and nearby peers from Wi-Fi CSI; a privacy-respecting room sensor.
+fido2	FIDO2 Key	Use the watch as a FIDO2/WebAuthn security key (simulator contract today).
+evilportal	Evil Portal	Run a captive-portal lab for authorized Wi-Fi security testing. Use only on networks you own.
+deauthflood	Deauth Flood	A Wi-Fi deauthentication test tool for authorized lab use on networks you control.
+beaconspam	Beacon Spam	Broadcast test beacon frames for authorized Wi-Fi research on equipment you own.
+settings	Settings	Watch settings: time, theme, Wi-Fi, the web-desktop PIN and more.

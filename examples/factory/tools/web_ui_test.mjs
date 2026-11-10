@@ -271,6 +271,10 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   console.log('files');
   await go('#app=files');
   check('Files opens from the URL', await waitFor('document.querySelector(".win .frow")'));
+  // per-app help: the ? in the window title bar shows the shared blurb from /help.txt
+  await js(`document.querySelector('.win .win-help').click();`);
+  check('per-app help shows the blurb', await waitFor(`document.querySelector('.dialog .help-blurb')?.textContent.includes('Browse, upload')`));
+  await js(`$t('.dialog .btn', 'Close').click();`);
   await js(`$row('ui-test').click();`);
   check('open a folder', await waitFor('$row("notes") && $row("settings.json")'));
   await js(`$row('settings.json').click();`);

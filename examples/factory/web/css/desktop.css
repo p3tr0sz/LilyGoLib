@@ -491,3 +491,7 @@ textarea.mono { font-family: var(--mono); line-height: 1.4; }
 .np-editor { flex: 1; min-height: 160px; resize: none; border: 0; outline: none; padding: 12px;
   background: var(--card); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.5; white-space: pre; overflow: auto; }
 .np-name-row { margin-top: 10px; }
+
+/* Per-app help */
+.win-title .win-help { font-size: 15px; font-weight: 700; line-height: 1; }
+.help-blurb { line-height: 1.5; }

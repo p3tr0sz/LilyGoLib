@@ -1,7 +1,33 @@
 // The desktop shell: pairing, status bar, launcher and windows.
 import { api, events, onUnpaired, ApiError } from './api.js';
-import { h, icon, toast } from './ui.js';
+import { h, icon, toast, dialog } from './ui.js';
 import { searchFiles, searchSettings } from './search.js';
+
+// Per-app help: one shared source (/help.txt, also read by the on-device Help app) so the two cannot drift.
+let helpMap = null;
+async function loadHelp() {
+  if (helpMap) return helpMap;
+  const m = new Map();
+  try {
+    const text = await (await fetch('/help.txt', { credentials: 'same-origin' })).text();
+    for (const line of text.split('\n')) {
+      if (!line || line[0] === '#') continue;
+      const [id, title, blurb] = line.split('\t');
+      if (id && blurb) m.set(id, { title: title || id, blurb });
+    }
+  } catch { /* help is optional; the ? just says none is available */ }
+  helpMap = m;
+  return m;
+}
+async function showHelp(app) {
+  const info = (await loadHelp()).get(app.id);
+  await dialog((box, close) => {
+    box.append(
+      h('h2', {}, info?.title || app.title),
+      h('p', { class: 'help-blurb' }, info?.blurb || 'No help for this app yet.'),
+      h('div', { class: 'actions' }, h('button', { class: 'btn primary', onclick: () => close() }, 'Close')));
+  }, { label: `${app.title} help` });
+}
 
 // Apps the desktop knows. An app is shown only when the watch has every capability in `caps`
 // and at least one in `capsAny`.
@@ -533,6 +559,7 @@ export async function openApp(id, options = {}) {
   const bar = h('div', { class: 'win-title' },
     h('button', { class: 'btn icon ghost back', 'aria-label': 'Back', onclick: () => handle.close() }, icon('back')),
     h('span', { class: 't-icon' }, icon(app.icon)), title,
+    h('button', { class: 'btn icon ghost win-help', 'aria-label': `Help for ${app.title}`, title: 'Help', onclick: () => showHelp(app) }, '?'),
     h('button', { class: 'btn icon ghost win-min', 'aria-label': 'Minimize', onclick: () => handle.minimize() }, icon('min')),
     h('button', { class: 'btn icon ghost win-max', 'aria-label': 'Maximize', onclick: () => handle.toggleMax() }, icon('max')),
     h('button', { class: 'btn icon ghost close', 'aria-label': `Close ${app.title}`, onclick: () => handle.close() }, icon('close')));
