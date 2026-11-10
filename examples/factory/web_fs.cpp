@@ -611,4 +611,25 @@ void web_fs_handle(web_req_t *r)
     web_resp_error(r, 405, "bad_request", "method");
 }
 
+/* Read the shared per-app help registry (/sd/web/help.txt) for the on-device Help app, so the watch
+ * and the web desktop's "?" show the same text from one file. false if there is no card or no file. */
+bool web_help_read(std::string &out)
+{
+    out.clear();
+    std::string host;
+    if (web_fs_resolve("/sd/web/help.txt", host)) return false;
+    web_plat_io_lock();
+    FILE *f = fopen(host.c_str(), "rb");
+    web_plat_io_unlock();
+    if (!f) return false;
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        out.append(buf, n);
+        if (out.size() > 64 * 1024) break;
+    }
+    fclose(f);
+    return true;
+}
+
 #endif /* FACTORY_WEB */
