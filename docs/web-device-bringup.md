@@ -215,6 +215,68 @@ required before marking the Faro/alarm core hardware-validated; synthetic simula
 - [ ] **Reconnect:** drop and restore Wi-Fi during sensing and while triggered. Router recalibrates on reconnect, alarm
       timeout still expires, no stale Faro remains linked, and no radio-owner/power-save leak follows teardown.
 
+## 12. P9.2 Evil Portal templates + KARMA — real authorized probes
+
+Use a lab AP you own and a test client. Probe discovery and KARMA starts require `authorized:true`; results
+must match real traffic, not the simulator's injected frames.
+
+- [ ] **SD templates:** drop a valid self-contained portal page into `/sd/data/evilportal/portals/`, reload,
+      and confirm it serves; a page with a script, an external resource, a path-traversal name or >64 KiB is
+      rejected with the reason shown, and the portal keeps working with the previously selected template.
+- [ ] **Probe discovery:** run a 30 s passive scan while a client with a hidden/stale SSID probes nearby.
+      Confirm the aggregated SSIDs, hits, unique clients, RSSI and channel track the real probes; channels 1–13
+      are hopped.
+- [ ] **Selected-SSID KARMA:** start KARMA on the most-seen SSID; confirm the open AP comes up with that exact
+      SSID on the chosen channel and a real client can associate and be served the template.
+- [ ] **Honest limit:** confirm the operator-facing text still says dynamic *per-probe* responses are not
+      implemented (only a selected/discovered SSID is served). Do not mark that gap closed without an
+      injection path and a real capture.
+
+## 13. P9.3 Portal twin completeness — real clone, PSK, association
+
+- [ ] **Live clone:** clone an authorized open lab AP; the bounded page is accepted only if it already passes the
+      static-template rules, lands atomically as `cloned.html`, and reloads into the SD catalog. Confirm the
+      served bytes match the lab page's safe content (not a general active-site copier).
+- [ ] **WPA2-coherent twin:** start a `coherent:true` twin with the operator-known lab PSK; a real client
+      associates with the correct PSK. With a wrong PSK it must fail loudly — the twin never silently falls back
+      to open.
+- [ ] **Per-capture verification:** captured PSKs are checked one at a time against only the selected
+      BSSID/channel; confirm `queued → checking → valid/invalid/error`, the `verifiedOk`/`verifiedBad` counters
+      and that redaction is preserved throughout.
+- [ ] **Teardown/reconnect:** stopping the portal/clone/verify restores the saved station config and reconnects;
+      no radio-owner or power-save leak remains (the next tool starts cleanly).
+
+## 14. P9.4 Injection campaigns — observed frames and PMF
+
+Authorized lab targets only. The simulator proves the bookkeeping; the radio must prove the effect.
+
+- [ ] **Deauth campaign:** up to 8 scanned targets; per-target accepted/failed counters and progress match the
+      frames an independent monitor captures. A target that keeps failing is skipped without aborting the rest.
+- [ ] **PMF honesty:** a WPA3/WPA2-transition target ends as `pmf_limited` and the client is documented as *not
+      guaranteed* to disconnect — never report a protected client as disconnected.
+- [ ] **Beacon campaign:** generated and custom SSIDs (up to 64) each show independent progress; real channel
+      hopping changes the radio channel, not just the tags.
+- [ ] **Health/reconnect:** duration, reconnect attempts/outcome and accepted-vs-observed rates are plausible;
+      closing the tool reconnects normal Wi-Fi cleanly.
+
+## 15. P9.6 FIDO2 — transport, storage and real relying parties
+
+The CTAP2/CTAPHID core is implemented and host-validated (`bash examples/factory/tools/run_fido2_host_test.sh`,
+33/33). What remains is the device side; until every box below is checked the watch must keep hiding `fido2`
+and answering `503 fido_unavailable` rather than reporting success.
+
+- [ ] **Transport:** expose the core over USB (or BLE) HID, enumerate it on a host, and confirm CTAPHID
+      `INIT`/`CBOR` fragmentation round-trips through the real transport.
+- [ ] **Storage:** credentials and the PIN hash persist across reboot in internal storage (never the removable
+      card); a corrupt store fails closed instead of trusting partial data.
+- [ ] **User presence:** the on-watch prompt gates every makeCredential/getAssertion and denies on timeout.
+- [ ] **Browser interop:** a real browser/relying party registers, authenticates and removes a credential; the
+      assertion verifies in the RP.
+- [ ] **PIN:** set/change via the browser, correct PIN succeeds, wrong PIN decrements retries, lockout after 8,
+      and `authenticatorReset` clears credentials and PIN.
+- [ ] Only then advertise the `fido2` capability; the simulator/mock contract and its tests may stay as the
+      desktop-development path.
+
 ---
 
 **NFC card emulation is disabled in this build.** `demo_ce.h` (ST's RFAL card-emulation demo glue) is not

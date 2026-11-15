@@ -69,6 +69,31 @@ bool fido2_cbor_map_find(const fido2_cbor_item_t *map, int key, fido2_cbor_item_
     return false;
 }
 
+bool fido2_cbor_map_find_text(const fido2_cbor_item_t *map, const char *key, fido2_cbor_item_t *out)
+{
+    if (!map || map->major != 5 || !key || map->value > 256) return false;
+    const uint8_t *cursor = map->next, *end = map->end;
+    size_t key_len = strlen(key);
+    for (uint64_t i = 0; i < map->value; i++) {
+        const uint8_t *key_start = cursor;
+        fido2_cbor_item_t k;
+        if (!fido2_cbor_read(&cursor, end, &k)) return false;
+        bool match = k.major == 3 && k.value == key_len && memcmp(k.next, key, key_len) == 0;
+        /* The key's text bytes are part of the key item; advance past them. */
+        cursor = key_start;
+        if (!fido2_cbor_skip(&cursor, end)) return false;
+        const uint8_t *value_start = cursor;
+        if (!fido2_cbor_skip(&cursor, end)) return false;
+        if (!match) continue;
+        if (out) {
+            const uint8_t *tmp = value_start;
+            return fido2_cbor_read(&tmp, end, out);
+        }
+        return true;
+    }
+    return false;
+}
+
 bool fido2_cbor_bytes(const fido2_cbor_item_t *item, const uint8_t **data, size_t *len)
 {
     if (!item || item->major != 2 || item->value > SIZE_MAX) return false;

@@ -340,7 +340,7 @@ The original peer fields are `{active, started, peers_ever, peers: [{mac, name, 
 
 ### FIDO2 security key (`fido2`, simulator only)
 
-**The current watch firmware does not include a CTAP/FIDO transport or credential crypto. It therefore does not advertise this capability and returns `503 fido_unavailable` for mutations. The routes below exist only for desktop development against the simulator/mock; they are not a hardware authenticator.**
+**The watch firmware still does not expose a CTAP/FIDO transport: it does not advertise this capability and returns `503 fido_unavailable` for mutations. The routes below exist only for desktop development against the simulator/mock; they are not yet a hardware authenticator.** A real CTAP2/CTAPHID authenticator core now exists (`fido2_core.cpp`: GetInfo, MakeCredential, GetAssertion, CredentialManagement, ClientPIN pinProtocol 1, Reset; ES256; host conformance `tools/run_fido2_host_test.sh` 33/33). It compiles for the watch, but the USB/BLE HID transport, internal-flash credential storage and native user-presence prompt are not wired, so the capability stays hidden rather than exposing a half-working key.
 
 | Route | Auth | Body → answer |
 |---|---|---|
@@ -487,7 +487,7 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `presence.faro` | `POST /api/presence/faro/start|stop`; independent Faro zone in `GET /api/presence`, events `presence.faro` | P9.5 |
 | `presence.alarm` | `POST /api/presence/alarm/arm|disarm`, events `presence.alarm` | P9.5 |
 | `presence.history` | bounded 120-bucket `csi.history` in `GET /api/presence` | P9.5 |
-| `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; not advertised on current watch hardware | P9 |
+| `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; CTAP2 core is built and host-tested but not advertised on current watch hardware (no HID transport yet) | P9.6 |
 | `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|start-twin|stop|clear`, `GET /api/evilportal/captures` | P9 |
 | `evil.portal.customTemplates` | `POST /api/evilportal/templates/reload`; validated pages under `/sd/data/evilportal/portals/` | P9.2 |
 | `evil.portal.karma` | `POST /api/evilportal/karma-scan|start-karma`, `GET /api/evilportal/karma` | P9.2 |

@@ -92,6 +92,19 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
   (`LILYGO_NFC_HAS_CE` in `src/nfc/LilyGoNfcService.cpp`), so don't re-add a hard `#include` of it.
 - Commit style: one-line messages, no `Co-Authored-By` trailer (repo convention).
 
+## FIDO2 host conformance test
+
+The CTAP2 authenticator core (`examples/factory/fido2_core.cpp`) is platform-independent; run it on the
+host against OpenSSL rather than through the watch API:
+
+```
+bash examples/factory/tools/run_fido2_host_test.sh   # 33 checks
+```
+
+It builds the core with `-DFACTORY_FIDO_HOST_CRYPTO` and verifies an assertion signature through an
+independent OpenSSL path. The test file is guarded by that macro so PlatformIO does not compile it into
+the firmware. Keep it passing when changing CBOR, crypto or the CTAP2 handshake.
+
 ## Gotchas worth knowing
 
 - `pio run` from the wrong directory → *"Not a PlatformIO project"*. Run it from `LilyGoLib-PlatformIO`.

@@ -14,6 +14,7 @@ typedef struct {
 bool fido2_cbor_read(const uint8_t **cursor, const uint8_t *end, fido2_cbor_item_t *item);
 bool fido2_cbor_skip(const uint8_t **cursor, const uint8_t *end);
 bool fido2_cbor_map_find(const fido2_cbor_item_t *map, int key, fido2_cbor_item_t *out);
+bool fido2_cbor_map_find_text(const fido2_cbor_item_t *map, const char *key, fido2_cbor_item_t *out);
 bool fido2_cbor_bytes(const fido2_cbor_item_t *item, const uint8_t **data, size_t *len);
 bool fido2_cbor_text(const fido2_cbor_item_t *item, const char **data, size_t *len);
 bool fido2_cbor_bool(const fido2_cbor_item_t *item, bool *value);

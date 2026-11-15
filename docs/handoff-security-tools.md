@@ -34,7 +34,7 @@ Current state: **builds pass, simulator and mock regression suites pass. Real-ra
 - Airspace reports deauth/beacon/flood/twin/broadcast counters and emits detailed events.
 - Sentinel uses passive scans, classifies Find My/SmartTag/Tile/Chipolo, and requires a persistence window. “Persistent” is explicitly described as a heuristic, not proof of stalking.
 - Presence now combines Wi-Fi CSI motion/presence sensing (`presence.csi`) with the existing ESP-NOW Nearby Peers (`presence.peers`). CSI uses AP-sourced L-LTF amplitudes, AGC-independent profile correlation, 32-frame calibration, a normalized motion score and a 10-second presence hold. It includes radio ownership, gateway traffic generation, power-save restoration, reconnect/recalibration handling, native/desktop controls, state events and deterministic synthetic-profile tests.
-- FIDO2 is simulator-only. Hardware does not advertise `fido2` and returns `503 fido_unavailable`; it never reports fake authentication success.
+- FIDO2 is simulator-only at the API layer. Hardware does not advertise `fido2` and returns `503 fido_unavailable`; it never reports fake authentication success. A real CTAP2/CTAPHID core now sits behind that contract: `fido2_core.cpp` (GetInfo, MakeCredential non-resident/resident + credProtect, GetAssertion + GetNextAssertion, CredentialManagement, ClientPIN pinProtocol 1, Reset) built on the `fido2_cbor`/`fido2_crypto` primitives. It is validated by `tools/run_fido2_host_test.sh` (33/33, including an assertion signature checked through an independent OpenSSL path) and compiles for `twatch_ultra` and the emulator. It is not yet wired to a USB/BLE HID transport, internal-flash storage or a native user-presence prompt, so nothing on the watch claims browser interop.
 - Portal has working standalone and open-twin lifecycles, typed validation, gateway/DNS/DHCP checks, live clients, safe JSON/CSV output, hidden-password default, working redaction and clear-capture consent.
 - P9.2 core adds persistent custom templates from `/sd/data/evilportal/portals/`: safe filenames, 64 KiB limit, required POST `/login` fields, no scripts/external resources, revalidation on selection and explicit malformed-file reporting. Passive KARMA discovery hops channels 1–13, aggregates directed-probe SSIDs/hits/unique clients/RSSI/channel and starts an open AP for a selected or most-seen SSID. Dynamic per-probe responses are not claimed.
 - P9.3 core adds asynchronous live cloning for authorized open lab APs. Responses are bounded to 64 KiB, accepted only if they already pass the safe static-template rules, written atomically as `cloned.html`, and reloaded into the SD catalog. WPA2-coherent twins require the operator-known lab PSK and never silently fall back to open mode. Captured PSKs are checked one at a time against only the selected BSSID/channel with per-capture `queued/checking/valid/invalid/error` states, timeout handling, redaction preserved, and saved station configuration restored after checks and teardown.
@@ -77,6 +77,12 @@ A correctness/readability review of the desktop shell and Evil Portal produced t
 
 ## Verification
 
+FIDO2 CTAP2 core host conformance (after P9.6 core):
+
+- `bash examples/factory/tools/run_fido2_host_test.sh` — **33/33** (CBOR, getInfo, makeCredential authData/COSE, getAssertion with an independently verified ES256 signature, credential management, clientPIN set/getToken/retries/block, reset, CTAPHID INIT/ping/framing)
+- `pio run -e twatch_ultra` — **pass** (the core compiles on the mbedTLS path)
+- `pio run -e emulator_watch_ultra` — **pass**
+
 Final successful runs after P9.5 core:
 
 - `pio run -e twatch_ultra` — **pass** (RAM 55.0%, flash 91.8%)
@@ -93,7 +99,7 @@ The API tests cover PCAP bytes/radiotap fields, max-byte shutdown, sniffer filte
 **Still not full parity.** Remaining material gaps:
 
 - **Presence:** dual-zone CSI, optional Faro transmitter, alarm and bounded history are implemented and simulator-tested. Real-radio accuracy, actual 100 Hz Faro delivery/CSI frame rates, two-device same-channel operation, ESP-NOW coexistence, reconnects, alarm audibility and environmental false positives remain unvalidated.
-- **FIDO2:** NucleoOS has a real authenticator with user presence/PIN and credential protection. Here it is only a simulator fake; hardware capability is deliberately hidden.
+- **FIDO2:** the CTAP2/CTAPHID protocol core (ES256, non-resident + resident credentials, credProtect, pinProtocol 1 client PIN, credential management) is implemented and host-validated. What is missing is the device side: the USB/BLE HID transport, internal-flash credential storage and the on-watch user-presence/PIN prompt. Until those are wired and tested against real relying parties, hardware keeps hiding the capability rather than exposing a half-working key.
 - **Sniffer:** filtering, AP discovery and basic WPA four-way-handshake/EAPOL breakdown are implemented and simulator-tested. Real capture correctness, loss rates, channel hopping and encrypted/high-throughput traffic still need radio validation; no specialised reference firmware modes are claimed.
 - **Evil Portal:** custom SD templates, safe-page cloning, per-capture PSK verification, open/WPA2 twins and passive probe discovery/selected-SSID KARMA core are implemented and simulator-tested. Real authorized clone traffic, correct/incorrect PSK association, WPA2 client association, reconnect behavior and probe traffic still need validation. Dynamic per-probe KARMA responses remain unavailable. Cloning deliberately rejects pages that are not already safe self-contained templates; it is not a general active-site copier.
 - **Offensive tools:** bounded multi-target campaigns, injection-health/reconnect metrics and PMF-limited reporting are implemented and simulator-tested. Real accepted-versus-observed frame rates, independent multi-target behavior, reconnect timing and PMF client outcomes still require authorized lab captures.
