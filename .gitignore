@@ -7,3 +7,7 @@ test
 *.bk
 *.log
 
+
+# Simulator runtime card/flash folders (host builds)
+sim_sd/
+sim_flash/
