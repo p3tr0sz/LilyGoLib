@@ -953,7 +953,7 @@ if (DEV) {
   await call('POST', '/api/_dev/fido2', { available: false });
   r = await call('POST', '/api/fido2/register', { rp: 'example.com', user: 'alice' });
   check('FIDO2 unavailable never fakes registration', r.status === 503 && r.json?.error === 'fido_unavailable', r.json);
-  await call('POST', '/api/_dev/fido2', { available: true });
+  await call('POST', '/api/_dev/fido2', { available: true, reset: true });
   r = await call('POST', '/api/fido2/register', { rp: '', user: '' });
   check('FIDO2 validates relying party and user', r.status === 400, r.json);
   r = await call('POST', '/api/fido2/register', { rp: 'example.com', user: 'alice' });

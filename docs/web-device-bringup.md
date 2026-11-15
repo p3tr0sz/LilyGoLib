@@ -262,8 +262,9 @@ Authorized lab targets only. The simulator proves the bookkeeping; the radio mus
 ## 15. P9.6 FIDO2 — transport, storage and real relying parties
 
 The CTAP2/CTAPHID core is implemented and host-validated (`bash examples/factory/tools/run_fido2_host_test.sh`,
-33/33). What remains is the device side; until every box below is checked the watch must keep hiding `fido2`
-and answering `503 fido_unavailable` rather than reporting success.
+36/36), and the **simulator** already runs it end-to-end (its `/api/fido2/*` routes use the real core and
+store ES256 credentials under `sim_flash/fido2/`). What remains is the device side; until every box below is
+checked the watch must keep hiding `fido2` and answering `503 fido_unavailable` rather than reporting success.
 
 - [ ] **Transport:** expose the core over USB (or BLE) HID, enumerate it on a host, and confirm CTAPHID
       `INIT`/`CBOR` fragmentation round-trips through the real transport.

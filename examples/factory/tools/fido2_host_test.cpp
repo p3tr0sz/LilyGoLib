@@ -1,4 +1,4 @@
-#ifdef FACTORY_FIDO_HOST_CRYPTO
+#if defined(FACTORY_FIDO_HOST_CRYPTO) && defined(FIDO2_HOST_TEST)
 /**
  * @file fido2_host_test.cpp
  * @brief Host conformance test for the CTAP2 authenticator core.
@@ -435,4 +435,4 @@ int main(void)
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
-#endif /* FACTORY_FIDO_HOST_CRYPTO */
+#endif /* FACTORY_FIDO_HOST_CRYPTO && FIDO2_HOST_TEST */

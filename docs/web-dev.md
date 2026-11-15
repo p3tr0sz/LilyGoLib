@@ -98,12 +98,19 @@ The CTAP2 authenticator core (`examples/factory/fido2_core.cpp`) is platform-ind
 host against OpenSSL rather than through the watch API:
 
 ```
-bash examples/factory/tools/run_fido2_host_test.sh   # 33 checks
+bash examples/factory/tools/run_fido2_host_test.sh   # 36 checks
 ```
 
 It builds the core with `-DFACTORY_FIDO_HOST_CRYPTO` and verifies an assertion signature through an
-independent OpenSSL path. The test file is guarded by that macro so PlatformIO does not compile it into
-the firmware. Keep it passing when changing CBOR, crypto or the CTAP2 handshake.
+independent OpenSSL path. The test file is guarded by that macro **and** `FIDO2_HOST_TEST` so PlatformIO
+does not compile its `main()` into the firmware. Keep it passing when changing CBOR, crypto or the CTAP2
+handshake.
+
+The **emulator** also builds the core against OpenSSL. The sibling repo's `support/openssl_paths.py`
+(a `pre:` script in `[env_emulator]`) finds Homebrew `openssl@3`, defines `FACTORY_FIDO_HOST_CRYPTO` and
+links `-lssl -lcrypto`. With it, the simulator's `/api/fido2/*` routes run the real core and store
+credentials under `sim_flash/fido2/`; without OpenSSL they fall back to the in-memory fake (same API
+contract, so the tests pass either way).
 
 ## Gotchas worth knowing
 
