@@ -82,13 +82,14 @@ node web_desktop_test.mjs --url http://localhost:8090 --release http://localhost
 
 - Run **both** `web_api_test.mjs` and `web_ui_test.mjs` against the **mock** (fast); run them against the
   **simulator** too for anything touching firmware or the shell. Current baselines: `web_ui_test.mjs`
-  **171/171** simulator / **170/170** mock; `web_api_test.mjs` **314/314** simulator / **310/310** mock;
+  **171/171** simulator / **170/170** mock; `web_api_test.mjs` **409/409** simulator / **402/402** mock;
   `web_desktop_test.mjs` **24/24**. A new feature should add checks, not just keep the count.
 - When editing the desktop shell, **keep the selectors the UI test anchors on**: `.bar` (must still show
   the battery % and the SD status text), `.launcher .tile`, `.win` + `.win .back`, `.link-dot.on`, and the
   phone full-screen window. The UI test opens apps by hash (`#app=<id>`), not by clicking tiles.
-- Confirm the **watch firmware still links**: `pio run -e twatch_ultra` (from `LilyGoLib-PlatformIO`). It
-  links as of `793aafc`; the NFC `demo_ce.h` card-emulation dependency is optional via `__has_include`
+- Confirm the **watch firmware still links**: `pio run -e twatch_ultra` and, when touching FIDO/USB,
+  `pio run -e twatch_ultra_fido` from `LilyGoLib-PlatformIO`. Both link as of `793aafc`; the NFC
+  `demo_ce.h` card-emulation dependency is optional via `__has_include`
   (`LILYGO_NFC_HAS_CE` in `src/nfc/LilyGoNfcService.cpp`), so don't re-add a hard `#include` of it.
 - Commit style: one-line messages, no `Co-Authored-By` trailer (repo convention).
 
@@ -98,7 +99,7 @@ The CTAP2 authenticator core (`examples/factory/fido2_core.cpp`) is platform-ind
 host against OpenSSL rather than through the watch API:
 
 ```
-bash examples/factory/tools/run_fido2_host_test.sh   # 36 checks
+bash examples/factory/tools/run_fido2_host_test.sh   # 41 checks
 ```
 
 It builds the core with `-DFACTORY_FIDO_HOST_CRYPTO` and verifies an assertion signature through an
@@ -111,6 +112,23 @@ The **emulator** also builds the core against OpenSSL. The sibling repo's `suppo
 links `-lssl -lcrypto`. With it, the simulator's `/api/fido2/*` routes run the real core and store
 credentials under `sim_flash/fido2/`; without OpenSSL they fall back to the in-memory fake (same API
 contract, so the tests pass either way).
+
+### The device (USB CTAPHID) build
+
+`[env:twatch_ultra_fido]` in the sibling project builds the watch as a USB security key:
+
+```bash
+cd LilyGoLib-PlatformIO
+pio run -e twatch_ultra_fido -t upload
+```
+
+It sets `ARDUINO_USB_MODE=0` (TinyUSB instead of the hardware CDC/JTAG port) and `LILYGO_USB_FIDO_HID`.
+The FIDO HID interface lives in `src/usb/USB_FIDO.cpp`; `examples/factory/fido2_device.cpp` mounts the
+board's FFat volume, opens the core with BOOT-button user presence and feeds reports from a worker task.
+Arduino-ESP32 has a single HID interface, so this build drops the USB keyboard (Bad USB). It also starts
+the USB stack at boot, so the USB Disk app cannot register its MSC interface afterwards: starting it
+fails (`MSC begin failed`). The default `twatch_ultra` build is otherwise untouched and still hides the `fido2` capability
+until the hardware checklist passes.
 
 ## Gotchas worth knowing
 

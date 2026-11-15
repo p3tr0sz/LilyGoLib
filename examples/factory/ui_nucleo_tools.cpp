@@ -511,7 +511,11 @@ static void enter_fido2(lv_obj_t *parent)
     fido_state = info_row(card, ICON_STATE_USB, "State", "Unavailable");
     fido_creds = info_row(card, ICON_SAVED, "Credentials", "0");
     fido_error = wrapped_text(card, "", true);
+#if defined(LILYGO_USB_FIDO_HID)
+    wrapped_text(card, "USB CTAPHID transport enabled. Register and sign in from your browser; press BOOT when the watch asks for user presence. Credentials stay in internal flash, never on the SD card.");
+#else
     wrapped_text(card, "Keyboard HID is not FIDO2. This build has no CTAP transport, credential crypto or secure key storage, so no Register or Authenticate action is offered.");
+#endif
     fido_ui.timer = lv_timer_create(fido_refresh, 1000, NULL);
     fido_refresh(NULL);
 }

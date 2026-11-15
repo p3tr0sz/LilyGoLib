@@ -338,9 +338,11 @@ CSI `state` is `stopped`, `calibrating`, `clear`, `motion` or `present`. `score`
 
 The original peer fields are `{active, started, peers_ever, peers: [{mac, name, rssi, first_seen, last_seen, present}], history: [{ts, mac, name, event}], error}`. Peer `event` is `"appeared"` or `"disappeared"`. Peers not seen for 5 minutes are marked as gone. A separate `presence` event is published on arrival and departure and includes `event`, `mac`, `name` and `rssi`.
 
-### FIDO2 security key (`fido2`, simulator only)
+### FIDO2 security key (`fido2`, simulator + opt-in USB transport)
 
-**The watch firmware still does not expose a CTAP/FIDO transport: it does not advertise this capability and returns `503 fido_unavailable` for mutations. The routes below exist only for desktop development against the simulator/mock; they are not yet a hardware authenticator.** A real CTAP2/CTAPHID authenticator core now exists (`fido2_core.cpp`: GetInfo, MakeCredential, GetAssertion, CredentialManagement, ClientPIN pinProtocol 1, Reset; ES256; host conformance `tools/run_fido2_host_test.sh` 36/36). On the **simulator the routes below are backed by that core** (build with OpenSSL, auto-detected by the emulator), so credentials are real ES256 keys stored under the simulator's internal flash (`sim_flash/fido2/`); the JS mock keeps its in-memory fake with the same contract. The watch still hides the capability: the USB/BLE HID transport, on-device storage path and native user-presence prompt are not wired, so nothing claims browser interop yet.
+**The default `twatch_ultra` firmware still does not expose a CTAP/FIDO transport: it does not advertise this capability and returns `503 fido_unavailable` for mutations.** A real CTAP2/CTAPHID authenticator core exists (`fido2_core.cpp`: GetInfo, MakeCredential, GetAssertion, CredentialManagement, ClientPIN pinProtocol 1, Reset; ES256; host conformance `tools/run_fido2_host_test.sh` 41/41). On the **simulator the routes below are backed by that core** (build with OpenSSL, auto-detected by the emulator), so credentials are real ES256 keys stored under the simulator's internal flash (`sim_flash/fido2/`); the JS mock keeps its in-memory fake with the same contract.
+
+The opt-in `twatch_ultra_fido` build adds the device side: TinyUSB CTAPHID HID (`src/usb/USB_FIDO.cpp`), credentials in `<FFat>/fido2/fido2.dat`, and BOOT-button user presence (`fido2_device.cpp`). In that build the routes below and a browser drive the same core. It has only been compile-validated: real-browser registration/assertion, PIN flows and the approve prompt are still hardware gates, so the default build keeps hiding the capability.
 
 | Route | Auth | Body → answer |
 |---|---|---|
@@ -487,7 +489,7 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `presence.faro` | `POST /api/presence/faro/start|stop`; independent Faro zone in `GET /api/presence`, events `presence.faro` | P9.5 |
 | `presence.alarm` | `POST /api/presence/alarm/arm|disarm`, events `presence.alarm` | P9.5 |
 | `presence.history` | bounded 120-bucket `csi.history` in `GET /api/presence` | P9.5 |
-| `fido2` | simulator/mock only: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; CTAP2 core is built and host-tested but not advertised on current watch hardware (no HID transport yet) | P9.6 |
+| `fido2` | simulator/mock, plus the opt-in `twatch_ultra_fido` build: `GET /api/fido2`, `POST /api/fido2/register|authenticate|remove`, `GET /api/fido2/credentials`; USB CTAPHID transport and internal-flash storage are built but unvalidated on hardware, so the default watch build still hides it | P9.6 |
 | `evil.portal` | `GET /api/evilportal`, `POST /api/evilportal/start|start-twin|stop|clear`, `GET /api/evilportal/captures` | P9 |
 | `evil.portal.customTemplates` | `POST /api/evilportal/templates/reload`; validated pages under `/sd/data/evilportal/portals/` | P9.2 |
 | `evil.portal.karma` | `POST /api/evilportal/karma-scan|start-karma`, `GET /api/evilportal/karma` | P9.2 |

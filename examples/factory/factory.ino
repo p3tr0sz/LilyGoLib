@@ -16,6 +16,9 @@
 #include <WiFi.h>
 #include "event_define.h"
 #include "web_server.h"
+#if defined(LILYGO_USB_FIDO_HID)
+#include "fido2_device.h"
+#endif
 #if defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
 #include "screen_web_server.h"
 #endif
@@ -151,6 +154,12 @@ void setup()
     beginLvglHelper(instance);
 
     hw_init();
+
+#if defined(LILYGO_USB_FIDO_HID)
+    /* Bring up internal-flash credentials and the USB CTAPHID interface before
+     * the browser (or the web desktop) can ask for it. */
+    fido2_device_begin();
+#endif
 
 #if FACTORY_WEB
     web_server_init();

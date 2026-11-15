@@ -80,6 +80,7 @@ flashers, download mode) see **[firmware/README.md](./firmware/README.md)**.
 ```bash
 cd ../LilyGoLib-PlatformIO
 pio run -e twatch_ultra                 # firmware for the watch
+pio run -e twatch_ultra_fido            # opt-in USB FIDO2 build (TinyUSB CTAPHID; no USB keyboard)
 pio run -e emulator_watch_ultra         # desktop simulator -> ./.pio/build/emulator_watch_ultra/program
 ```
 

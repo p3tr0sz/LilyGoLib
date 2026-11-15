@@ -3,13 +3,16 @@
  * @brief     FIDO2 API contract and simulator backing.
  *
  * Three builds:
- *  - ARDUINO: the watch has no CTAP/FIDO HID transport wired yet, so this
- *    module advertises NO fido2 capability and every mutation fails clearly.
- *    It never pretends that keyboard HID is FIDO2.
+ *  - ARDUINO without LILYGO_USB_FIDO_HID: no CTAP/FIDO HID transport in the
+ *    build, so this module advertises NO fido2 capability and every mutation
+ *    fails clearly. It never pretends that keyboard HID is FIDO2.
+ *  - LILYGO_USB_FIDO_HID (watch, TinyUSB CTAPHID): the routes are backed by
+ *    the real CTAP2 core and its internal-flash credential store; the browser
+ *    talks to the same core over USB HID.
  *  - FACTORY_FIDO_HOST_CRYPTO (desktop/simulator with OpenSSL): the routes are
  *    backed by the real CTAP2/CTAPHID core (fido2_core.cpp); credentials are
  *    real ES256 keys stored under the simulator's internal flash directory.
- *    This exercises the same protocol the watch will run.
+ *    This exercises the same protocol the watch runs.
  *  - otherwise: a tiny in-memory fake for desktop development.
  */
 #include "web_tools.h"
@@ -21,9 +24,19 @@
 #include <string>
 #include <vector>
 
+#if defined(FACTORY_FIDO_HOST_CRYPTO) || defined(LILYGO_USB_FIDO_HID)
+#define FACTORY_FIDO_CORE 1
+#endif
+
+#if defined(LILYGO_USB_FIDO_HID)
+static bool s_available = true;
+static const char *s_state = "idle";
+static char s_error[128] = "";
+#else
 static bool s_available = false;
 static const char *s_state = "unavailable";
 static char s_error[128] = "FIDO2 authentication is not implemented in this firmware";
+#endif
 static int s_credentials = 0;
 
 static const char *const APPS[] = { "FIDO2", "FIDO2 Key", NULL };
@@ -33,14 +46,29 @@ static void set_error(const char *text)
     snprintf(s_error, sizeof(s_error), "%s", text ? text : "");
 }
 
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
 
 #include "fido2_core.h"
+#if defined(LILYGO_USB_FIDO_HID)
+#include "fido2_device.h"
+#endif
 
 static bool s_core_ok = false;
 static bool s_core_tried = false;
 
-/* Simulator has no watch screen; the transport toggle stands in for presence. */
+#if defined(LILYGO_USB_FIDO_HID)
+
+static void ensure_core(void)
+{
+    if (s_core_tried) return;
+    s_core_tried = true;
+    s_core_ok = fido2_device_begin();
+    s_available = s_core_ok;
+    if (!s_core_ok) set_error(fido2_device_error());
+}
+
+#else /* simulator: transport toggle stands in for presence */
+
 static int core_user_present(void *ctx, const char *operation, const char *rp_id)
 {
     (void)ctx; (void)operation; (void)rp_id;
@@ -56,6 +84,8 @@ static void ensure_core(void)
     s_core_ok = fido2_init(dir.c_str(), core_user_present, NULL);
     if (!s_core_ok) set_error("FIDO2 credential store could not be opened");
 }
+
+#endif
 
 static void core_error(web_req_t *r, size_t status)
 {
@@ -90,10 +120,10 @@ static bool core_begin_auth(const std::string &rp, size_t *status_out)
     return true;
 }
 
-#endif /* FACTORY_FIDO_HOST_CRYPTO */
+#endif /* FACTORY_FIDO_CORE */
 
 #ifndef ARDUINO
-#if !defined(FACTORY_FIDO_HOST_CRYPTO)
+#if !defined(FACTORY_FIDO_CORE)
 struct sim_credential_t { char rp[65], user[65], key_handle[32]; };
 static std::vector<sim_credential_t> s_creds;
 #endif
@@ -101,7 +131,7 @@ static std::vector<sim_credential_t> s_creds;
 
 static void get_status(web_req_t *r)
 {
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     bool available = s_available && s_core_ok;
     int credentials = fido2_credential_count();
@@ -117,7 +147,7 @@ static void get_status(web_req_t *r)
     web_resp_json(r, 200, j);
 }
 
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(FACTORY_FIDO_CORE)
 static bool unavailable(web_req_t *r)
 {
     web_resp_error(r, 503, "fido_unavailable", "FIDO2 authentication is not implemented in this firmware");
@@ -128,7 +158,7 @@ static bool unavailable(web_req_t *r)
 static void begin_register(web_req_t *r)
 {
     if (tools_busy(r, APPS)) return;
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(FACTORY_FIDO_CORE)
     unavailable(r); return;
 #else
     std::string body, rp, user;
@@ -138,7 +168,7 @@ static void begin_register(web_req_t *r)
     if (rp.empty() || rp.size() > 64 || user.empty() || user.size() > 64) {
         web_resp_error(r, 400, "bad_request", "rp and user are required (1-64 bytes each)"); return;
     }
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!s_core_ok) { web_resp_error(r, 503, "fido_unavailable", s_error[0] ? s_error : "FIDO2 core unavailable"); return; }
     if (!s_available) { web_resp_error(r, 503, "fido_unavailable", "Enable the simulated FIDO2 transport first"); return; }
@@ -171,14 +201,14 @@ static void begin_register(web_req_t *r)
 static void begin_auth(web_req_t *r)
 {
     if (tools_busy(r, APPS)) return;
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(FACTORY_FIDO_CORE)
     unavailable(r); return;
 #else
     std::string body, rp;
     if (!tools_read_json(r, body)) return;
     web_json_get_str(body, "rp", rp);
     if (rp.empty()) { web_resp_error(r, 400, "bad_request", "rp is required"); return; }
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!s_core_ok) { web_resp_error(r, 503, "fido_unavailable", s_error[0] ? s_error : "FIDO2 core unavailable"); return; }
     if (!s_available) { web_resp_error(r, 503, "fido_unavailable", "Enable the simulated FIDO2 transport first"); return; }
@@ -208,13 +238,13 @@ static void begin_auth(web_req_t *r)
 
 static void remove_credential(web_req_t *r)
 {
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(FACTORY_FIDO_CORE)
     unavailable(r); return;
 #else
     std::string body;
     double index = -1;
     if (!tools_read_json(r, body)) return;
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!fido2_credential_count() || !web_json_get_num(body, "index", &index) ||
         index < 0 || index != (int)index || index >= fido2_credential_count()) {
@@ -239,7 +269,7 @@ static void remove_credential(web_req_t *r)
 static void get_credentials(web_req_t *r)
 {
     std::string j = "{\"credentials\":[";
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     int count = fido2_credential_count();
     for (int i = 0; i < count; i++) {
@@ -275,7 +305,7 @@ static bool handle(web_req_t *r)
         if (!tools_read_json(r, body)) return true;
         web_json_get_bool(body, "available", &available);
         web_json_get_bool(body, "reset", &reset);
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
         ensure_core();
         if (reset && s_core_ok) fido2_reset_authenticator();
         s_credentials = fido2_credential_count();
@@ -304,7 +334,7 @@ static bool handle(web_req_t *r)
 
 bool web_hw_fido2_begin_register(const char *rp, const char *user)
 {
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!s_core_ok || !s_available || !rp || !user) return false;
     bool ok = core_begin_register(rp, user);
@@ -317,7 +347,7 @@ bool web_hw_fido2_begin_register(const char *rp, const char *user)
 }
 bool web_hw_fido2_begin_authenticate(const char *rp)
 {
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!s_core_ok || !s_available || !rp) return false;
     size_t status = 0;
@@ -329,7 +359,7 @@ bool web_hw_fido2_begin_authenticate(const char *rp)
 }
 int web_hw_fido2_credentials(void)
 {
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     return fido2_credential_count();
 #else
@@ -338,7 +368,7 @@ int web_hw_fido2_credentials(void)
 }
 bool web_hw_fido2_remove_credential(int index)
 {
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     if (!fido2_remove_credential_at(index)) return false;
     s_credentials = fido2_credential_count();
@@ -351,7 +381,7 @@ void web_hw_fido2_status(web_hw_fido2_t *out)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-#if defined(FACTORY_FIDO_HOST_CRYPTO)
+#if defined(FACTORY_FIDO_CORE)
     ensure_core();
     out->available = s_available && s_core_ok;
 #else
@@ -362,7 +392,7 @@ void web_hw_fido2_status(web_hw_fido2_t *out)
     out->error = s_error[0] ? s_error : NULL;
 }
 
-#ifdef ARDUINO
+#if defined(ARDUINO) && !defined(LILYGO_USB_FIDO_HID)
 static const char *const CAPS[] = { NULL };
 #else
 static const char *const CAPS[] = { "fido2", NULL };

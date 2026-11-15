@@ -31,7 +31,7 @@ static lock_callback_t mutexLock = NULL;
 #include <sd_diskio.h>
 #include <stdarg.h>
 #include <string.h>
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
 #include <USBHIDKeyboard.h>
 #endif
 #include "FFat.h"
@@ -42,7 +42,7 @@ static lock_callback_t mutexLock = NULL;
 #if CONFIG_TINYUSB_MSC_ENABLED
 static USBMSC msc;
 #endif
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
 static USBHIDKeyboard usb_keyboard;
 #endif
 
@@ -58,7 +58,9 @@ static bool msc_ejected = false;
 static bool msc_host_accessed = false;
 static bool msc_close_pending = false;
 static bool msc_media_present = false;
+#if !defined(LILYGO_USB_FIDO_HID)
 static bool hid_configured = false;
+#endif
 static uint32_t msc_ejected_at_ms = 0;
 static char msc_status_text[80] = "USB not started";
 static uint8_t msc_io_sector[512];
@@ -477,7 +479,7 @@ static void on_usb_event(void *arg, esp_event_base_t event_base, int32_t event_i
     }
 }
 
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
 static uint8_t map_service_key(uint8_t key)
 {
     if (key >= 32 && key <= 126) return key;
@@ -546,7 +548,10 @@ bool lilygo_usb_service_begin()
 #if CONFIG_TINYUSB_ENABLED
     if (usb_started) return true;
 
-#if CONFIG_TINYUSB_HID_ENABLED
+#if defined(LILYGO_USB_FIDO_HID)
+    /* One HID interface only: FIDO takes it instead of the keyboard. */
+    lilygo_usb_fido_hid_prepare();
+#elif CONFIG_TINYUSB_HID_ENABLED
     usb_keyboard.begin();
     hid_configured = true;
 #endif
@@ -736,7 +741,7 @@ const char *lilygo_usb_msc_status()
 
 bool lilygo_usb_hid_keyboard_available()
 {
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
     return lilygo_usb_service_available() && (hid_configured || lilygo_usb_service_begin());
 #else
     return false;
@@ -745,7 +750,7 @@ bool lilygo_usb_hid_keyboard_available()
 
 bool lilygo_usb_hid_keyboard_send_text(const char *text, uint16_t char_delay_ms)
 {
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
     if (!text || !lilygo_usb_hid_keyboard_available()) return false;
     while (*text) {
         usb_keyboard.write((uint8_t)*text++);
@@ -761,7 +766,7 @@ bool lilygo_usb_hid_keyboard_send_text(const char *text, uint16_t char_delay_ms)
 
 bool lilygo_usb_hid_keyboard_tap_key(uint8_t key)
 {
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
     const uint8_t mapped = map_service_key(key);
     if (!mapped || !lilygo_usb_hid_keyboard_available()) return false;
     usb_keyboard.write(mapped);
@@ -774,7 +779,7 @@ bool lilygo_usb_hid_keyboard_tap_key(uint8_t key)
 
 bool lilygo_usb_hid_keyboard_combo(uint8_t modifiers, uint8_t key)
 {
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
     const uint8_t mapped = map_service_key(key);
     if (!mapped || !lilygo_usb_hid_keyboard_available()) return false;
 
@@ -796,7 +801,7 @@ bool lilygo_usb_hid_keyboard_combo(uint8_t modifiers, uint8_t key)
 
 void lilygo_usb_hid_keyboard_release_all()
 {
-#if CONFIG_TINYUSB_HID_ENABLED
+#if CONFIG_TINYUSB_HID_ENABLED && !defined(LILYGO_USB_FIDO_HID)
     if (hid_configured) usb_keyboard.releaseAll();
 #endif
 }
@@ -965,7 +970,7 @@ void setupMSC(lock_callback_t lock_cb, lock_callback_t ulock_cb)
 
 #if defined(USING_FATFS)
     LILYGO_LOG_D("Init FFat");
-    if (!FFat.begin(false, "/fs")) {
+    if (!FFat.begin(false, "/fs") && !FFat.exists("/")) {
         LILYGO_LOG_E("FFAT BEGIN FAILED, FORMAT START");
         FFat.format();
         if (!FFat.begin()) {

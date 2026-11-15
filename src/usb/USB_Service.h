@@ -188,3 +188,42 @@ bool lilygo_usb_hid_keyboard_combo(uint8_t modifiers, uint8_t key);
  * @brief Release all currently pressed HID keyboard keys.
  */
 void lilygo_usb_hid_keyboard_release_all();
+
+/** Size of one CTAPHID/CTAP HID report (USB interrupt endpoint). */
+#define LILYGO_USB_FIDO_REPORT_SIZE 64
+
+/**
+ * @brief Receive one complete 64-byte HID report from the USB host.
+ * @param report Report buffer, valid only for the duration of the call.
+ * @param ctx Caller context passed to lilygo_usb_fido_begin().
+ */
+typedef void (*lilygo_usb_fido_recv_cb)(const uint8_t *report, void *ctx);
+
+/**
+ * @brief Check whether the build selected the FIDO HID personality.
+ * @return true when LILYGO_USB_FIDO_HID was built and USB HID is available.
+ * @note Arduino-ESP32 exposes a single HID interface. Selecting this
+ *       personality removes the USB keyboard (Bad USB) from the build.
+ */
+bool lilygo_usb_fido_available();
+
+/**
+ * @brief Start USB with the FIDO CTAPHID interface and install a receive hook.
+ * @param cb Called for every 64-byte OUT report from the host.
+ * @param ctx Passed back to @p cb.
+ * @return true when the USB stack started and reports can be sent.
+ */
+bool lilygo_usb_fido_begin(lilygo_usb_fido_recv_cb cb, void *ctx);
+
+/**
+ * @brief Send one 64-byte CTAPHID report to the host.
+ * @param report Report buffer (64 bytes).
+ * @return true when TinyUSB queued the report.
+ */
+bool lilygo_usb_fido_send(const uint8_t *report);
+
+/**
+ * @brief Register/prepare the FIDO HID device before USB starts.
+ * @note Internal: called by lilygo_usb_service_begin().
+ */
+void lilygo_usb_fido_hid_prepare();

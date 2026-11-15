@@ -1031,6 +1031,7 @@ static bool s_hid_busy = false;
 static uint8_t s_hid_req[FIDO2_MAX_MESSAGE];
 static size_t s_hid_expected = 0, s_hid_filled = 0;
 static uint8_t s_hid_seq = 0;
+static uint8_t s_hid_type = 0; /* pending fragmented request: PING or CBOR */
 
 static uint32_t rd32(const uint8_t *p)
 {
@@ -1055,8 +1056,7 @@ static bool hid_send(uint32_t cid, uint8_t type, const uint8_t *data, size_t len
     while (sent < len) {
         memset(report, 0, sizeof(report));
         wr32(report, cid);
-        report[4] = 0x00;
-        report[5] = seq++;
+        report[4] = seq++; /* continuation: SEQ at offset 4, data at 5 */
         chunk = len - sent > FIDO2_HID_REPORT - 5 ? FIDO2_HID_REPORT - 5 : len - sent;
         memcpy(report + 5, data + sent, chunk);
         if (!s_hid_sink(report, s_hid_ctx)) return false;
@@ -1087,6 +1087,7 @@ void fido2_hid_init(fido2_hid_sink_fn sink, void *sink_ctx)
     s_hid_busy = false;
     s_hid_cid_valid = false;
     s_hid_expected = s_hid_filled = 0;
+    s_hid_type = 0;
 }
 
 void fido2_hid_reset(void)
@@ -1094,6 +1095,7 @@ void fido2_hid_reset(void)
     s_hid_busy = false;
     s_hid_cid_valid = false;
     s_hid_expected = s_hid_filled = 0;
+    s_hid_type = 0;
 }
 
 bool fido2_hid_busy(void) { return s_hid_busy; }
@@ -1108,20 +1110,22 @@ void fido2_hid_feed(const uint8_t report[FIDO2_HID_REPORT])
 {
     if (!report || !s_hid_sink) return;
     uint32_t cid = rd32(report);
-    uint8_t type = report[4];
+    uint8_t cmd = report[4];
 
-    if (type == HID_INIT) {
+    if (cmd == HID_INIT) {
         uint8_t reply[17];
         memcpy(reply, report + 7, 8);
-        uint32_t reply_cid = s_hid_cid_valid ? cid : 0;
-        if (!s_hid_cid_valid) {
+        uint32_t reply_cid = cid;
+        if (reply_cid == HID_BROADCAST || reply_cid == 0 || !s_hid_cid_valid) {
             uint8_t rnd[4];
             if (!fido2_crypto_random(rnd, sizeof(rnd))) wr32(rnd, 1);
             reply_cid = (rd32(rnd) | 0x10000000u) & 0x7FFFFFFFu;
             if (reply_cid == HID_BROADCAST || reply_cid == 0) reply_cid = 0x10000001u;
-            s_hid_cid = reply_cid;
-            s_hid_cid_valid = true;
         }
+        s_hid_cid = reply_cid;
+        s_hid_cid_valid = true;
+        s_hid_busy = false;
+        s_hid_type = 0;
         wr32(reply + 8, reply_cid);
         reply[12] = 2;    /* CTAPHID protocol version */
         reply[13] = 1;    /* device version major */
@@ -1134,30 +1138,58 @@ void fido2_hid_feed(const uint8_t report[FIDO2_HID_REPORT])
 
     if (!s_hid_cid_valid || cid != s_hid_cid) return; /* unknown channel */
 
-    if (type == HID_PING) { hid_send(cid, HID_PING, report + 7, FIDO2_HID_REPORT - 7); return; }
-    if (type == HID_WINK || type == HID_LOCK) return;
-    if (type == HID_CANCEL) { s_hid_busy = false; s_hid_expected = s_hid_filled = 0; return; }
-    if (type == HID_CBOR) {
-        size_t bcnt = ((size_t)report[5] << 8) | report[6];
-        if (bcnt == 0 || bcnt > sizeof(s_hid_req)) { hid_error(cid, 0x03); return; }
-        s_hid_expected = bcnt;
-        s_hid_filled = 0;
-        s_hid_seq = 0;
-        size_t chunk = bcnt > FIDO2_HID_REPORT - 7 ? FIDO2_HID_REPORT - 7 : bcnt;
-        memcpy(s_hid_req, report + 7, chunk);
-        s_hid_filled = chunk;
-        if (s_hid_filled == s_hid_expected) { hid_process_cbor(cid); return; }
-        s_hid_busy = true;
-        return;
-    }
-    if (type == 0x00) { /* continuation */
-        if (!s_hid_busy || report[5] != s_hid_seq) { hid_error(cid, 0x04); s_hid_busy = false; return; }
+    /* While a request is being reassembled every packet is a continuation:
+     * SEQ lives at offset 4 (0..0x7F), payload at 5 (59 bytes). Treating byte 4
+     * as a command here would mistake SEQ 1 for PING. */
+    if (s_hid_busy) {
+        uint8_t seq = report[4];
+        if (seq != s_hid_seq) {
+            hid_error(cid, 0x04);
+            s_hid_busy = false;
+            s_hid_type = 0;
+            return;
+        }
         s_hid_seq++;
         size_t want = s_hid_expected - s_hid_filled;
         size_t chunk = want > FIDO2_HID_REPORT - 5 ? FIDO2_HID_REPORT - 5 : want;
         memcpy(s_hid_req + s_hid_filled, report + 5, chunk);
         s_hid_filled += chunk;
-        if (s_hid_filled == s_hid_expected) { s_hid_busy = false; hid_process_cbor(cid); }
+        if (s_hid_filled == s_hid_expected) {
+            uint8_t completed = s_hid_type;
+            s_hid_busy = false;
+            s_hid_type = 0;
+            if (completed == HID_PING) hid_send(cid, HID_PING, s_hid_req, s_hid_filled);
+            else if (completed == HID_CBOR) hid_process_cbor(cid);
+        }
         return;
     }
+
+    if (cmd == HID_WINK || cmd == HID_LOCK) return;
+    if (cmd == HID_CANCEL) {
+        s_hid_expected = s_hid_filled = 0;
+        return;
+    }
+    if (cmd == HID_PING || cmd == HID_CBOR) {
+        size_t bcnt = ((size_t)report[5] << 8) | report[6];
+        if (bcnt > sizeof(s_hid_req) || (cmd == HID_CBOR && bcnt == 0)) {
+            hid_error(cid, 0x03);
+            return;
+        }
+        s_hid_expected = bcnt;
+        s_hid_filled = 0;
+        s_hid_seq = 0;
+        s_hid_type = cmd;
+        size_t chunk = bcnt > FIDO2_HID_REPORT - 7 ? FIDO2_HID_REPORT - 7 : bcnt;
+        memcpy(s_hid_req, report + 7, chunk);
+        s_hid_filled = chunk;
+        if (s_hid_filled == s_hid_expected) {
+            s_hid_type = 0;
+            if (cmd == HID_PING) hid_send(cid, HID_PING, s_hid_req, s_hid_filled);
+            else hid_process_cbor(cid);
+            return;
+        }
+        s_hid_busy = true;
+        return;
+    }
+    if (cmd == 0x00) hid_error(cid, 0x04); /* stray continuation */
 }

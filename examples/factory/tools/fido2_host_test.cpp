@@ -175,6 +175,36 @@ static uint32_t hid_rd32(const uint8_t *p)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+static void hid_wr32(uint8_t *p, uint32_t v)
+{
+    p[0] = v; p[1] = v >> 8; p[2] = v >> 16; p[3] = v >> 24;
+}
+
+/* Feed one CTAPHID request the way a USB host does: 57 bytes in the initial
+ * packet, then 59-byte continuation packets with a sequence byte at offset 5. */
+static void hid_feed_fragmented(uint32_t cid, uint8_t type, const uint8_t *data, size_t len)
+{
+    uint8_t report[64] = {};
+    hid_wr32(report, cid);
+    report[4] = type;
+    report[5] = (uint8_t)(len >> 8);
+    report[6] = (uint8_t)len;
+    size_t chunk = len > 57 ? 57 : len;
+    memcpy(report + 7, data, chunk);
+    fido2_hid_feed(report);
+    size_t sent = chunk;
+    uint8_t seq = 0;
+    while (sent < len) {
+        memset(report, 0, sizeof(report));
+        hid_wr32(report, cid);
+        report[4] = seq++;
+        chunk = len - sent > 59 ? 59 : len - sent;
+        memcpy(report + 5, data + sent, chunk);
+        fido2_hid_feed(report);
+        sent += chunk;
+    }
+}
+
 /* ---------------------------------------------------------------- main */
 
 int main(void)
@@ -407,10 +437,23 @@ int main(void)
     uint32_t cid = hid_rd32(g_reports[0] + 7 + 8);
     check("HID allocates channel", cid != 0 && cid != 0xFFFFFFFFu);
 
+    /* a re-INIT on the broadcast channel must allocate, never echo 0xFFFFFFFF */
+    uint8_t reinit[64] = {};
+    reinit[0] = 0xFF; reinit[1] = 0xFF; reinit[2] = 0xFF; reinit[3] = 0xFF;
+    reinit[4] = 0x06;
+    g_report_count = 0;
+    fido2_hid_feed(reinit);
+    uint32_t cid2 = g_report_count ? hid_rd32(g_reports[0] + 7 + 8) : 0;
+    check("HID re-init allocates a usable channel",
+          g_report_count == 1 && g_reports[0][4] == 0x06 && cid2 != 0 && cid2 != 0xFFFFFFFFu);
+    cid = cid2;
+
     /* getInfo fits in one packet (well under 57 bytes?) - use a PING for framing too */
     uint8_t ping[64] = {};
     ping[0] = cid; ping[1] = cid >> 8; ping[2] = cid >> 16; ping[3] = cid >> 24;
     ping[4] = 0x01;
+    ping[5] = 0;
+    ping[6] = 10;
     for (int i = 0; i < 10; i++) ping[7 + i] = (uint8_t)(0xA0 + i);
     g_report_count = 0;
     fido2_hid_feed(ping);
@@ -423,6 +466,56 @@ int main(void)
     g_report_count = 0;
     fido2_hid_feed(cbor);
     check("HID CBOR framed response", g_report_count >= 1 && g_reports[0][4] == 0x10);
+
+    /* fragmented PING: initial + continuation must preserve offsets and seq */
+    uint8_t big_ping[100];
+    for (int i = 0; i < (int)sizeof(big_ping); i++) big_ping[i] = (uint8_t)(i + 1);
+    g_report_count = 0;
+    hid_feed_fragmented(cid, 0x01, big_ping, sizeof(big_ping));
+    check("HID fragmented ping reassembled",
+          g_report_count == 2 &&
+          g_reports[0][4] == 0x01 && g_reports[0][5] == 0 && g_reports[0][6] == sizeof(big_ping) &&
+          memcmp(g_reports[0] + 7, big_ping, 57) == 0 &&
+          g_reports[1][4] == 0 &&
+          memcmp(g_reports[1] + 5, big_ping + 57, sizeof(big_ping) - 57) == 0);
+
+    /* fragmented CBOR: a management register request longer than one packet */
+    uint8_t big_req[512];
+    size_t big_len = fido2_make_management_request(0x01, "hid-frag.example",
+                                                   "a-long-user-name-for-fragmentation",
+                                                   big_req, sizeof(big_req));
+    int creds_before = fido2_credential_count();
+    g_report_count = 0;
+    hid_feed_fragmented(cid, 0x10, big_req, big_len);
+    check("HID fragmented CBOR request",
+          big_len > 57 && g_report_count >= 1 && g_reports[0][4] == 0x10 &&
+          g_reports[0][7] == FIDO2_OK && fido2_credential_count() == creds_before + 1);
+
+    /* a continuation with the wrong sequence number is rejected */
+    uint8_t first[64] = {};
+    hid_wr32(first, cid);
+    first[4] = 0x10;
+    first[5] = (uint8_t)(big_len >> 8);
+    first[6] = (uint8_t)big_len;
+    memcpy(first + 7, big_req, 57);
+    uint8_t cont[64] = {};
+    hid_wr32(cont, cid);
+    cont[4] = 3; /* expected 0 */
+    g_report_count = 0;
+    fido2_hid_feed(first);
+    fido2_hid_feed(cont);
+    check("HID wrong continuation seq -> INVALID_SEQ",
+          g_report_count == 1 && g_reports[0][4] == 0x3F && g_reports[0][7] == FIDO2_ERR_INVALID_SEQ);
+
+    /* reports on an unknown channel are ignored */
+    uint8_t wrong[64] = {};
+    hid_wr32(wrong, cid ^ 0x55u);
+    wrong[4] = 0x01;
+    wrong[6] = 1;
+    wrong[7] = 0xAA;
+    g_report_count = 0;
+    fido2_hid_feed(wrong);
+    check("HID unknown channel ignored", g_report_count == 0);
 
     fido2_deinit();
     char path[128];

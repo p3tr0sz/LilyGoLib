@@ -262,20 +262,45 @@ Authorized lab targets only. The simulator proves the bookkeeping; the radio mus
 ## 15. P9.6 FIDO2 — transport, storage and real relying parties
 
 The CTAP2/CTAPHID core is implemented and host-validated (`bash examples/factory/tools/run_fido2_host_test.sh`,
-36/36), and the **simulator** already runs it end-to-end (its `/api/fido2/*` routes use the real core and
-store ES256 credentials under `sim_flash/fido2/`). What remains is the device side; until every box below is
-checked the watch must keep hiding `fido2` and answering `503 fido_unavailable` rather than reporting success.
+41/41), the **simulator** runs it end-to-end (its `/api/fido2/*` routes use the real core and store ES256
+credentials under `sim_flash/fido2/`), and the device side now has a compile-validated USB transport.
 
-- [ ] **Transport:** expose the core over USB (or BLE) HID, enumerate it on a host, and confirm CTAPHID
-      `INIT`/`CBOR` fragmentation round-trips through the real transport.
-- [ ] **Storage:** credentials and the PIN hash persist across reboot in internal storage (never the removable
-      card); a corrupt store fails closed instead of trusting partial data.
-- [ ] **User presence:** the on-watch prompt gates every makeCredential/getAssertion and denies on timeout.
-- [ ] **Browser interop:** a real browser/relying party registers, authenticates and removes a credential; the
-      assertion verifies in the RP.
-- [ ] **PIN:** set/change via the browser, correct PIN succeeds, wrong PIN decrements retries, lockout after 8,
-      and `authenticatorReset` clears credentials and PIN.
-- [ ] Only then advertise the `fido2` capability; the simulator/mock contract and its tests may stay as the
+The device code is opt-in because Arduino-ESP32 exposes **one** HID interface: the FIDO personality replaces
+the USB keyboard (Bad USB), and the S3 USB port must move from the hardware CDC/JTAG stack to TinyUSB. USB
+starts at boot for the browser, so the USB Disk app (MSC) cannot register its interface afterwards and
+fails to start.
+The default `twatch_ultra` build is unchanged and keeps hiding `fido2` until the boxes below are checked.
+
+```bash
+cd ../LilyGoLib-PlatformIO
+pio run -e twatch_ultra_fido -t upload      # TinyUSB CDC+HID; serial is USB CDC
+examples/factory/tools/run_fido2_host_test.sh   # rebuild/rerun the core test
+```
+
+If the TinyUSB CDC port does not auto-reset for upload, hold **BOOT**, tap **RST**, release **BOOT** and
+retry; flashing `twatch_ultra` again restores the hardware CDC/JTAG port.
+
+What is implemented in that build:
+
+- `src/usb/USB_FIDO.cpp`: FIDO Alliance HID usage page (0xF1D0), 64-byte interrupt IN/OUT reports.
+- `examples/factory/fido2_device.cpp`: `<FFat>/fido2/fido2.dat` (internal flash, atomic rename; the board mounts
+  FFat at `/fs`, the web layer says `/ffat`, so the code reuses whichever path is live), a worker
+  task feeding `fido2_hid_feed`, and BOOT (GPIO0) as user presence with CTAPHID `UPNEEDED` keepalives.
+- `/api/fido2/*` is backed by the same core; the desktop API and a browser drive identical state.
+
+- [ ] **Transport:** the host enumerates a FIDO HID interface and CTAPHID `INIT`/`CBOR` fragmentation
+      round-trips through the real USB endpoint (not the synthetic report test).
+- [ ] **Storage:** credentials and the PIN hash persist across reboot in internal FFat, never the removable card;
+      a corrupt `fido2.dat` fails closed. Do not format the FFat volume after enrolling.
+- [ ] **User presence:** BOOT gates makeCredential/getAssertion and denies on a 15 s timeout. The on-screen
+      approve prompt (and a real PIN/UV prompt) is still future work.
+- [ ] **Browser interop:** Chrome/Safari registers, authenticates and removes a credential; the assertion
+      verifies in the relying party.
+- [ ] **PIN:** set/change via the browser, correct PIN succeeds, wrong PIN decrements retries, lockout after
+      8, and `authenticatorReset` clears credentials and PIN.
+- [ ] **Coexistence:** confirm Bad USB reports unavailable, USB Disk fails to start (the stack already started
+      for FIDO), and no path remounts/formats the FFat volume under the FIDO store.
+- [ ] Only then advertise `fido2` in the default build; the simulator/mock contract stays the
       desktop-development path.
 
 ---
