@@ -495,3 +495,11 @@ textarea.mono { font-family: var(--mono); line-height: 1.4; }
 /* Per-app help */
 .win-title .win-help { font-size: 15px; font-weight: 700; line-height: 1; }
 .help-blurb { line-height: 1.5; }
+
+/* Wardrive */
+.wd-auto { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 13px; }
+.wd-auto input { accent-color: var(--accent); }
+.wd-status { margin-left: auto; }
+.wd-list .sub { display: block; font-size: 11px; color: var(--text-2); }
+.wd-list .wd-fix { color: var(--accent); white-space: nowrap; }
+.wd-list td.num { text-align: right; white-space: nowrap; }

@@ -497,6 +497,37 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
     await shot('12-gnss');
   }
 
+  if (has('wardrive')) {
+    console.log('wardrive');
+    // Normalize firmware-side session state first: it persists across runs on a long-lived watch.
+    await call('POST', '/api/wardrive/stop', {});
+    await call('POST', '/api/wardrive/clear', {});
+    await go('#app=wardrive');
+    check('Wardrive opens', await waitFor('document.querySelector(".win .wardrive .toolbar")'));
+    // The first toolbar button is the Start/Stop toggle; click it only when it offers to start.
+    await js(`(() => { const b = [...document.querySelectorAll('.win .wardrive .btn')].find((x) => /^(Start|Stop)$/.test(x.textContent.trim())); if (b && /Start/.test(b.textContent)) b.click(); })();`);
+    check('starting enables Scan now', await waitFor(`[...document.querySelectorAll('.win .wardrive .btn')].some((b) => /Scan now/.test(b.textContent) && !b.disabled)`));
+    await js(`[...document.querySelectorAll('.win .wardrive .btn')].find((b) => /Scan now/.test(b.textContent)).click();`);
+    check('a scan logs an access point with a position', await waitFor('document.querySelector(".win .wd-list tbody tr .wd-fix")', 8000));
+    check('the status shows how many have a fix', await waitFor(`/with a fix/.test(document.querySelector('.win .wardrive .wd-status')?.textContent || '')`));
+    await waitFor(`[...document.querySelectorAll('.win .wardrive .btn')].some((b) => /Export CSV/.test(b.textContent) && !b.disabled)`);
+    await js(`[...document.querySelectorAll('.win .wardrive .btn')].find((b) => /Export CSV/.test(b.textContent)).click();`);
+    let wrote = false;
+    for (let i = 0; i < 40 && !wrote; i++) {
+      await new Promise((x) => setTimeout(x, 150));
+      const ls = await call('GET', '/api/files?path=%2Fsd%2Fwardrive');
+      if (!ls.ok) continue;
+      const j = await ls.json();
+      wrote = (j.entries || []).some((e) => /\.csv$/.test(e.name));
+    }
+    check('Export writes a WiGLE CSV to /sd/wardrive', wrote);
+    made.push('/sd/wardrive');
+    await shot('13-wardrive');
+    // Leave the watch's session stopped and empty so a rerun starts clean.
+    await call('POST', '/api/wardrive/stop', {});
+    await call('POST', '/api/wardrive/clear', {});
+  }
+
   if (has('lora')) {
     console.log('lora');
     await call('PATCH', '/api/lora/config', { listen: false });

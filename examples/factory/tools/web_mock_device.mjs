@@ -60,7 +60,7 @@ const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input
   'wifi.sniffer', 'airspace', 'sentinel', 'presence.peers', 'presence.csi', 'presence.faro', 'presence.alarm', 'presence.history', 'fido2',
   'evil.portal', 'evil.portal.templates', 'evil.portal.customTemplates', 'evil.portal.twin', 'evil.portal.karma', 'evil.portal.settings',
   'evil.portal.clone', 'evil.portal.verify', 'evil.portal.coherentTwin', 'deauth.flood', 'deauth.campaign', 'deauth.health',
-  'beacon.spam', 'beacon.campaign', 'beacon.health', 'totp'];
+  'beacon.spam', 'beacon.campaign', 'beacon.health', 'totp', 'wardrive'];
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
@@ -1531,6 +1531,74 @@ const BLE = [['Mi Smart Band 8', 'c8:47:8c:01:02:03', -55, true, '5701a1b2', ['f
   ['Thermo', 'a4:c1:38:55:66:77', -88, false, '', ['181a']]];
 
 const wifiScan = { state: { scanning: false, ts: null, networks: [] } };
+
+// ---- Wardrive: catalogue Wi-Fi APs with the current GNSS fix, export WiGLE-1.6 CSV.
+// Mirrors web_tool_wardrive.cpp so both planes agree (dedupe by BSSID, peak-signal location). ----
+const WD_MAX = 512, WD_LIST_MAX = 400, WD_ACCURACY_M = '10.0';
+const wardrive = { running: false, scanning: false, started: null, ts: null, obs: [] };
+const wigleAuth = (a) => ({
+  open: '[ESS]', wep: '[WEP][ESS]', wpa: '[WPA-PSK-TKIP][ESS]', wpa2: '[WPA2-PSK-CCMP][ESS]',
+  'wpa/wpa2': '[WPA-PSK-TKIP][WPA2-PSK-CCMP][ESS]', 'wpa2-ent': '[WPA2-EAP-CCMP][ESS]',
+  wpa3: '[WPA3-SAE-CCMP][ESS]', 'wpa2/wpa3': '[WPA2-PSK-CCMP][WPA3-SAE-CCMP][ESS]',
+}[a] || '[ESS]');
+const csvField = (v) => /[,"\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+const wdCountFix = () => wardrive.obs.filter((o) => o.has_fix).length;
+function wardriveStatus(withList) {
+  const st = {
+    running: wardrive.running, scanning: wardrive.scanning, started: wardrive.started, ts: wardrive.ts,
+    count: wardrive.obs.length, with_fix: wdCountFix(),
+  };
+  if (withList) {
+    const n = Math.min(wardrive.obs.length, WD_LIST_MAX);
+    st.networks = wardrive.obs.slice(0, n).map((o) => {
+      const e = { ssid: o.ssid, bssid: o.bssid, auth: o.auth, channel: o.channel, rssi: o.best_rssi,
+        count: o.count, first_seen: o.first_seen, last_seen: o.last_seen, has_fix: o.has_fix };
+      if (o.has_fix) { e.lat = o.lat; e.lon = o.lon; if (o.has_alt) e.alt = o.alt; }
+      return e;
+    });
+    if (wardrive.obs.length > n) st.truncated = true;
+  }
+  return st;
+}
+function wardriveScanOnce() {
+  const nets = WIFI.map(([ssid, bssid, rssi, channel, auth]) => ({ ssid, bssid, rssi: rssi + Math.round(Math.random() * 4 - 2), channel, auth }));
+  const g = gnss();
+  const fix = !!g.fix;
+  const now = nowEpoch();
+  if (wardrive.running) {
+    for (const w of nets) {
+      let o = wardrive.obs.find((e) => e.bssid === w.bssid);
+      if (!o) {
+        if (wardrive.obs.length >= WD_MAX) continue;
+        o = { ssid: '', bssid: w.bssid, auth: 'other', channel: 0, best_rssi: -127, first_seen: now,
+          last_seen: now, count: 0, has_fix: false, lat: 0, lon: 0, alt: 0, has_alt: false };
+        wardrive.obs.push(o);
+      }
+      o.ssid = w.ssid; o.auth = w.auth || 'other'; o.channel = w.channel; o.last_seen = now; o.count++;
+      const stronger = w.rssi > o.best_rssi;
+      if (fix && (stronger || !o.has_fix)) { o.lat = g.lat; o.lon = g.lon; o.has_alt = g.alt != null; o.alt = g.alt; o.has_fix = true; }
+      if (stronger) o.best_rssi = w.rssi;
+    }
+    wardrive.ts = now;
+  }
+  wardrive.scanning = false;
+  publish('wardrive', wardriveStatus(false));
+}
+function wardriveCsv() {
+  const fw = FW;
+  let skipped = 0;
+  const lines = [
+    `WigleWifi-1.6,appRelease=${fw},model=T-Watch-Ultra,release=${fw},device=twatch-ultra,display=,board=esp32s3,brand=LilyGo`,
+    'MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type',
+  ];
+  for (const o of wardrive.obs) {
+    if (!o.has_fix) { skipped++; continue; }
+    const when = new Date(o.first_seen * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    lines.push([csvField(o.bssid), csvField(o.ssid), csvField(wigleAuth(o.auth)), when, o.channel, o.best_rssi,
+      o.lat.toFixed(6), o.lon.toFixed(6), o.has_alt ? o.alt.toFixed(1) : '', WD_ACCURACY_M, 'WIFI'].join(','));
+  }
+  return { csv: lines.join('\n') + '\n', rows: lines.length - 2, skipped };
+}
 const bleScan = { state: { scanning: false, ts: null, devices: [] } };
 
 
@@ -1841,6 +1909,35 @@ async function toolsRoute(req, res, url, path) {
   if (path === '/api/audio/stop' && m === 'POST') { audioStop(); return ok(res); }
 
   if (path === '/api/wifi/scan' && m === 'GET') return json(res, 200, wifiScan.state);
+
+  // ---- Wardrive ----
+  if (path === '/api/wardrive' && m === 'GET') return json(res, 200, wardriveStatus(true));
+  if (path === '/api/wardrive/start' && m === 'POST') {
+    wardrive.running = true; wardrive.started = nowEpoch(); wardrive.obs = []; wardrive.ts = null;
+    return json(res, 200, wardriveStatus(false));
+  }
+  if (path === '/api/wardrive/stop' && m === 'POST') { wardrive.running = false; return json(res, 200, wardriveStatus(false)); }
+  if (path === '/api/wardrive/clear' && m === 'POST') {
+    if (wardrive.scanning) return fail(res, 409, 'busy', 'a scan is in progress');
+    wardrive.obs = []; wardrive.ts = null; return json(res, 200, wardriveStatus(false));
+  }
+  if (path === '/api/wardrive/scan' && m === 'POST') {
+    if (!wardrive.running) return fail(res, 409, 'not_running', 'start a session first');
+    if (!wardrive.scanning) { wardrive.scanning = true; setTimeout(wardriveScanOnce, 40).unref?.(); }
+    return json(res, 202, { ok: true });
+  }
+  if (path === '/api/wardrive/export' && m === 'POST') {
+    const b = (await readJSON(req)) || {};
+    let api = typeof b.path === 'string' && b.path ? b.path :
+      `/sd/wardrive/wardrive-${new Date((wardrive.started || nowEpoch()) * 1000).toISOString().replace(/[-:T]/g, '').slice(0, 15)}.csv`;
+    const r = resolvePath(api);
+    if (r.error) return fail(res, r.error === 'sd_missing' ? 503 : 400, r.error, 'path must be under /sd or /flash');
+    const { csv, rows, skipped } = wardriveCsv();
+    try { await fsp.mkdir(dirname(r.abs), { recursive: true }); await fsp.writeFile(r.abs, csv); }
+    catch { return fail(res, 503, 'sd_missing', 'could not write the CSV'); }
+    publish('files.changed', { op: 'write', path: api });
+    return json(res, 200, { ok: true, path: api, rows, skipped });
+  }
   if (path === '/api/wifi/scan' && m === 'POST') {
     if (!wifiScan.state.scanning) {
       wifiScan.state.scanning = true;

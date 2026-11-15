@@ -256,6 +256,49 @@ r = await call('POST', '/api/totp/delete', { id: 9 });
 check('delete of a missing id: 404', r.status === 404, r.status);
 await call('DELETE', `/api/files?path=${q('/sd/totp')}&recursive=1`);
 
+// ---- wardrive (WiGLE CSV) ----
+if (caps.includes('wardrive')) {
+  console.log('wardrive');
+  await call('DELETE', `/api/files?path=${q('/sd/wardrive')}&recursive=1`);
+  r = await call('GET', '/api/wardrive');
+  check('wardrive starts stopped and empty', r.status === 200 && r.json?.running === false && r.json.count === 0, r.json);
+  r = await call('POST', '/api/wardrive/scan', {});
+  check('scan before start: 409 not_running', r.status === 409 && r.json?.error === 'not_running', r.json);
+  r = await call('POST', '/api/wardrive/start', {});
+  check('start begins a session', r.status === 200 && r.json?.running === true && r.json.count === 0 && typeof r.json.started === 'number', r.json);
+  r = await call('POST', '/api/wardrive/scan', {});
+  check('scan accepted (202)', r.status === 202 && r.json?.ok === true, r.json);
+  // The scan runs off-thread and publishes when done; poll the status until it lands.
+  for (let i = 0; i < 40 && !(r.json?.count > 0 && !r.json.scanning); i++) { await new Promise((x) => setTimeout(x, 100)); r = await call('GET', '/api/wardrive'); }
+  const firstCount = r.json?.count || 0;
+  check('a scan logs networks, each with a GNSS fix', firstCount > 0 && r.json.with_fix === firstCount && r.json.ts > 0, r.json);
+  const row = (r.json.networks || [])[0];
+  check('a network row carries bssid, channel and a position', !!row && /:/.test(row.bssid || '') && typeof row.channel === 'number' && row.has_fix === true && typeof row.lat === 'number', row);
+  const wasCount = row?.count;
+  r = await call('POST', '/api/wardrive/scan', {});
+  for (let i = 0; i < 40; i++) { await new Promise((x) => setTimeout(x, 100)); r = await call('GET', '/api/wardrive'); if (!r.json.scanning && r.json.ts) break; }
+  check('a second scan dedupes by BSSID (count of networks stays)', r.json?.count === firstCount, { before: firstCount, after: r.json?.count });
+  check('a re-seen network bumps its sighting count', (r.json.networks || [])[0]?.count > wasCount, { before: wasCount, after: (r.json.networks || [])[0]?.count });
+  r = await call('POST', '/api/wardrive/export', {});
+  check('export writes a WiGLE CSV', r.status === 200 && r.json?.ok === true && r.json.rows === firstCount && r.json.skipped === 0 && /^\/sd\/wardrive\//.test(r.json.path || ''), r.json);
+  const csvPath = r.json.path;
+  r = await call('GET', `/api/files/content?path=${q(csvPath)}`);
+  const lines = (r.text || '').split('\n');
+  check('CSV has the WigleWifi pre-header', r.status === 200 && lines[0].startsWith('WigleWifi-1.6,appRelease='), lines[0]);
+  check('CSV has the standard column header', lines[1] === 'MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type', lines[1]);
+  check('CSV data rows match the exported count', lines.filter((l) => /,WIFI$/.test(l)).length === firstCount, lines.length);
+  check('a CSV data row is well formed (MAC, AuthMode brackets, WIFI type)', /^([0-9a-f]{2}:){5}[0-9a-f]{2},.*,\[.*\],\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+,-?\d+,/.test(lines[2]) && lines[2].endsWith(',WIFI'), lines[2]);
+  r = await call('POST', '/api/wardrive/export', { path: '/sd/wardrive/custom.csv' });
+  check('export honours an explicit path', r.status === 200 && r.json?.path === '/sd/wardrive/custom.csv', r.json);
+  r = await call('POST', '/api/wardrive/export', { path: '/etc/passwd' });
+  check('export refuses a path outside /sd and /flash', r.status === 400, r.status);
+  r = await call('POST', '/api/wardrive/stop', {});
+  check('stop ends the session', r.status === 200 && r.json?.running === false, r.json);
+  r = await call('POST', '/api/wardrive/clear', {});
+  check('clear empties the catalogue', r.status === 200 && r.json?.count === 0, r.json);
+  await call('DELETE', `/api/files?path=${q('/sd/wardrive')}&recursive=1`);
+}
+
 // ---- screen, input, display
 console.log('screen');
 const decodeRle = (buf) => { let n = 0; for (let i = 0; i + 3 < buf.length; i += 4) n += buf.readUInt16LE(i); return n; };

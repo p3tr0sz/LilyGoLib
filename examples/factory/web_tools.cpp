@@ -42,6 +42,9 @@ static const web_tool_t *const TOOLS[] = {
     &web_tool_script,
     &web_tool_automation,          /* headless rule engine (docs/automation-rule-engine.md) */
     &web_tool_totp,                /* RFC 6238 authenticator (docs/web-api.md, TOTP) */
+#if FACTORY_HAS_GPS
+    &web_tool_wardrive,            /* wardriving -> WiGLE CSV (docs/web-api.md, Wardrive) */
+#endif
     &web_tool_wifi_scan,
     &web_tool_ble_scan,
     &web_tool_link,

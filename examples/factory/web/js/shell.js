@@ -43,6 +43,7 @@ const APPS = [
   { id: 'monitor', title: 'Monitor', icon: 'monitor', caps: ['monitor'], load: () => import('../apps/monitor/app.js') },
   { id: 'sensors', title: 'Sensors', icon: 'sensors', caps: ['sensors.imu'], load: () => import('../apps/sensors/app.js') },
   { id: 'gnss', title: 'GNSS', icon: 'gnss', caps: ['gnss'], load: () => import('../apps/gnss/app.js') },
+  { id: 'wardrive', title: 'Wardrive', icon: 'radar', caps: ['wardrive'], load: () => import('../apps/wardrive/app.js') },
   { id: 'lora', title: 'LoRa', icon: 'lora', caps: ['lora'], load: () => import('../apps/lora/app.js') },
   { id: 'nfc', title: 'NFC', icon: 'nfc', caps: ['nfc'], load: () => import('../apps/nfc/app.js') },
   { id: 'recorder', title: 'Recorder', icon: 'mic', caps: ['recorder'], load: () => import('../apps/recorder/app.js') },

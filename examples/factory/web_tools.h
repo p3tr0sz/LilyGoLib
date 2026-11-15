@@ -42,7 +42,7 @@ extern const web_tool_t web_tool_monitor, web_tool_notify, web_tool_sensors, web
        web_tool_link, web_tool_hid, web_tool_net, web_tool_ota,
        web_tool_sniffer, web_tool_airspace, web_tool_sentinel, web_tool_presence, web_tool_fido2,
        web_tool_evilportal, web_tool_deauthflood, web_tool_beaconspam, web_tool_term, web_tool_script,
-       web_tool_automation, web_tool_totp;
+       web_tool_automation, web_tool_totp, web_tool_wardrive;
 
 /* The shared command shell behind the web Terminal (POST /api/term) and the native Terminal
  * (ui_terminal.cpp). Runs one line against cwd (updated by `cd`), appends text to out and returns the
@@ -71,6 +71,14 @@ void automation_list_rules(std::vector<std::string> &ids, std::vector<std::strin
                            std::vector<bool> &enabled);
 bool automation_set_enabled(const std::string &id, bool enabled);
 bool automation_delete_rule(const std::string &id);
+
+/* On-device Wardrive app surface (ui_wardrive.cpp): read the session, drive it, export the WiGLE CSV.
+ * The catalogue and the CSV format live in web_tool_wardrive.cpp. UI thread; a scan runs off-thread. */
+void wardrive_counts(bool *running, bool *scanning, int *count, int *with_fix, long long *last_ts);
+void wardrive_start(void);
+void wardrive_stop(void);
+bool wardrive_scan_async(void);
+int  wardrive_export(std::string &path_out, int *skipped);
 
 /* ---------------------------------------------------------------- shared helpers (web_tools.cpp) */
 

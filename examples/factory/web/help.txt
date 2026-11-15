@@ -11,6 +11,7 @@ notify	Notify	Send a notification to the watch and see the ones it is holding.
 monitor	Monitor	Live battery, memory, CPU and uptime, with the watch log stream.
 sensors	Sensors	Read the motion sensor (IMU): orientation and movement from the watch.
 gnss	GNSS	The GNSS fix: position, altitude, speed and satellites, plotted in the browser.
+wardrive	Wardrive	Log nearby Wi-Fi access points with the GPS position as you move, then export a WiGLE CSV. Passive: it never transmits.
 lora	LoRa	Send and receive LoRa packets and set the radio parameters.
 nfc	NFC	Read NFC tags and save their contents as files.
 recorder	Recorder	Record audio on the watch mic to a WAV on the SD card, and play it back.

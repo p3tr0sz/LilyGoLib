@@ -1080,6 +1080,7 @@ static const struct {
     { "Walkie",       "RF" },
     { "GNSS",         "GNSS" },
     { "Track Log",    "GNSS" },
+    { "Wardrive",     "GNSS" },
     { "IMU",          "Sensors" },
     { "Accel",        "Sensors" },
     { "Compass",      "Sensors" },
@@ -2264,12 +2265,14 @@ void setupGui()
     extern app_t ui_script_main;
     extern app_t ui_automation_main;
     extern app_t ui_totp_main;
+    extern app_t ui_wardrive_main;
     extern app_t ui_help_main;
 
     register_app("Terminal", &img_tools, &ui_terminal_main);
     register_app("Scripts", &img_tools, &ui_script_main);
     register_app("Automation", &img_tools, &ui_automation_main);
     register_app("Authenticator", &img_configuration, &ui_totp_main);
+    register_app("Wardrive", &img_wireless, &ui_wardrive_main);
     register_app("Help", &img_tools, &ui_help_main);
     register_app("WiFi Sniffer", &img_wireless, &ui_sniffer_main);
     register_app("Airspace", &img_scan, &ui_airspace_main);

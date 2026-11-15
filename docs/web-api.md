@@ -252,6 +252,19 @@ Time-based one-time codes (RFC 6238 / RFC 4226, HMAC-SHA1). Secrets live on the 
 | `POST /api/totp/delete` | paired | `{id}` → `{ok}`. `404` if the id is out of range |
 | `POST /api/totp/preview` | paired | `{secret, at?, digits?, period?}` → `{code, remaining_s}` without storing anything — used by the add form to confirm a secret produces the code the user's other app shows |
 
+### Wardrive → WiGLE CSV (`wardrive`)
+
+Catalogues the Wi-Fi access points around the watch across repeated scans and tags each with the GNSS fix at the moment of the strongest signal, then exports the catalogue as a [WiGLE](https://wigle.net) 1.6 CSV for upload. Passive: it logs only what the Wi-Fi scan and the GNSS receiver already report, and never transmits. Access points are deduped by BSSID (the strongest heard signal wins the recorded position; the sighting `count`, `first_seen` and `last_seen` are kept). The browser sets the scan cadence (it drives `POST /api/wardrive/scan` on a timer); the watch runs each scan and keeps the catalogue. The capability is present only on boards with GNSS. Up to 512 access points are kept per session; `GET` returns up to 400 of them (`truncated: true` past that), and export always writes them all. Networks without a GPS fix are kept in the session but left out of the CSV (reported as `skipped`).
+
+| Route | Auth | Notes |
+|---|---|---|
+| `GET /api/wardrive` | paired | `{running, scanning, started, ts, count, with_fix, networks:[{ssid, bssid, auth, channel, rssi, count, first_seen, last_seen, has_fix, lat?, lon?, alt?}]}` — the session state and catalogue, `rssi` the strongest heard. `lat`/`lon`/`alt` are present only when `has_fix` |
+| `POST /api/wardrive/start` | paired | Begin a session: clears the catalogue and starts recording → the status |
+| `POST /api/wardrive/stop` | paired | Stop recording (the catalogue is kept) → the status |
+| `POST /api/wardrive/scan` | paired | `→ 202 {ok}`. Runs one Wi-Fi scan and merges the results with the current GNSS fix; publishes `wardrive` when it lands. `409 not_running` if no session is active, and a scan already running is ignored |
+| `POST /api/wardrive/clear` | paired | Drop the catalogue (keeps the session running) → the status. `409 busy` while a scan is in flight |
+| `POST /api/wardrive/export` | paired | `{path?}` → `{ok, path, rows, skipped}`. Writes a WiGLE-1.6 CSV (a `WigleWifi-1.6,…` pre-header, then `MAC,SSID,AuthMode,FirstSeen,Channel,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,Type`). `path` must be under `/sd` or `/flash`; the default is `/sd/wardrive/wardrive-<timestamp>.csv`. Only networks with a fix are written; `skipped` counts the rest |
+
 ### Assistant (`assistant`) — later
 
 Voice to the watch, an answer spoken back: record on the watch (`recorder`), the browser does speech-to-text, the language model and text-to-speech, the reply plays on the watch (`audio.play`). It needs a model endpoint and a key, so it waits until the desktop has a settings place for those. No firmware routes of its own; it is built on the P4 recorder and player.
@@ -419,6 +432,7 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `recorder` | as `GET /api/recorder`, on start and stop and 4 times a second while recording | P4 |
 | `audio` | as `GET /api/audio`, on change | P4 |
 | `wifi.scan`, `ble.scan` | as `GET /api/wifi/scan` and `GET /api/ble/scan`, when a scan ends | P4 |
+| `wardrive` | the wardrive status (counts, no network list), when a scan ends | P9 |
 | `link` | as `GET /api/link`, on peer, state and transfer changes | P5 |
 | `hid` | as `GET /api/hid`, on state or line changes | P5 |
 | `ota` | as `GET /api/ota`, while writing and on state changes | P5 |
@@ -456,6 +470,7 @@ Beacon campaign `progress` entries contain `{ssid, state, accepted, failed, goal
 | `audio.play` | `POST /api/audio/play\|stop`, `GET/PATCH /api/audio`, events `audio` | P4 |
 | `wifi.scan` | `POST/GET /api/wifi/scan`, events `wifi.scan` | P4 |
 | `ble.scan` | `POST/GET /api/ble/scan`, events `ble.scan` | P4 |
+| `wardrive` | `GET /api/wardrive`, `POST /api/wardrive/start\|stop\|scan\|clear\|export`, events `wardrive`; GNSS boards only | P9 |
 | `ir` | infrared send and learn: reserved, the T-Watch Ultra has no IR hardware | — |
 | `wifi.manage` | saved Wi-Fi networks: later | — |
 | `desktop.install` | `GET /api/desktop`, `POST /api/desktop/install` | P3 |
