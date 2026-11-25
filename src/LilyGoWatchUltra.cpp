@@ -92,7 +92,12 @@ static void doubleClickHandler(Button2 &btn)
 }
 
 
-LilyGoUltra::LilyGoUltra() : LilyGo_Display(QSPI_DRIVER, true),
+// Partial-render mode (false): LVGL redraws only dirty areas into small draw
+// buffers that live in fast internal SRAM, instead of redrawing the whole
+// 410x502 frame into slow PSRAM every refresh. This is what makes scrolling
+// smooth; tearing is held off by the panel's TE line (see setDisplayParams in
+// the sketch and the 0x35 TE-on command in co5300_206_cmd).
+LilyGoUltra::LilyGoUltra() : LilyGo_Display(QSPI_DRIVER, false),
     LilyGoDispQSPI(co5300_206_cmd, co5300_206_seq_length, DISP_WIDTH, DISP_HEIGHT),
     LilyGoPowerManageInf(pmic, PMIC_TYPE_AXP2101),
     _audioOutput(I2S_BCLK, I2S_WCLK, I2S_DOUT),

@@ -114,6 +114,7 @@ void WiFiGotIP(arduino_event_t *event)
     LILYGO_LOG_PRINTLN("IP address: ");
     LILYGO_LOG_PRINTLN(IPAddress(event->event_info.got_ip.ip_info.ip.addr));
     configTime(hw_get_timezone_offset(), hw_get_daylight_offset(), ntpServer1, ntpServer2);
+    hw_wifi_remember_connected();
 }
 
 void setup()
@@ -136,6 +137,15 @@ void setup()
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(false);
     WiFi.disconnect(true);
+
+#if defined(ARDUINO_T_WATCH_S3_ULTRA)
+    // Partial-render mode draws dirty areas only, so fast scrolls could tear.
+    // Enable TE (tearing-effect) sync so each flush waits for the panel's
+    // V-blank; the DISP_TE line is driven by the 0x35 command in the panel
+    // init. Must run before begin(), which latches these display params.
+    // (DMA stays off; the push path is unchanged.)
+    instance.setDisplayParams(/*enableDMA=*/false, /*enableTearingEffect=*/true);
+#endif
 
 #if defined(USING_BHI260_SENSOR)
     // Disabling sensor initialization is time-consuming; 
@@ -165,6 +175,7 @@ void setup()
     web_server_init();
 #endif
     setupGui();
+    hw_wifi_autoconnect();      /* Rejoin the newest saved network */
 #if FACTORY_WEB
     if (web_server_enabled()) web_server_start();     /* Settings > Web desktop */
 #elif defined(LILYGO_SCREEN_CAPTURE_ENABLED) && LILYGO_SCREEN_CAPTURE_ENABLED
@@ -188,6 +199,7 @@ void loop()
     hw_loop_nfc();
 #endif
     lv_timer_handler();
+    hw_wifi_poll();
     instanceLockGive();
     delay(5);
 }

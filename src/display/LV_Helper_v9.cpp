@@ -258,10 +258,41 @@ void beginLvglHelper(LilyGo_Display &board, bool debug)
 
     } else {
         LILYGO_LOG_D("Using Not DMA pushColors..");
-        buf = (lv_color16_t *)ps_malloc(lv_buffer_size);
-        assert(buf);
-        buf1 = (lv_color16_t *)ps_malloc(lv_buffer_size);
-        assert(buf1);
+
+        /* In partial-render mode LVGL only needs a fraction of the screen in
+         * the draw buffer. Keep that buffer in internal DMA-capable SRAM:
+         * software rendering does scattered read/modify/write, and PSRAM
+         * latency is what makes scrolling lag. Full-refresh panels need the
+         * whole frame, which is too large for internal SRAM, so they fall
+         * through to the PSRAM allocation below. */
+        if (!board.needFullRefresh()) {
+            size_t full_screen_size = (size_t)board.width() * board.height() * sizeof(lv_color16_t);
+            size_t partial_rows = (board.height() + 9) / 10;   /* ~1/10 screen */
+            size_t partial_size = (size_t)board.width() * partial_rows * sizeof(lv_color16_t);
+            /* Never grow a size an earlier step (e.g. screen capture) shrank. */
+            if (lv_buffer_size == full_screen_size || lv_buffer_size > partial_size) {
+                lv_buffer_size = partial_size;
+            }
+            buf  = (lv_color16_t *)heap_caps_aligned_alloc(16, lv_buffer_size,
+                        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+            buf1 = (lv_color16_t *)heap_caps_aligned_alloc(16, lv_buffer_size,
+                        MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+            if (buf && buf1) {
+                LILYGO_LOG_D("LVGL partial draw buffers in internal SRAM: %u bytes x2",
+                             (unsigned)lv_buffer_size);
+            } else {
+                LILYGO_LOG_W("Internal SRAM draw buffer alloc failed, falling back to PSRAM");
+                if (buf)  { heap_caps_free(buf);  buf  = NULL; }
+                if (buf1) { heap_caps_free(buf1); buf1 = NULL; }
+            }
+        }
+
+        if (!buf || !buf1) {
+            buf = (lv_color16_t *)ps_malloc(lv_buffer_size);
+            assert(buf);
+            buf1 = (lv_color16_t *)ps_malloc(lv_buffer_size);
+            assert(buf1);
+        }
     }
 
     disp_drv = lv_display_create(board.width(), board.height());
