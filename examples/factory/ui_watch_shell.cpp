@@ -143,6 +143,10 @@ void watch_shell_list_drag_end(bool open)
 void watch_shell_launch(app_t *app, watch_view_t return_view)
 {
     if (!app || watch_shell_input_guard_active()) return;
+    /* A second rapid tap (before the first app finishes opening) would build a
+     * second app UI into the same container, stacking them. Ignore launches
+     * while an app is already open/opening; exiting resets `view`. */
+    if (view == WATCH_VIEW_APP) return;
     app_return_view = return_view;
     view = WATCH_VIEW_APP;
     ui_launch_app(app);   /* pushes the app's category accent (Vivid/Expressive) */
