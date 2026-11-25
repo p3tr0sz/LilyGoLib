@@ -90,6 +90,18 @@ r = await call('PATCH', '/api/settings', { brightness: 'x' });
 check('PATCH /api/settings rejects a bad value', r.status === 400, r.status);
 r = await call('PATCH', '/api/settings', { brightness: 101 });
 check('PATCH /api/settings rejects out of range', r.status === 400, r.status);
+// Appearance: colour theme + UI style are readable and writable.
+check('GET /api/settings exposes theme + ui_style',
+      typeof before?.theme === 'number' && typeof before?.ui_style === 'number', before);
+r = await call('PATCH', '/api/settings', { ui_style: 1 });
+check('PATCH /api/settings sets ui_style', r.status === 200 && r.json?.ui_style === 1, r.json);
+r = await call('PATCH', '/api/settings', { theme: 2 });
+check('PATCH /api/settings sets theme', r.status === 200 && r.json?.theme === 2, r.json);
+r = await call('PATCH', '/api/settings', { ui_style: 9 });
+check('PATCH /api/settings rejects bad ui_style', r.status === 400, r.status);
+r = await call('PATCH', '/api/settings', { theme: 99 });
+check('PATCH /api/settings rejects bad theme', r.status === 400, r.status);
+await call('PATCH', '/api/settings', { ui_style: 0, theme: 0 });   // restore
 if (before) await call('PATCH', '/api/settings', { brightness: before.brightness });
 
 console.log('sd');

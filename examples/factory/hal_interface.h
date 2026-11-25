@@ -383,6 +383,7 @@ typedef struct {
     uint16_t charger_current;
     uint8_t charger_enable;
     uint8_t theme_preset_idx;
+    uint8_t ui_style_idx;
 } user_setting_params_t;
 
 typedef enum {
@@ -805,6 +806,16 @@ void hw_get_wifi_scan_result(vector < wifi_scan_params_t > &list);
  * @param params A reference to a wifi_conn_params_t structure containing the SSID and password.
  */
 void hw_set_wifi_connect(wifi_conn_params_t &params);
+
+/* Saved networks (wifi.json on internal flash + SD copy, newest first). A network
+ * is saved once the connection started by hw_set_wifi_connect() gets an IP; the
+ * watch rejoins the newest one at boot. hw_wifi_remember_connected() is safe to
+ * call from the GOT_IP event task; hw_wifi_poll() (main loop) does the write. */
+#define WIFI_SAVED_MAX                    5
+void hw_wifi_remember_connected(void);
+void hw_wifi_poll(void);
+bool hw_wifi_saved_password(const char *ssid, char *out, size_t out_len);
+void hw_wifi_autoconnect(void);
 
 /**
  * @brief Check if the device is connected to a WiFi network.

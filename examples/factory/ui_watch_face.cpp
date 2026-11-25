@@ -227,6 +227,17 @@ static void face_slot_create(face_slot_t *slot, uint32_t index)
         lv_obj_set_style_text_color(slot->icon, UI_COLOR_ACCENT, 0);
     }
     lv_obj_remove_flag(slot->icon, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Expressive: colour each corner complication by its app's category. */
+    if (ui_active_style == UI_STYLE_EXPRESSIVE) {
+        uint32_t c = (slot->type == WATCH_SLOT_APP && entry && entry->category)
+                     ? ui_category_color(entry->category) : ui_active_accent;
+        bool is_img = (slot->type == WATCH_SLOT_APP && entry->icon) ||
+                      slot->type == WATCH_SLOT_STEPS || slot->type == WATCH_SLOT_CALORIES;
+        if (is_img) lv_obj_set_style_image_recolor(slot->icon, lv_color_hex(c), 0);
+        else lv_obj_set_style_text_color(slot->icon, lv_color_hex(c), 0);
+    }
+
     if (icon_only) return;
 
     slot->value = lv_label_create(obj);

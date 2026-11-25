@@ -3,6 +3,9 @@ import { h, icon, fmtBytes, fmtDuration, toast, confirmDialog } from '../../js/u
 
 const TIMEOUTS = [[0, 'Never'], [5, '5 s'], [10, '10 s'], [15, '15 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [255, '4 min']];
 const IDLE = [[0, 'Never'], [300, '5 min'], [600, '10 min'], [1800, '30 min'], [3600, '1 hour']];
+// Must match ui_theme_presets[] and the UI_STYLE_* enum in the firmware.
+const THEMES = [[0, 'Mint'], [1, 'Ocean'], [2, 'Sunset'], [3, 'Violet'], [4, 'Cherry'], [5, 'Lime'], [6, 'Amber'], [7, 'Mono']];
+const STYLES = [[0, 'Classic'], [1, 'Vivid'], [2, 'Deep'], [3, 'Expressive']];
 
 function row(label, hint, ...ctrl) {
   const id = typeof label === 'string' ? label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : '';
@@ -23,11 +26,12 @@ export function mount(el, ctx) {
   el.append(h('div', { class: 'app' }, h('div', { style: { overflow: 'auto', flex: 1 } }, page)));
 
   const display = h('section', {}, h('h3', {}, 'Display'));
+  const appear = h('section', {}, h('h3', {}, 'Appearance'));
   const time = h('section', {}, h('h3', {}, 'Time'));
   const storage = h('section', {}, h('h3', {}, 'Storage'));
   const web = h('section', {}, h('h3', {}, 'Web desktop'));
   const device = h('section', {}, h('h3', {}, 'Watch'));
-  page.append(display, time, storage, web, device);
+  page.append(display, appear, time, storage, web, device);
 
   let settings = null;
   let loadPromise = null;
@@ -52,6 +56,13 @@ export function mount(el, ctx) {
     display.replaceChildren(h('h3', {}, 'Display'),
       row('Brightness', null, value, slider),
       row('Screen off after', 'When the watch is not touched', select(TIMEOUTS, settings.screen_timeout_s, (v) => patch({ screen_timeout_s: v }))));
+  }
+
+  // ---- appearance (colour theme + UI style)
+  function renderAppearance() {
+    appear.replaceChildren(h('h3', {}, 'Appearance'),
+      row('Theme', 'Accent colour', select(THEMES, settings.theme ?? 0, (v) => patch({ theme: v }))),
+      row('UI style', 'How the whole interface is styled', select(STYLES, settings.ui_style ?? 0, (v) => patch({ ui_style: v }))));
   }
 
   // ---- web
@@ -176,6 +187,7 @@ export function mount(el, ctx) {
       settings = await api.settings();
       await ctx.refreshDevice();
       renderDisplay();
+      renderAppearance();
       renderTime();
       renderWeb();
       renderDevice();
@@ -190,6 +202,7 @@ export function mount(el, ctx) {
       settings = s;
       // Don't redraw a control the user is moving.
       if (!display.contains(document.activeElement)) renderDisplay();
+      if (!appear.contains(document.activeElement)) renderAppearance();
       if (!web.contains(document.activeElement)) renderWeb();
     }),
     events.on('sd.changed', () => renderStorage()),

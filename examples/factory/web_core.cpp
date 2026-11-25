@@ -637,8 +637,11 @@ static std::string settings_json(void)
         std::lock_guard<std::recursive_mutex> lk(s_lock);
         idle = s_idle_off_s;
     }
-    snprintf(b, sizeof(b), "{\"brightness\":%d,\"screen_timeout_s\":%u,\"web_idle_off_s\":%u}",
-             level_to_pct(s.brightness_level), (unsigned)s.disp_timeout_second, (unsigned)idle);
+    snprintf(b, sizeof(b),
+             "{\"brightness\":%d,\"screen_timeout_s\":%u,\"web_idle_off_s\":%u,"
+             "\"theme\":%u,\"ui_style\":%u}",
+             level_to_pct(s.brightness_level), (unsigned)s.disp_timeout_second, (unsigned)idle,
+             (unsigned)s.theme_preset_idx, (unsigned)s.ui_style_idx);
     return b;
 }
 
@@ -650,8 +653,22 @@ static void handle_settings_patch(web_req_t *r)
         return;
     }
     double v;
-    int brightness = -1, timeout = -1;
+    int brightness = -1, timeout = -1, theme = -1, ui_style = -1;
     long idle = -1;
+    if (web_json_has(body, "theme")) {
+        if (!web_json_get_num(body, "theme", &v) || v < 0 || v >= UI_THEME_PRESET_COUNT) {
+            web_resp_error(r, 400, "bad_request", "theme out of range");
+            return;
+        }
+        theme = (int)v;
+    }
+    if (web_json_has(body, "ui_style")) {
+        if (!web_json_get_num(body, "ui_style", &v) || v < 0 || v >= UI_STYLE_COUNT) {
+            web_resp_error(r, 400, "bad_request", "ui_style out of range");
+            return;
+        }
+        ui_style = (int)v;
+    }
     if (web_json_has(body, "brightness")) {
         if (!web_json_get_num(body, "brightness", &v) || v < 0 || v > 100) {
             web_resp_error(r, 400, "bad_request", "brightness 0-100");
@@ -681,7 +698,16 @@ static void handle_settings_patch(web_req_t *r)
             hw_set_disp_backlight(s.brightness_level);
         }
         if (timeout >= 0) s.disp_timeout_second = (uint8_t)timeout;
-        hw_set_user_setting(s);
+        if (theme >= 0) {
+            s.theme_preset_idx = (uint8_t)theme;
+            ui_apply_theme_preset((uint8_t)theme);
+            ui_theme_apply();          /* repaint with the new accent */
+        }
+        if (ui_style >= 0) {
+            s.ui_style_idx = (uint8_t)ui_style;
+            ui_apply_style((uint8_t)ui_style);   /* recolours launcher/face live */
+        }
+        hw_set_user_setting(s);        /* persists theme + ui_style to settings.json */
     });
     if (idle >= 0) {
         std::lock_guard<std::recursive_mutex> lk(s_lock);
@@ -1111,6 +1137,19 @@ void web_api_handle(web_req_t *r)
             return;
         }
         web_ui_run([&] { ui_apply_theme_preset((uint8_t)preset); });
+        web_resp_ok(r);
+        return;
+    }
+
+    if (is(r, "POST", "/api/_dev/style")) {
+        std::string body;
+        double style = 0;
+        web_read_body(r, body, 256);
+        if (!web_json_get_num(body, "style", &style) || style < 0 || style >= UI_STYLE_COUNT) {
+            web_resp_error(r, 400, "bad_request", "style");
+            return;
+        }
+        web_ui_run([&] { ui_apply_style((uint8_t)style); });
         web_resp_ok(r);
         return;
     }

@@ -64,7 +64,7 @@ const CAPS = ['files', 'files.flash', 'sd', 'settings', 'time', 'screen', 'input
 
 // ---- state ----
 const sd = { present: true, mounted: true, error: null };
-let settings = { brightness: 60, screen_timeout_s: 15, web_idle_off_s: 600 };
+let settings = { brightness: 60, screen_timeout_s: 15, web_idle_off_s: 600, theme: 0, ui_style: 0 };
 let clock = { offset_ms: 0, tz: 'UTC', offset_min: 0, synced: false };
 let battery = { percent: 76, charging: false, mv: 3968 };
 const PRESETS = [['#00d4aa', '#009977', '#1a1a1a', '#333333', 'Mint'], ['#0088ff', '#0066cc', '#1a1a2e', '#333344', 'Ocean'],
@@ -2684,6 +2684,8 @@ const server = createServer(async (req, res) => {
       if (next.brightness < 0 || next.brightness > 100) return fail(res, 400, 'bad_request', 'brightness 0-100');
       if (next.screen_timeout_s < 0 || next.screen_timeout_s > 255) return fail(res, 400, 'bad_request', 'screen_timeout_s 0-255');
       if (next.web_idle_off_s < 0 || next.web_idle_off_s > 86400) return fail(res, 400, 'bad_request', 'web_idle_off_s 0-86400');
+      if (next.theme < 0 || next.theme > 7) return fail(res, 400, 'bad_request', 'theme out of range');
+      if (next.ui_style < 0 || next.ui_style > 3) return fail(res, 400, 'bad_request', 'ui_style out of range');
       settings = next;
       publish('settings.changed', settings);
       log(`[settings] ${JSON.stringify(settings)}`);

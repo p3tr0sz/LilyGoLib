@@ -740,6 +740,8 @@ void ui_launch_app(app_t *app)
         const char *name = app_name_of(app);
         /* Remembered across a crash restart, so the face can say which app it was. */
         hw_crash_note_app(name);
+        /* Vivid/Expressive: the app wears its category accent while it's open. */
+        ui_app_accent_push(ui_app_category_for(name));
         try {
             (*app->setup_func_cb)(parent);
         } catch (...) {
@@ -747,6 +749,7 @@ void ui_launch_app(app_t *app)
              * for example): drop what it built and go back, without a restart. */
             lv_obj_clean(parent);
             hw_crash_note_app(NULL);
+            ui_app_accent_pop();   /* an app that threw while opening still restores the accent */
             menu_show();
 #if FACTORY_WATCH_UI
             watch_shell_show_face(false);
@@ -1967,6 +1970,9 @@ void setupGui()
     hw_get_user_setting(settings);
     if (settings.theme_preset_idx < UI_THEME_PRESET_COUNT) {
         ui_apply_theme_preset(settings.theme_preset_idx);
+    }
+    if (settings.ui_style_idx < UI_STYLE_COUNT) {
+        ui_active_style = settings.ui_style_idx;   /* read by ui_styles_init() below */
     }
     ui_styles_init();
 

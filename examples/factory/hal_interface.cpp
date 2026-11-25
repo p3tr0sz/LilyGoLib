@@ -8,6 +8,7 @@
  */
 #include <LilyGoLog.h>
 #include "hal_interface.h"
+#include "hw_config.h"
 #include "web_server.h"
 #include <math.h>
 #include <time.h>
@@ -334,6 +335,7 @@ static void set_default_user_setting(user_setting_params_t &setting)
     setting.charger_enable = true;
 #endif
     setting.theme_preset_idx = 0;
+    setting.ui_style_idx = 0;
 }
 
 static void set_default_app_settings(app_settings_storage_t &settings)
@@ -413,6 +415,7 @@ static void print_user_setting(const char *tag, const user_setting_params_t &set
     LILYGO_LOG_PRINTF("  %-22s : %u s\n", "Timeout", (unsigned)setting.disp_timeout_second);
     LILYGO_LOG_PRINTF("  %-22s : %s\n", "Nav auto hide", nav_auto_hide_enabled ? "enabled" : "disabled");
     LILYGO_LOG_PRINTF("  %-22s : %u\n", "Theme preset", (unsigned)setting.theme_preset_idx);
+    LILYGO_LOG_PRINTF("  %-22s : %u\n", "UI style", (unsigned)setting.ui_style_idx);
 
     LILYGO_LOG_PRINTF("[Input]\n");
     LILYGO_LOG_PRINTF("  %-22s : %u\n", "Keyboard backlight", (unsigned)setting.keyboard_bl_level);
@@ -464,6 +467,7 @@ static void print_user_setting_changes(const user_setting_params_t &before,
     changed |= print_setting_change_u32("charger_current", before.charger_current, after.charger_current);
     changed |= print_setting_change_u32("charger_enable", before.charger_enable, after.charger_enable);
     changed |= print_setting_change_u32("theme_preset_idx", before.theme_preset_idx, after.theme_preset_idx);
+    changed |= print_setting_change_u32("ui_style_idx", before.ui_style_idx, after.ui_style_idx);
     if (!changed) {
         LILYGO_LOG_PRINTF("- no change\n");
     }
@@ -478,7 +482,8 @@ static bool user_setting_has_changed(const user_setting_params_t &before,
            before.disp_timeout_second != after.disp_timeout_second ||
            before.charger_current != after.charger_current ||
            before.charger_enable != after.charger_enable ||
-           before.theme_preset_idx != after.theme_preset_idx;
+           before.theme_preset_idx != after.theme_preset_idx ||
+           before.ui_style_idx != after.ui_style_idx;
 }
 
 static uint8_t button_monitor_id = 0;
@@ -540,31 +545,185 @@ static const char *pmu_button_event_name(uint8_t event)
     return "Unknown";
 }
 
-#ifdef ARDUINO
-static bool load_app_settings()
+/* Settings live in settings.json on internal flash, mirrored to the SD card
+ * (hw_config.cpp). Older firmware kept them as a blob in NVS, which the merged
+ * image wipes; load_app_settings() moves that blob over once. */
+#define SETTINGS_FILE "settings.json"
+
+static void json_num(std::string &out, const char *key, double v, bool comma = true)
 {
-    app_settings_storage_t stored = {};
-    bool valid = prefs.getBytes(APP_SETTINGS_KEY, &stored, sizeof(stored)) == sizeof(stored) &&
-                 app_settings_is_valid(stored);
-    if (!valid) {
-        set_default_app_settings(app_settings);
-        return false;
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%s\"%s\":%.0f", comma ? "," : "", key, v);
+    out += buf;
+}
+
+static void app_settings_to_json(const app_settings_storage_t &s, std::string &out)
+{
+    out = "{\n";
+    json_num(out, "version", 1, false);
+    json_num(out, "brightness", s.user.brightness_level);
+    json_num(out, "keyboard_backlight", s.user.keyboard_bl_level);
+    json_num(out, "led_indicator", s.user.led_indicator_level);
+    json_num(out, "screen_timeout_s", s.user.disp_timeout_second);
+    json_num(out, "charger_current_ma", s.user.charger_current);
+    out += s.user.charger_enable ? ",\"charger_enabled\":true" : ",\"charger_enabled\":false";
+    json_num(out, "theme", s.user.theme_preset_idx);
+    json_num(out, "ui_style", s.user.ui_style_idx);
+    out += ",\n";
+    json_num(out, "timezone_offset_s", s.timezone_offset_sec, false);
+    json_num(out, "daylight_offset_s", s.daylight_offset_sec);
+    out += s.nav_auto_hide_enabled ? ",\"nav_auto_hide\":true" : ",\"nav_auto_hide\":false";
+    json_num(out, "rotary_step_divider", s.rotary_step_divider);
+    json_num(out, "audio_jack_mode", s.audio_jack_mode);
+    json_num(out, "mic_input_source", s.mic_input_source);
+    json_num(out, "haptic_effect", s.haptic_effect);
+    out += s.touch_guide_dismissed ? ",\"touch_guide_dismissed\":true" : ",\"touch_guide_dismissed\":false";
+    out += s.keyboard_navigation_mode == KEYBOARD_NAV_DISABLED ?
+           ",\"keyboard_navigation\":false" : ",\"keyboard_navigation\":true";
+    json_num(out, "keyboard_layout", keyboard_layout);
+    out += ",\n";
+    json_num(out, "watch_lock_mode", s.watch_lock_mode, false);
+    json_num(out, "keyboard_accents", s.watch_keyboard_accents);
+    out += s.watch_haptics_off ? ",\"haptics\":false" : ",\"haptics\":true";
+    out += ",\n\"face_slots\":[";
+    for (int i = 0; i < WATCH_FACE_SLOT_COUNT; i++) {
+        const uint8_t *b = s.watch_face_slots[i];
+        uint32_t app = (uint32_t)b[1] | ((uint32_t)b[2] << 8) | ((uint32_t)b[3] << 16) | ((uint32_t)b[4] << 24);
+        out += i ? ",{" : "{";
+        json_num(out, "type", b[0], false);
+        json_num(out, "app", app);
+        out += "}";
     }
-    app_settings = stored;
-    normalize_app_settings(app_settings);
-    return true;
+    out += "],\n\"alarms\":[";
+    for (int i = 0; i < WATCH_ALARM_COUNT; i++) {
+        const uint8_t *b = s.watch_alarms[i];
+        out += i ? ",{" : "{";
+        json_num(out, "flags", b[0], false);
+        json_num(out, "hour", b[1]);
+        json_num(out, "minute", b[2]);
+        json_num(out, "days", b[3]);
+        out += "}";
+    }
+    out += "],\n\"timer_recent\":[";
+    for (int i = 0; i < WATCH_TIMER_RECENT_COUNT; i++) {
+        const uint8_t *b = s.watch_timer_recent[i];
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%s%lu", i ? "," : "",
+                 (unsigned long)(b[0] | (b[1] << 8) | ((uint32_t)b[2] << 16)));
+        out += buf;
+    }
+    out += "]\n}\n";
+}
+
+/* Starts from the defaults, so a key that is missing (or added later) keeps its default. */
+static void app_settings_from_json(const std::string &j, app_settings_storage_t &s)
+{
+    set_default_app_settings(s);
+    double v;
+#define GET(key, field) if (cfg_json_num(j, key, &v)) field = (decltype(field))v
+    GET("brightness", s.user.brightness_level);
+    GET("keyboard_backlight", s.user.keyboard_bl_level);
+    GET("led_indicator", s.user.led_indicator_level);
+    GET("screen_timeout_s", s.user.disp_timeout_second);
+    GET("charger_current_ma", s.user.charger_current);
+    GET("charger_enabled", s.user.charger_enable);
+    GET("theme", s.user.theme_preset_idx);
+    GET("ui_style", s.user.ui_style_idx);
+    GET("timezone_offset_s", s.timezone_offset_sec);
+    GET("daylight_offset_s", s.daylight_offset_sec);
+    GET("nav_auto_hide", s.nav_auto_hide_enabled);
+    GET("rotary_step_divider", s.rotary_step_divider);
+    GET("audio_jack_mode", s.audio_jack_mode);
+    GET("mic_input_source", s.mic_input_source);
+    GET("haptic_effect", s.haptic_effect);
+    GET("touch_guide_dismissed", s.touch_guide_dismissed);
+    GET("watch_lock_mode", s.watch_lock_mode);
+    GET("keyboard_accents", s.watch_keyboard_accents);
+#undef GET
+    if (cfg_json_num(j, "keyboard_navigation", &v)) {
+        s.keyboard_navigation_mode = v ? KEYBOARD_NAV_ENABLED : KEYBOARD_NAV_DISABLED;
+    }
+    if (cfg_json_num(j, "haptics", &v)) s.watch_haptics_off = v ? 0 : 1;
+    if (cfg_json_num(j, "keyboard_layout", &v)) {
+        keyboard_layout = (uint8_t)v == KEYBOARD_LAYOUT_AZERTY ? KEYBOARD_LAYOUT_AZERTY : KEYBOARD_LAYOUT_QWERTY;
+        keyboard_layout_loaded = true;
+    }
+
+    std::string raw;
+    std::vector<std::string> items;
+    if (cfg_json_raw(j, "face_slots", raw)) {
+        cfg_json_items(raw, items);
+        for (size_t i = 0; i < items.size() && i < WATCH_FACE_SLOT_COUNT; i++) {
+            uint8_t *b = s.watch_face_slots[i];
+            if (cfg_json_num(items[i], "type", &v)) b[0] = (uint8_t)v;
+            if (cfg_json_num(items[i], "app", &v)) {
+                uint32_t app = (uint32_t)v;
+                b[1] = app & 0xFF; b[2] = (app >> 8) & 0xFF; b[3] = (app >> 16) & 0xFF; b[4] = (app >> 24) & 0xFF;
+            }
+        }
+    }
+    if (cfg_json_raw(j, "alarms", raw)) {
+        cfg_json_items(raw, items);
+        static const char *const keys[4] = {"flags", "hour", "minute", "days"};
+        for (size_t i = 0; i < items.size() && i < WATCH_ALARM_COUNT; i++) {
+            for (int k = 0; k < 4; k++) {
+                if (cfg_json_num(items[i], keys[k], &v)) s.watch_alarms[i][k] = (uint8_t)v;
+            }
+        }
+    }
+    if (cfg_json_raw(j, "timer_recent", raw)) {
+        cfg_json_items(raw, items);
+        for (size_t i = 0; i < items.size() && i < WATCH_TIMER_RECENT_COUNT; i++) {
+            uint32_t sec = (uint32_t)strtoul(items[i].c_str(), NULL, 10);
+            s.watch_timer_recent[i][0] = sec & 0xFF;
+            s.watch_timer_recent[i][1] = (sec >> 8) & 0xFF;
+            s.watch_timer_recent[i][2] = (sec >> 16) & 0xFF;
+        }
+    }
 }
 
 static bool save_app_settings()
 {
     normalize_app_settings(app_settings);
-    bool saved = prefs.putBytes(APP_SETTINGS_KEY, &app_settings, sizeof(app_settings)) == sizeof(app_settings);
+    std::string json;
+    app_settings_to_json(app_settings, json);
+    bool saved = hw_config_write(SETTINGS_FILE, json);
     if (!saved) {
         LILYGO_LOG_E("Failed to save app settings");
     }
     return saved;
 }
+
+static bool load_app_settings()
+{
+    std::string json;
+    if (hw_config_read(SETTINGS_FILE, json)) {
+        app_settings_from_json(json, app_settings);
+        normalize_app_settings(app_settings);
+        return true;
+    }
+#ifdef ARDUINO
+    /* First boot on this firmware: carry the old NVS settings over. */
+    app_settings_storage_t stored = {};
+    bool valid = prefs.getBytes(APP_SETTINGS_KEY, &stored, sizeof(stored)) == sizeof(stored) &&
+                 app_settings_is_valid(stored);
+    if (valid) {
+        app_settings = stored;
+        Preferences layout_prefs;
+        if (layout_prefs.begin("kb_layout", true)) {
+            keyboard_layout = layout_prefs.getUChar("layout", KEYBOARD_LAYOUT_QWERTY) == KEYBOARD_LAYOUT_AZERTY ?
+                              KEYBOARD_LAYOUT_AZERTY : KEYBOARD_LAYOUT_QWERTY;
+            layout_prefs.end();
+        }
+        keyboard_layout_loaded = true;
+        LILYGO_LOG_PRINTLN("Moved settings from NVS to " SETTINGS_FILE);
+        save_app_settings();
+        return true;
+    }
 #endif
+    set_default_app_settings(app_settings);
+    return false;
+}
 
 
 static const char *hw_devices[] = {
@@ -2274,7 +2433,7 @@ void hw_init()
     });
 
 #else
-    set_default_app_settings(app_settings);
+    load_app_settings();
     apply_app_settings(app_settings);
 #endif
 
@@ -2294,9 +2453,7 @@ void hw_set_user_setting(user_setting_params_t &param)
 
     user_setting = param;
     app_settings.user = user_setting;
-#ifdef ARDUINO
     save_app_settings();
-#endif
     print_user_setting_changes(previous, user_setting);
     print_user_setting("SET", user_setting);
 }
@@ -2310,9 +2467,7 @@ void hw_set_nav_auto_hide_enabled(bool enabled)
 {
     nav_auto_hide_enabled = enabled;
     app_settings.nav_auto_hide_enabled = enabled ? 1 : 0;
-#ifdef ARDUINO
     save_app_settings();
-#endif
     LILYGO_LOG_PRINTF("nav_auto_hide       :%u\n", (unsigned)enabled);
 }
 
@@ -2329,9 +2484,7 @@ void hw_set_keyboard_navigation_enabled(bool enabled)
 {
     keyboard_navigation_enabled = enabled;
     app_settings.keyboard_navigation_mode = enabled ? KEYBOARD_NAV_ENABLED : KEYBOARD_NAV_DISABLED;
-#ifdef ARDUINO
     save_app_settings();
-#endif
     LILYGO_LOG_PRINTF("keyboard_navigation :%u\n", (unsigned)enabled);
 }
 
@@ -2344,9 +2497,7 @@ void hw_set_touch_guide_dismissed(bool dismissed)
 {
     touch_guide_dismissed = dismissed;
     app_settings.touch_guide_dismissed = dismissed ? 1 : 0;
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 uint8_t hw_get_watch_lock_mode(void)
@@ -2359,40 +2510,58 @@ void hw_set_watch_lock_mode(uint8_t mode)
 {
     if (mode >= WATCH_LOCK_MODE_COUNT || mode == app_settings.watch_lock_mode) return;
     app_settings.watch_lock_mode = mode;
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
-/* The app list order is too big for the settings blob's spare bytes, so it has
- * its own Preferences namespace. The simulator keeps it in a file next to the
- * program's working directory, so a reorder survives a restart there too. */
+/* The app list order (app name hashes) has its own file, app_order.json, next
+ * to settings.json. Older firmware kept it in NVS ("app_order"), and older
+ * simulators in watch_app_order.bin; the first read moves it over. */
+#define APP_ORDER_FILE "app_order.json"
 static uint32_t app_order[WATCH_APP_ORDER_MAX];
 static uint8_t app_order_count = 0;
 static bool app_order_loaded = false;
-#ifndef ARDUINO
-static const char *APP_ORDER_FILE = "watch_app_order.bin";
-#endif
+
+static void app_order_save(void)
+{
+    std::string json = "{\"order\":[";
+    for (uint8_t i = 0; i < app_order_count; i++) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%s%lu", i ? "," : "", (unsigned long)app_order[i]);
+        json += buf;
+    }
+    json += "]}\n";
+    hw_config_write(APP_ORDER_FILE, json);
+}
 
 uint8_t hw_get_watch_app_order(uint32_t *out, uint8_t max)
 {
     if (!app_order_loaded) {
         app_order_loaded = true;
-        size_t bytes = 0;
+        std::string json, raw;
+        if (hw_config_read(APP_ORDER_FILE, json) && cfg_json_raw(json, "order", raw)) {
+            std::vector<std::string> items;
+            cfg_json_items(raw, items);
+            for (size_t i = 0; i < items.size() && app_order_count < WATCH_APP_ORDER_MAX; i++) {
+                app_order[app_order_count++] = (uint32_t)strtoul(items[i].c_str(), NULL, 10);
+            }
+        } else {
+            size_t bytes = 0;
 #ifdef ARDUINO
-        Preferences order_prefs;
-        if (order_prefs.begin("app_order", true)) {
-            bytes = order_prefs.getBytes("order", app_order, sizeof(app_order));
-            order_prefs.end();
-        }
+            Preferences order_prefs;
+            if (order_prefs.begin("app_order", true)) {
+                bytes = order_prefs.getBytes("order", app_order, sizeof(app_order));
+                order_prefs.end();
+            }
 #else
-        FILE *f = fopen(APP_ORDER_FILE, "rb");
-        if (f) {
-            bytes = fread(app_order, 1, sizeof(app_order), f);
-            fclose(f);
-        }
+            FILE *f = fopen("watch_app_order.bin", "rb");
+            if (f) {
+                bytes = fread(app_order, 1, sizeof(app_order), f);
+                fclose(f);
+            }
 #endif
-        app_order_count = (uint8_t)(bytes / sizeof(uint32_t));
+            app_order_count = (uint8_t)(bytes / sizeof(uint32_t));
+            if (app_order_count) app_order_save();
+        }
     }
     uint8_t n = app_order_count < max ? app_order_count : max;
     memcpy(out, app_order, n * sizeof(uint32_t));
@@ -2406,19 +2575,7 @@ void hw_set_watch_app_order(const uint32_t *hashes, uint8_t count)
     if (count == app_order_count && memcmp(app_order, hashes, count * sizeof(uint32_t)) == 0) return;
     memcpy(app_order, hashes, count * sizeof(uint32_t));
     app_order_count = count;
-#ifdef ARDUINO
-    Preferences order_prefs;
-    if (order_prefs.begin("app_order", false)) {
-        order_prefs.putBytes("order", app_order, count * sizeof(uint32_t));
-        order_prefs.end();
-    }
-#else
-    FILE *f = fopen(APP_ORDER_FILE, "wb");
-    if (f) {
-        fwrite(app_order, sizeof(uint32_t), count, f);
-        fclose(f);
-    }
-#endif
+    app_order_save();
 }
 
 watch_slot_setting_t hw_get_watch_face_slot(uint8_t index)
@@ -2442,9 +2599,7 @@ void hw_set_watch_face_slot(uint8_t index, const watch_slot_setting_t &slot)
     };
     if (memcmp(app_settings.watch_face_slots[index], stored, sizeof(stored)) == 0) return;
     memcpy(app_settings.watch_face_slots[index], stored, sizeof(stored));
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 #define WATCH_ALARM_USED     0x01
@@ -2477,9 +2632,7 @@ void hw_set_watch_alarm(uint8_t index, const watch_alarm_t &alarm)
     }
     if (memcmp(app_settings.watch_alarms[index], stored, sizeof(stored)) == 0) return;
     memcpy(app_settings.watch_alarms[index], stored, sizeof(stored));
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 uint8_t hw_get_watch_keyboard_accents(void)
@@ -2491,9 +2644,7 @@ void hw_set_watch_keyboard_accents(uint8_t language)
 {
     if (language == app_settings.watch_keyboard_accents) return;
     app_settings.watch_keyboard_accents = language;
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 bool hw_get_watch_haptics(void)
@@ -2505,9 +2656,7 @@ void hw_set_watch_haptics(bool on)
 {
     if (on == hw_get_watch_haptics()) return;
     app_settings.watch_haptics_off = on ? 0 : 1;
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 uint32_t hw_get_watch_timer_recent(uint8_t index)
@@ -2536,9 +2685,7 @@ void hw_add_watch_timer_recent(uint32_t seconds)
     }
     if (memcmp(app_settings.watch_timer_recent, stored, sizeof(stored)) == 0) return;
     memcpy(app_settings.watch_timer_recent, stored, sizeof(stored));
-#ifdef ARDUINO
     save_app_settings();
-#endif
 }
 
 const uint32_t hw_get_disp_timeout_ms()
@@ -3238,6 +3385,10 @@ void hw_get_wifi_scan_result(vector < wifi_scan_params_t > &list)
 #endif
 }
 
+#ifdef ARDUINO
+static void wifi_pending_set(const wifi_conn_params_t &params);
+#endif
+
 void hw_set_wifi_connect(wifi_conn_params_t &params)
 {
     LILYGO_LOG_PRINTF("hw_set_wifi_connect:ssid:<%s> password <%s>\n", params.ssid, params.password);
@@ -3246,8 +3397,129 @@ void hw_set_wifi_connect(wifi_conn_params_t &params)
     String password = params.password;
     LILYGO_LOG_PRINT("SSID :"); LILYGO_LOG_PRINTLN(ssid);
     LILYGO_LOG_PRINT("PWD :"); LILYGO_LOG_PRINTLN(password);
+    wifi_pending_set(params);
     WiFi.begin(ssid, password);
 #endif
+}
+
+/* Saved Wi-Fi networks, newest first, in wifi.json (internal flash, mirrored to
+ * the SD card like settings.json). The GOT_IP event runs on the Wi-Fi event task,
+ * so it only flags the join; hw_wifi_poll() writes the file from the main loop. */
+#define WIFI_SAVED_FILE  "wifi.json"
+
+#ifdef ARDUINO
+static portMUX_TYPE        wifi_pending_mux = portMUX_INITIALIZER_UNLOCKED;
+static wifi_conn_params_t  wifi_pending;
+static bool                wifi_pending_valid = false;
+static volatile bool       wifi_joined = false;
+
+static void wifi_pending_set(const wifi_conn_params_t &params)
+{
+    portENTER_CRITICAL(&wifi_pending_mux);
+    wifi_pending = params;
+    wifi_pending_valid = params.ssid[0] != '\0';
+    portEXIT_CRITICAL(&wifi_pending_mux);
+}
+#endif
+
+static size_t wifi_saved_load(wifi_conn_params_t *list)
+{
+    memset(list, 0, sizeof(wifi_conn_params_t) * WIFI_SAVED_MAX);
+    std::string json, raw;
+    if (!hw_config_read(WIFI_SAVED_FILE, json) || !cfg_json_raw(json, "networks", raw)) return 0;
+    std::vector<std::string> items;
+    cfg_json_items(raw, items);
+    size_t count = 0;
+    for (size_t i = 0; i < items.size() && count < WIFI_SAVED_MAX; i++) {
+        std::string ssid, pass;
+        if (!cfg_json_str(items[i], "ssid", ssid) || ssid.empty()) continue;
+        cfg_json_str(items[i], "password", pass);
+        copy_cstr(list[count].ssid, sizeof(list[count].ssid), ssid.c_str());
+        copy_cstr(list[count].password, sizeof(list[count].password), pass.c_str());
+        count++;
+    }
+    return count;
+}
+
+static void wifi_saved_store(const wifi_conn_params_t *list, size_t count)
+{
+    std::string json = "{\"networks\":[\n";
+    for (size_t i = 0; i < count; i++) {
+        json += i ? ",\n{\"ssid\":" : "{\"ssid\":";
+        cfg_json_quote(json, list[i].ssid);
+        json += ",\"password\":";
+        cfg_json_quote(json, list[i].password);
+        json += "}";
+    }
+    json += "\n]}\n";
+    hw_config_write(WIFI_SAVED_FILE, json);
+}
+
+/* Moves `joined` to the front of the saved list. */
+static void wifi_saved_remember(const wifi_conn_params_t &joined)
+{
+    wifi_conn_params_t list[WIFI_SAVED_MAX];
+    size_t count = wifi_saved_load(list);
+    if (count > 0 && strcmp(list[0].ssid, joined.ssid) == 0 &&
+            strcmp(list[0].password, joined.password) == 0) {
+        return;     /* Already the newest; skip the write */
+    }
+    wifi_conn_params_t out[WIFI_SAVED_MAX];
+    memset(out, 0, sizeof(out));
+    out[0] = joined;
+    size_t n = 1;
+    for (size_t i = 0; i < count && n < WIFI_SAVED_MAX; i++) {
+        if (strcmp(list[i].ssid, joined.ssid) != 0) out[n++] = list[i];
+    }
+    wifi_saved_store(out, n);
+    LILYGO_LOG_PRINTF("Saved Wi-Fi network %s (%u saved)\n", joined.ssid, (unsigned)n);
+}
+
+void hw_wifi_remember_connected(void)
+{
+#ifdef ARDUINO
+    wifi_joined = true;
+#endif
+}
+
+void hw_wifi_poll(void)
+{
+#ifdef ARDUINO
+    if (!wifi_joined) return;
+    wifi_joined = false;
+    wifi_conn_params_t joined;
+    portENTER_CRITICAL(&wifi_pending_mux);
+    bool valid = wifi_pending_valid;
+    joined = wifi_pending;
+    wifi_pending_valid = false;
+    portEXIT_CRITICAL(&wifi_pending_mux);
+    /* Only a join we started, and only once it reached the network it asked for. */
+    if (!valid || strcmp(WiFi.SSID().c_str(), joined.ssid) != 0) return;
+    wifi_saved_remember(joined);
+#endif
+}
+
+bool hw_wifi_saved_password(const char *ssid, char *out, size_t out_len)
+{
+    if (!ssid || !out || out_len == 0) return false;
+    out[0] = '\0';
+    wifi_conn_params_t list[WIFI_SAVED_MAX];
+    size_t count = wifi_saved_load(list);
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(list[i].ssid, ssid) == 0) {
+            snprintf(out, out_len, "%s", list[i].password);
+            return true;
+        }
+    }
+    return false;
+}
+
+void hw_wifi_autoconnect(void)
+{
+    wifi_conn_params_t list[WIFI_SAVED_MAX];
+    if (wifi_saved_load(list) == 0) return;
+    LILYGO_LOG_PRINTF("Rejoining saved Wi-Fi network %s\n", list[0].ssid);
+    hw_set_wifi_connect(list[0]);
 }
 
 bool hw_get_wifi_connected()
@@ -3766,9 +4038,7 @@ void hw_set_mic_input_source(uint8_t source)
     apply_mic_input_source(applied);
 #endif
     app_settings.mic_input_source = applied;
-#ifdef ARDUINO
     save_app_settings();
-#endif
     LILYGO_LOG_PRINTF("mic_input_source    :%u\n", (unsigned)applied);
 }
 
@@ -4549,15 +4819,10 @@ void hw_set_keyboard_read_callback(void(*read)(int state, char &c))
 void hw_set_keyboard_layout(uint8_t layout)
 {
     layout = layout == KEYBOARD_LAYOUT_AZERTY ? KEYBOARD_LAYOUT_AZERTY : KEYBOARD_LAYOUT_QWERTY;
+    bool changed = keyboard_layout != layout;
     keyboard_layout = layout;
     keyboard_layout_loaded = true;
-#if defined(ARDUINO)
-    Preferences layout_prefs;
-    if (layout_prefs.begin("kb_layout", false)) {
-        layout_prefs.putUChar("layout", layout);
-        layout_prefs.end();
-    }
-#endif
+    if (changed) save_app_settings();     /* settings.json keeps the layout */
 #if defined(ARDUINO) && defined(ARDUINO_T_DECK_V2)
     instance.kb.setLayout(static_cast<KeyboardLayoutType>(layout));
 #elif defined(ARDUINO) && defined(ARDUINO_T_DECK)
@@ -4567,18 +4832,7 @@ void hw_set_keyboard_layout(uint8_t layout)
 
 uint8_t hw_get_keyboard_layout()
 {
-#if defined(ARDUINO)
-    if (!keyboard_layout_loaded) {
-        Preferences layout_prefs;
-        if (layout_prefs.begin("kb_layout", true)) {
-            uint8_t saved = layout_prefs.getUChar("layout", KEYBOARD_LAYOUT_QWERTY);
-            layout_prefs.end();
-            keyboard_layout = saved == KEYBOARD_LAYOUT_AZERTY ?
-                              KEYBOARD_LAYOUT_AZERTY : KEYBOARD_LAYOUT_QWERTY;
-        }
-        keyboard_layout_loaded = true;
-    }
-#endif
+    /* load_app_settings() (hw_init) reads the layout from settings.json. */
 #if defined(ARDUINO) && (defined(ARDUINO_T_DECK_V2) || defined(ARDUINO_T_DECK))
     instance.kb.setLayout(static_cast<KeyboardLayoutType>(keyboard_layout));
     return static_cast<uint8_t>(instance.kb.getLayout());
@@ -4959,9 +5213,7 @@ void hw_set_audio_jack_mode(uint8_t mode)
     audio_jack_mode = applied;
 #endif
     app_settings.audio_jack_mode = applied;
-#ifdef ARDUINO
     save_app_settings();
-#endif
     LILYGO_LOG_PRINTF("audio_jack_mode     :%u\n", (unsigned)applied);
 }
 
@@ -5103,7 +5355,8 @@ static constexpr uint32_t MAG_CAL_MAGIC = 0x4D414734; // MAG4, Rev0.7 board-side
 #else
 static constexpr uint32_t MAG_CAL_MAGIC = 0x4D414733; // MAG3, board-side remap applied
 #endif
-static const char *MAG_CAL_KEY = "mag_cal";
+static const char *MAG_CAL_KEY = "mag_cal";      /* Old NVS home, read once */
+#define MAG_CAL_FILE "compass.json"
 
 typedef struct {
     uint32_t magic;
@@ -5248,23 +5501,35 @@ bool hw_mag_save_calibration(const mag_calibration_t &cal)
     mag_calibration_t saved = cal;
     saved.valid = true;
     hw_mag_set_runtime_offset(saved);
-#ifdef ARDUINO
-    mag_cal_storage_t store = {MAG_CAL_MAGIC, saved};
-    return prefs.putBytes(MAG_CAL_KEY, &store, sizeof(store)) == sizeof(store);
-#else
-    return true;
-#endif
+    /* "layout" is the board's axis remap; a calibration made under another one is ignored. */
+    char json[128];
+    snprintf(json, sizeof(json), "{\"layout\":%lu,\"x\":%d,\"y\":%d,\"z\":%d}\n",
+             (unsigned long)MAG_CAL_MAGIC, saved.x, saved.y, saved.z);
+    return hw_config_write(MAG_CAL_FILE, json);
 }
 
 bool hw_mag_load_calibration(mag_calibration_t *cal)
 {
+    std::string json;
+    double layout, x, y, z;
+    if (hw_config_read(MAG_CAL_FILE, json) && cfg_json_num(json, "layout", &layout) &&
+            (uint32_t)layout == MAG_CAL_MAGIC && cfg_json_num(json, "x", &x) &&
+            cfg_json_num(json, "y", &y) && cfg_json_num(json, "z", &z)) {
+        mag_calibration_t loaded = {(int16_t)x, (int16_t)y, (int16_t)z, true};
+        hw_mag_set_runtime_offset(loaded);
+        if (cal) {
+            *cal = loaded;
+        }
+        return true;
+    }
 #ifdef ARDUINO
+    /* Older firmware kept it in NVS; move it over once. */
     mag_cal_storage_t store = {};
     bool valid = prefs.getBytes(MAG_CAL_KEY, &store, sizeof(store)) == sizeof(store) &&
                  store.magic == MAG_CAL_MAGIC &&
                  store.cal.valid;
     if (valid) {
-        hw_mag_set_runtime_offset(store.cal);
+        hw_mag_save_calibration(store.cal);
         if (cal) {
             *cal = store.cal;
         }
@@ -5286,6 +5551,7 @@ void hw_mag_get_calibration(mag_calibration_t &cal)
 
 void hw_mag_clear_calibration()
 {
+    hw_config_write(MAG_CAL_FILE, "{}\n");     /* No x/y/z: not calibrated */
 #ifdef ARDUINO
     prefs.remove(MAG_CAL_KEY);
 #endif

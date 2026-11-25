@@ -458,6 +458,19 @@ static void theme_preset_cb(lv_event_t *e)
     hw_set_user_setting(local_param);
 }
 
+static uint8_t ui_style_idx_local = 0;
+
+static void ui_style_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
+    ui_style_idx_local = lv_dropdown_get_selected(obj);
+    ui_apply_style(ui_style_idx_local);
+    ui_theme_apply();
+
+    local_param.ui_style_idx = ui_style_idx_local;
+    hw_set_user_setting(local_param);
+}
+
 static void font_size_cb(lv_event_t *e)
 {
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
@@ -659,6 +672,14 @@ static bool run_sys_deferred_step()
         }
         ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_SETTINGS), "Theme",
                               theme_options, theme_preset_idx, theme_preset_cb);
+
+        char style_options[128] = {0};
+        for (uint8_t i = 0; i < UI_STYLE_COUNT; i++) {
+            if (i > 0) lv_strcat(style_options, "\n");
+            lv_strcat(style_options, ui_style_name(i));
+        }
+        ui_create_card_picker(sys_deferred_card, SYS_ICON(LV_SYMBOL_IMAGE), "UI Style",
+                              style_options, ui_style_idx_local, ui_style_cb);
         sys_deferred_step = UI_SYS_BUILD_ROTARY;
         break;
     }
@@ -1135,6 +1156,7 @@ void ui_sys_enter(lv_obj_t *parent)
     menu_g = lv_group_get_default();
     hw_get_user_setting(local_param);
     theme_preset_idx = local_param.theme_preset_idx;
+    ui_style_idx_local = local_param.ui_style_idx;
     sys_label.datetime_label = NULL;
     sys_label.wifi_rssi_label = NULL;
     sys_label.batt_voltage_label = NULL;

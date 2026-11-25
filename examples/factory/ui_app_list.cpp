@@ -226,6 +226,10 @@ static void app_list_add_row(lv_obj_t *parent, const ui_app_entry_t *entry)
     lv_obj_t *disc = lv_obj_create(row);
     lv_obj_set_size(disc, APP_LIST_ICON_DISC, APP_LIST_ICON_DISC);
     lv_obj_add_style(disc, &ui_styles.accent_btn, 0);
+    /* Vivid/Expressive: tint each icon disc by the app's category. */
+    if (ui_style_has_category_colors() && entry->category) {
+        lv_obj_set_style_bg_color(disc, lv_color_hex(ui_category_color(entry->category)), 0);
+    }
     lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_pad_all(disc, 0, 0);
     lv_obj_remove_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
@@ -332,7 +336,13 @@ uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max)
 
 static void chip_set_selected(lv_obj_t *chip, bool on)
 {
-    lv_obj_set_style_bg_color(chip, on ? UI_COLOR_ACCENT : UI_COLOR_CARD_BG, 0);
+    /* Vivid/Expressive: the selected chip glows in its category's colour. */
+    lv_color_t sel = UI_COLOR_ACCENT;
+    const char *cat = (const char *)lv_obj_get_user_data(chip);
+    if (ui_style_has_category_colors() && cat) {
+        sel = lv_color_hex(ui_category_color(cat));
+    }
+    lv_obj_set_style_bg_color(chip, on ? sel : UI_COLOR_CARD_BG, 0);
     lv_obj_t *label = lv_obj_get_child(chip, 0);
     if (label) {
         lv_obj_set_style_text_color(label, on ? lv_color_black() : UI_COLOR_TEXT_SECONDARY, 0);
@@ -363,6 +373,29 @@ static void app_list_apply_filter(void)
         }
     }
     lv_obj_scroll_to_y(list_ui.scroll, 0, LV_ANIM_OFF);
+}
+
+/* Recolour the already-built launcher in place when the UI Style changes, so
+ * switching styles in Settings is live — no reopen/reboot. Each row's icon disc
+ * follows its category (Vivid/Expressive) or the theme accent (Classic/Deep);
+ * chips refresh through the filter pass. */
+void ui_app_list_restyle(void)
+{
+    if (list_ui.scroll) {
+        uint32_t children = lv_obj_get_child_count(list_ui.scroll);
+        for (uint32_t i = 0; i < children; i++) {
+            lv_obj_t *row = lv_obj_get_child(list_ui.scroll, i);
+            const ui_app_entry_t *entry = (const ui_app_entry_t *)lv_obj_get_user_data(row);
+            if (!entry) continue;                       /* skip the Arrange row */
+            lv_obj_t *disc = lv_obj_get_child(row, 0);  /* icon disc is child 0 */
+            if (!disc) continue;
+            lv_color_t c = (ui_style_has_category_colors() && entry->category)
+                           ? lv_color_hex(ui_category_color(entry->category))
+                           : UI_COLOR_ACCENT;
+            lv_obj_set_style_bg_color(disc, c, 0);
+        }
+    }
+    app_list_apply_filter();   /* refreshes chip colours for the active filter */
 }
 
 static void chip_event_cb(lv_event_t *e)

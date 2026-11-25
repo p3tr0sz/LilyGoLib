@@ -201,6 +201,8 @@ with zipfile.ZipFile(src) as a, zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED) 
   await js(`$type(document.querySelector('.lp-search'), '');`);
   await js(`document.querySelector('.launcher .tile[data-id=settings]').click();`);
   check('clicking a launchpad icon opens the app', await waitFor('document.querySelector(".win .settings")'));
+  check('settings shows an Appearance section', await waitFor('(() => [...document.querySelectorAll(".settings section h3")].some((e) => e.textContent === "Appearance"))()'));
+  check('Appearance has Theme + UI style selects', await waitFor('document.querySelector(".srow[data-setting=theme] select") && document.querySelector(".srow[data-setting=ui-style] select")'));
   check('the dock lists the running app', await waitFor('$t(".dock-task .lbl", "Settings")'));
   check('the launchpad hides while a window is open', await waitFor('document.querySelector(".launcher").classList.contains("hidden")'));
   await js(`document.querySelector('.win .win-min').click();`);

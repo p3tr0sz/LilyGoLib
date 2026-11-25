@@ -1383,14 +1383,104 @@ uint32_t ui_active_accent_dim = 0x009977;
 uint32_t ui_active_card_bg = 0x1A1A1A;
 uint32_t ui_active_track = 0x333333;
 
+/* The theme's own accent, kept so a per-app category accent can be restored. */
+static uint32_t ui_theme_base_accent = 0x00D4AA;
+static uint32_t ui_theme_base_accent_dim = 0x009977;
+
 void ui_apply_theme_preset(uint8_t preset_idx)
 {
     if (preset_idx >= UI_THEME_PRESET_COUNT) return;
     const ui_theme_preset_t *p = &ui_theme_presets[preset_idx];
     ui_active_accent = p->accent;
     ui_active_accent_dim = p->accent_dim;
+    ui_theme_base_accent = p->accent;
+    ui_theme_base_accent_dim = p->accent_dim;
     ui_active_card_bg = p->card_bg;
     ui_active_track = p->track;
+}
+
+/* ── UI style mode ── */
+uint8_t ui_active_style = UI_STYLE_CLASSIC;
+
+static const char *const s_style_names[UI_STYLE_COUNT] = {
+    "Classic", "Vivid", "Deep", "Expressive",
+};
+
+const char *ui_style_name(uint8_t idx)
+{
+    return idx < UI_STYLE_COUNT ? s_style_names[idx] : s_style_names[0];
+}
+
+void watch_face_rebuild(void);   /* ui_watch_face.cpp — recolour face complications */
+
+/* Darken a 0xRRGGBB colour toward black by `pct` percent (for pressed/dim). */
+static uint32_t darken(uint32_t c, uint8_t pct)
+{
+    uint32_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    r = r * (100 - pct) / 100;
+    g = g * (100 - pct) / 100;
+    b = b * (100 - pct) / 100;
+    return (r << 16) | (g << 8) | b;
+}
+
+/* On Vivid/Expressive, an opening app "wears" its category colour: its buttons,
+ * switches, sliders and accent text follow the category while it's on screen.
+ * Classic/Deep keep the theme accent. Push before building the app; pop on the
+ * way back so the launcher/face return to the theme accent. */
+void ui_app_accent_push(const char *category)
+{
+    uint32_t a = (ui_style_has_category_colors() && category)
+                 ? ui_category_color(category) : ui_theme_base_accent;
+    if (a == ui_active_accent) return;
+    ui_active_accent = a;
+    ui_active_accent_dim = (a == ui_theme_base_accent) ? ui_theme_base_accent_dim : darken(a, 30);
+    ui_styles_refresh();   /* app is built next, so new widgets pick this up */
+}
+
+void ui_app_accent_pop(void)
+{
+    if (ui_active_accent == ui_theme_base_accent) return;
+    ui_active_accent = ui_theme_base_accent;
+    ui_active_accent_dim = ui_theme_base_accent_dim;
+    ui_theme_apply();      /* repaint the now-visible launcher/face to the theme accent */
+}
+
+void ui_apply_style(uint8_t idx)
+{
+    if (idx >= UI_STYLE_COUNT) idx = UI_STYLE_CLASSIC;
+    ui_active_style = idx;
+    /* Card elevation/gradient lives on shared styles, so a refresh applies Deep
+     * to every card live. */
+    ui_styles_refresh();
+    /* Icon/chip/complication colouring is per-object, so recolour the already-
+     * built launcher and face in place — makes the switch instant. */
+    ui_app_list_restyle();
+    watch_face_rebuild();
+}
+
+/* Per-category accent. Hues chosen to stay distinct and legible on the dark
+ * card background; kept in APP_CATEGORY_ORDER spirit. */
+uint32_t ui_category_color(const char *category)
+{
+    if (!ui_style_has_category_colors() || !category) return ui_active_accent;
+    struct { const char *name; uint32_t color; } map[] = {
+        { "WiFi",      0x3B9EFF },  /* blue    */
+        { "Bluetooth", 0x5B6CFF },  /* indigo  */
+        { "RF",        0xFF8A3D },  /* orange  */
+        { "IR",        0xFF5A5A },  /* red     */
+        { "NFC",       0xB06CFF },  /* purple  */
+        { "USB",       0x2BC4C4 },  /* teal    */
+        { "GNSS",      0x35C759 },  /* green   */
+        { "Sensors",   0x9BD43B },  /* lime    */
+        { "Media",     0xFF5FA2 },  /* pink    */
+        { "Clock",     0xFFC24B },  /* amber   */
+        { "Security",  0xFF3B6B },  /* crimson */
+        { "Tools",     0x8A93A6 },  /* slate   */
+    };
+    for (auto &m : map) {
+        if (strcmp(category, m.name) == 0) return m.color;
+    }
+    return ui_active_accent;
 }
 
 void ui_add_accent_focus_style(lv_obj_t *obj)

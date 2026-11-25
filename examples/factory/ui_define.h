@@ -94,6 +94,42 @@ extern uint32_t ui_active_accent_dim;
 extern uint32_t ui_active_card_bg;
 extern uint32_t ui_active_track;
 
+/* ── UI style mode (runtime mutable) ──
+ * A second axis on top of the colour-theme presets: it changes HOW the UI is
+ * styled, not just the accent hue. Classic is today's flat look; Vivid colours
+ * launcher icons/chips by app category; Deep lifts cards with a gradient and
+ * shadow; Expressive combines both and enriches the watch face. */
+enum {
+    UI_STYLE_CLASSIC = 0,
+    UI_STYLE_VIVID,
+    UI_STYLE_DEEP,
+    UI_STYLE_EXPRESSIVE,
+    UI_STYLE_COUNT,
+};
+extern uint8_t ui_active_style;
+const char *ui_style_name(uint8_t idx);
+void ui_apply_style(uint8_t idx);
+/* Recolour the already-built launcher live on a style change (defined in
+ * ui_app_list.cpp; safe no-op before the launcher exists). */
+void ui_app_list_restyle(void);
+/* Make an opening app wear its category accent (Vivid/Expressive); pop restores
+ * the theme accent for the launcher/face. */
+void ui_app_accent_push(const char *category);
+void ui_app_accent_pop(void);
+/* true when category colouring should drive icons/chips (Vivid, Expressive). */
+static inline bool ui_style_has_category_colors(void)
+{
+    return ui_active_style == UI_STYLE_VIVID || ui_active_style == UI_STYLE_EXPRESSIVE;
+}
+/* true when cards get elevation + gradient (Deep, Expressive). */
+static inline bool ui_style_has_depth(void)
+{
+    return ui_active_style == UI_STYLE_DEEP || ui_active_style == UI_STYLE_EXPRESSIVE;
+}
+/* Per-category accent (0xRRGGBB). Falls back to the theme accent for unknown
+ * categories or when category colouring is off. */
+uint32_t ui_category_color(const char *category);
+
 #define UI_COLOR_BG           lv_color_black()
 #define UI_COLOR_CARD_BG      lv_color_hex(ui_active_card_bg)
 #define UI_COLOR_CARD_FOCUS   lv_color_hex(0x2A2A2A)

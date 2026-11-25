@@ -20,6 +20,44 @@ static lv_style_t s_btn;
 static lv_style_t s_switch_off, s_switch_on, s_switch_knob, s_dropdown, s_dropdown_list;
 static bool styles_initialized = false;
 
+/* Lighten a 0xRRGGBB colour by `amt` per channel (clamped) for gradient tops. */
+static uint32_t lighten(uint32_t c, uint8_t amt)
+{
+    uint8_t r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    r = (r + amt > 255) ? 255 : r + amt;
+    g = (g + amt > 255) ? 255 : g + amt;
+    b = (b + amt > 255) ? 255 : b + amt;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+/* Deep/Expressive styles lift cards with a vertical gradient + soft shadow;
+   Classic/Vivid keep them flat. Applied to the shared card + button styles so
+   a style switch updates every card live on the next refresh. */
+static void apply_depth_to_card_styles(void)
+{
+    bool depth = ui_style_has_depth();
+    lv_style_t *cards[] = { &ui_styles.card, &s_btn };
+    for (lv_style_t *st : cards) {
+        if (depth) {
+            lv_style_set_bg_color(st, lv_color_hex(lighten(ui_active_card_bg, 20)));
+            lv_style_set_bg_grad_color(st, lv_color_hex(ui_active_card_bg));
+            lv_style_set_bg_grad_dir(st, LV_GRAD_DIR_VER);
+            lv_style_set_shadow_width(st, 14);
+            lv_style_set_shadow_color(st, lv_color_black());
+            lv_style_set_shadow_opa(st, LV_OPA_50);
+            lv_style_set_shadow_offset_y(st, 5);
+            lv_style_set_border_width(st, 1);
+            lv_style_set_border_color(st, lv_color_hex(lighten(ui_active_card_bg, 34)));
+            lv_style_set_border_opa(st, LV_OPA_60);
+        } else {
+            lv_style_set_bg_grad_dir(st, LV_GRAD_DIR_NONE);
+            lv_style_set_shadow_width(st, 0);
+            lv_style_set_shadow_opa(st, LV_OPA_TRANSP);
+            lv_style_set_border_width(st, 0);
+        }
+    }
+}
+
 /* Update only the COLOR properties of already-initialized styles.
    Safe to call repeatedly — does not reset non-color properties. */
 static void update_style_colors(void)
@@ -48,6 +86,9 @@ static void update_style_colors(void)
     lv_style_set_bg_color(&s_dropdown_list, UI_COLOR_CARD_BG);
     lv_style_set_border_color(&s_dropdown_list, UI_COLOR_TRACK);
     lv_style_set_text_color(&s_dropdown_list, UI_COLOR_TEXT_PRIMARY);
+
+    /* Card elevation depends on the active style; re-apply after base colours. */
+    apply_depth_to_card_styles();
 }
 
 void ui_styles_refresh(void)
@@ -188,6 +229,9 @@ void ui_styles_refresh(void)
     if (lv_disp_get_hor_res(NULL) <= 320) {
         lv_style_set_text_font(&s_dropdown_list, &lv_font_montserrat_12);
     }
+
+    /* Honour the active style's card elevation on first build too. */
+    apply_depth_to_card_styles();
 }
 
 void ui_styles_init(void)

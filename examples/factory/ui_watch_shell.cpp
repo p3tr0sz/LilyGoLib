@@ -145,7 +145,7 @@ void watch_shell_launch(app_t *app, watch_view_t return_view)
     if (!app || watch_shell_input_guard_active()) return;
     app_return_view = return_view;
     view = WATCH_VIEW_APP;
-    ui_launch_app(app);
+    ui_launch_app(app);   /* pushes the app's category accent (Vivid/Expressive) */
 }
 
 static void app_screen_on(void);
@@ -154,6 +154,7 @@ void watch_shell_on_app_exit(void)
 {
     if (view != WATCH_VIEW_APP) return;
     app_screen_on();
+    ui_app_accent_pop();   /* back to the theme accent for the launcher/face */
     if (app_return_view == WATCH_VIEW_FACE) {
         list_reset_hidden();
         view = WATCH_VIEW_FACE;
