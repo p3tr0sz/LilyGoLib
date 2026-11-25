@@ -22,8 +22,15 @@ LV_IMG_DECLARE(img_energy);
 #define FACE_SLOT_H            64
 #define FACE_ROUND_SLOT_SIZE   84   /* Diameter of icon-only slots */
 #define FACE_ROUND_ICON_SIZE   48
-#define FACE_SLOT_MARGIN_X     28   /* Keeps slots clear of the rounded screen corners */
-#define FACE_SLOT_MARGIN_Y     22
+/* Clearance that keeps the four corner slots out from under the panel's
+ * rounded-glass corners. The CO5300's exact corner radius isn't published, so
+ * this is the one knob to tune against the real hardware: a widget corner stays
+ * visible only while its inset >= ~0.3 * corner_radius, so the previous 22 px
+ * vertical inset clipped once the radius exceeded ~75 px. Raised and made
+ * symmetric; bump FACE_SLOT_CORNER_SAFE if any corner still reads cut off. */
+#define FACE_SLOT_CORNER_SAFE  40
+#define FACE_SLOT_MARGIN_X     FACE_SLOT_CORNER_SAFE
+#define FACE_SLOT_MARGIN_Y     FACE_SLOT_CORNER_SAFE
 #define FACE_SLOT_ICON_SIZE    32
 #define FACE_DRAG_START_PX     12
 #define FACE_KCAL_PER_100_STEPS 4   /* About 0.04 kcal a step for an average adult */
