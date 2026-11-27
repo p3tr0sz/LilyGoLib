@@ -11,6 +11,9 @@
 
 #if defined(ARDUINO) && !defined(EXCLUDE_NFC_EMULATION)
 
+#include <SD.h>
+#include <string.h>
+
 static lv_obj_t *page_container = NULL;
 static lv_obj_t *state_value = NULL;
 static lv_obj_t *template_value = NULL;
@@ -44,6 +47,19 @@ static const char *kDefaultUrl = "https://github.com/Xinyuan-LilyGO";
 static const char *kDefaultText = "LilyGo NFC Card Emulation";
 static const char *kDefaultWifiSsid = "LilyGo-NFC";
 static const char *kDefaultWifiPassword = "12345678";
+
+/* NDEF replay: re-emit a tag the NFC Reader captured (saved to /nfc/_last.replay).
+ * The emulation config holds const char* pointers, so the parsed payload must live
+ * in these static buffers for as long as the emulation session runs. */
+static lv_obj_t *replay_btn = NULL;
+#if FACTORY_WATCH_UI
+static lv_obj_t *replay_row = NULL;
+#endif
+static char replay_url[256];
+static char replay_text[256];
+static char replay_ssid[64];
+static char replay_pass[64];
+static LilyGoNfcEmulationKind replay_kind = LILYGO_NFC_EMULATION_URL;
 
 /* The watch's plain words, or the original text on other boards. */
 static const char *pick_text(const char *watch, const char *other)
@@ -310,12 +326,18 @@ static void update_controls()
         if (wifi_active) lv_obj_add_state(wifi_btn, LV_STATE_CHECKED);
         else lv_obj_clear_state(wifi_btn, LV_STATE_CHECKED);
     }
+    if (replay_btn) {
+        /* No "active" kind of its own; the matching template button shows Stop. */
+        if (nfc_card_running) lv_obj_add_state(replay_btn, LV_STATE_DISABLED);
+        else lv_obj_clear_state(replay_btn, LV_STATE_DISABLED);
+    }
 
 #if FACTORY_WATCH_UI
-    /* Three "Share" pills while idle, one "Stop" pill while sharing. */
+    /* Share/Replay pills while idle, one "Stop" pill while sharing. */
     ui_card_row_set_hidden(url_row, nfc_card_running);
     ui_card_row_set_hidden(text_row, nfc_card_running);
     ui_card_row_set_hidden(wifi_row, nfc_card_running);
+    ui_card_row_set_hidden(replay_row, nfc_card_running);
     ui_card_row_set_hidden(stop_row, !nfc_card_running);
     /* The type can't change while sharing; what's shared shows once started. */
     ui_card_row_set_hidden(tech_row, nfc_card_running);
@@ -509,6 +531,117 @@ static void wifi_btn_cb(lv_event_t *e)
     start_template(LILYGO_NFC_EMULATION_WIFI);
 }
 
+/* Parse /nfc/_last.replay ("URL|...", "TEXT|...", "WIFI|ssid|pass") into the
+ * replay buffers. Returns false when there's no replayable capture. */
+static bool load_last_replay(void)
+{
+    File f = SD.open("/nfc/_last.replay", FILE_READ);
+    if (!f) return false;
+    char buf[400];
+    size_t n = f.readBytes(buf, sizeof(buf) - 1);
+    f.close();
+    buf[n] = '\0';
+    while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
+
+    char *bar = strchr(buf, '|');
+    if (!bar) return false;
+    *bar = '\0';
+    const char *rest = bar + 1;
+
+    if (strcmp(buf, "URL") == 0) {
+        replay_kind = LILYGO_NFC_EMULATION_URL;
+        strncpy(replay_url, rest, sizeof(replay_url) - 1);
+        replay_url[sizeof(replay_url) - 1] = '\0';
+    } else if (strcmp(buf, "TEXT") == 0) {
+        replay_kind = LILYGO_NFC_EMULATION_TEXT;
+        strncpy(replay_text, rest, sizeof(replay_text) - 1);
+        replay_text[sizeof(replay_text) - 1] = '\0';
+    } else if (strcmp(buf, "WIFI") == 0) {
+        char *bar2 = strchr(rest, '|');
+        if (!bar2) return false;
+        *bar2 = '\0';
+        replay_kind = LILYGO_NFC_EMULATION_WIFI;
+        strncpy(replay_ssid, rest, sizeof(replay_ssid) - 1);
+        replay_ssid[sizeof(replay_ssid) - 1] = '\0';
+        strncpy(replay_pass, bar2 + 1, sizeof(replay_pass) - 1);
+        replay_pass[sizeof(replay_pass) - 1] = '\0';
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static void start_replay(void)
+{
+    if (nfc_card_running) {
+        /* Toggle off, like tapping an active template again. */
+        nfc_card_running = false;
+        hw_stop_nfc();
+        update_controls();
+        set_label_text(state_value, "Stopped");
+        set_label_text(hint_value, pick_text("Pick what to share", "Stopped."));
+        return;
+    }
+    if (!hw_is_sd_insert()) {
+        set_label_text(hint_value, pick_text("Insert an SD card",
+                                             "Insert an SD card to replay a capture."));
+        return;
+    }
+    if (!load_last_replay()) {
+        set_label_text(hint_value, pick_text("Read a tag first",
+                                             "No saved capture to replay. Read a tag first."));
+        return;
+    }
+
+    LilyGoNfcEmulationConfig config = {};
+    config.kind = replay_kind;
+    config.tech = selected_tech;
+    config.discoveryDurationMs = 1000U;
+    config.callback = nfc_emulation_event_callback;
+    config.userData = NULL;
+    config.templateName = "Replay";
+    switch (replay_kind) {
+    case LILYGO_NFC_EMULATION_URL:
+        config.url = replay_url;
+        break;
+    case LILYGO_NFC_EMULATION_TEXT:
+        config.text = replay_text;
+        break;
+    case LILYGO_NFC_EMULATION_WIFI:
+        config.wifiSsid = replay_ssid;
+        config.wifiPassword = replay_pass;
+        config.wifiAuthenticationType = 0x0020U;
+        config.wifiEncryptionType = 0x0010U;
+        break;
+    default:
+        return;
+    }
+
+    active_kind = replay_kind;
+#if FACTORY_WATCH_UI
+    watch_has_shared = true;
+#endif
+    set_label_text(state_value, "Starting");
+    set_label_text(template_value, template_short_name(replay_kind));
+    set_label_text(hint_value, pick_text("Replaying capture", "Replaying saved capture..."));
+    update_controls();
+
+    const bool started = hw_start_nfc_emulation(config);
+    nfc_card_running = started;
+    if (!started) {
+        const LilyGoNfcEmulationStatus &status = LilyGoNfc.emulationStatus();
+        update_emulation_view(LILYGO_NFC_EVENT_START_FAILED, status);
+    } else {
+        update_controls();
+    }
+}
+
+static void replay_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    start_replay();
+}
+
 #if FACTORY_WATCH_UI
 static void stop_btn_cb(lv_event_t *e)
 {
@@ -564,6 +697,7 @@ static void create_short_controls()
     url_btn = create_template_button(control_panel, "URL", url_btn_cb);
     text_btn = create_template_button(control_panel, "Text", text_btn_cb);
     wifi_btn = create_template_button(control_panel, "WiFi", wifi_btn_cb);
+    replay_btn = create_template_button(control_panel, "Replay", replay_btn_cb);
 }
 
 static void create_large_controls(lv_obj_t *parent)
@@ -596,10 +730,12 @@ static void create_large_controls(lv_obj_t *parent)
     url_btn = create_template_button(control_panel, "URL", url_btn_cb);
     text_btn = create_template_button(control_panel, "Text", text_btn_cb);
     wifi_btn = create_template_button(control_panel, "WiFi", wifi_btn_cb);
+    replay_btn = create_template_button(control_panel, "Replay capture", replay_btn_cb);
 
     lv_obj_set_width(url_btn, LV_PCT(100));
     lv_obj_set_width(text_btn, LV_PCT(100));
     lv_obj_set_width(wifi_btn, LV_PCT(100));
+    lv_obj_set_width(replay_btn, LV_PCT(100));
 }
 
 static lv_obj_t *create_payload_panel(lv_obj_t *parent)
@@ -676,6 +812,7 @@ static void build_watch_layout()
     url_row = ui_create_card_action(page_container, LV_SYMBOL_UPLOAD, "Share link", url_btn_cb);
     text_row = ui_create_card_action(page_container, LV_SYMBOL_EDIT, "Share text", text_btn_cb);
     wifi_row = ui_create_card_action(page_container, LV_SYMBOL_WIFI, "Share Wi-Fi", wifi_btn_cb);
+    replay_row = ui_create_card_action(page_container, LV_SYMBOL_COPY, "Replay capture", replay_btn_cb);
     stop_row = ui_create_card_action(page_container, LV_SYMBOL_STOP, "Stop", stop_btn_cb);
 
     /* Same option order as the other boards' dropdown, so the index is the tech. */
@@ -721,10 +858,12 @@ static void back_event_handler(lv_event_t *e)
     url_btn = NULL;
     text_btn = NULL;
     wifi_btn = NULL;
+    replay_btn = NULL;
 #if FACTORY_WATCH_UI
     url_row = NULL;
     text_row = NULL;
     wifi_row = NULL;
+    replay_row = NULL;
     stop_row = NULL;
     tech_row = NULL;
     sharing_row = NULL;

@@ -214,6 +214,32 @@ static void nfc_uid_to_filename(const char *uid, char *out, size_t out_len)
     out[j] = '\0';
 }
 
+/* Build a one-line, machine-parseable replay record from the first NDEF record
+ * that the card emulator can re-emit (URL / Text / Wi-Fi). Returns false when the
+ * card has nothing replayable (e.g. a UID-only access card — its UID can't be
+ * emulated anyway). Control characters are flattened so the line stays single. */
+static bool nfc_build_replay_line(const LilyGoNfcReaderResult &result, char *out, size_t out_len)
+{
+    out[0] = '\0';
+    for (uint8_t i = 0; i < result.recordCount; ++i) {
+        const LilyGoNfcRecord &r = result.records[i];
+        if (r.kind == LILYGO_NFC_RECORD_URI && r.value[0]) {
+            snprintf(out, out_len, "URL|%s", r.value);
+        } else if (r.kind == LILYGO_NFC_RECORD_TEXT && r.value[0]) {
+            snprintf(out, out_len, "TEXT|%s", r.value);
+        } else if (r.kind == LILYGO_NFC_RECORD_WIFI && r.wifiSsid[0]) {
+            snprintf(out, out_len, "WIFI|%s|%s", r.wifiSsid, r.wifiPassword);
+        } else {
+            continue;
+        }
+        for (char *p = out; *p; ++p) {
+            if (*p == '\n' || *p == '\r') *p = ' ';
+        }
+        return true;
+    }
+    return false;
+}
+
 static void nfc_save_capture(const LilyGoNfcReaderResult &result)
 {
     if (!result.uidText[0] || strcmp(result.uidText, "--") == 0) return;
@@ -275,6 +301,18 @@ static void nfc_save_capture(const LilyGoNfcReaderResult &result)
         snprintf(line, sizeof(line), "raw: %s", result.rawHexPreview); f.println(line);
     }
     f.close();
+
+    /* A replay sidecar the NFC Card (emulation) app can re-emit: the whole capture
+     * under /nfc/<uid>.replay, plus /nfc/_last.replay as the most-recent pointer. */
+    char replay[300];
+    if (nfc_build_replay_line(result, replay, sizeof(replay))) {
+        char rpath[80];
+        snprintf(rpath, sizeof(rpath), "%s/%s.replay", NFC_SAVE_DIR, fname);
+        File rf = SD.open(rpath, FILE_WRITE);
+        if (rf) { rf.println(replay); rf.close(); }
+        File lf = SD.open(NFC_SAVE_DIR "/_last.replay", FILE_WRITE);
+        if (lf) { lf.println(replay); lf.close(); }
+    }
 
     strncpy(nfc_saved_uid, result.uidText, sizeof(nfc_saved_uid) - 1);
     nfc_saved_uid[sizeof(nfc_saved_uid) - 1] = '\0';
