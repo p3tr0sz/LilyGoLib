@@ -3522,6 +3522,13 @@ void hw_wifi_autoconnect(void)
     hw_set_wifi_connect(list[0]);
 }
 
+void hw_wifi_disconnect(void)
+{
+#ifdef ARDUINO
+    WiFi.disconnect(false);
+#endif
+}
+
 bool hw_get_wifi_connected()
 {
 #ifdef ARDUINO

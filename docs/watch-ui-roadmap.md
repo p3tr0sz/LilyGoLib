@@ -45,6 +45,7 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 8 | Fixes from the audit against `watch-ux-guidelines.md` | Done; haptic patterns and File Manager need checking on hardware |
 | 8b | App list order (drag to reorder, saved) and crash recovery | Done in the simulator; needs checking on hardware |
 | 8c | Arrange apps, names, message pills, screen off in apps, pages follow the finger, fixes for apps outside the simulator | Done; the apps outside the simulator need checking on hardware |
+| 9 | Quick settings shade: swipe down from the face for brightness, Wi-Fi and Torch, plus a Settings shortcut | Done in the simulator; Wi-Fi/backlight on hardware and a Bluetooth toggle still open — see "Quick settings shade" |
 
 ## Next steps
 
@@ -53,7 +54,7 @@ In order. Details are in the follow-up sections further down.
 1. **Get the firmware building, then check everything on the wrist.** `pio run -e twatch_ultra` in `LilyGoLib-PlatformIO` gets past SensorLib (`^0.5.1`) and Button2 (2.7.0), and the factory app and LVGL compile. It stops at `demo_ce.h: No such file or directory` in `src/nfc/LilyGoNfcService.cpp`. That header is in `lewisxhe/ST25R3916-NFC-RFAL` v1.0.1, the library `docs/third_party.md` lists; it combines the `ST25R3916-fork` and `NFC-RFAL-fork` the project pulls in now. Swap those two `lib_deps` for it. Then flash and go through the hardware checks: the phase 4–8c follow-ups and the crash-recovery test.
 2. **Bigger features, in order of value:**
    - **Wi-Fi from the phone:** set up Wi-Fi over BLE, so there's no password typing.
-   - **Quick settings:** swipe down on the face for brightness, Wi-Fi and BLE.
+   - **Quick settings:** ~~swipe down on the face for brightness, Wi-Fi and BLE.~~ Done 2026-11-27 (brightness, Wi-Fi, Torch; BLE deferred — see "Quick settings shade").
    - **Always-on clock:** a dim clock that stays on.
    - **Typing:** word completion on the keyboard.
    - **Accents in titles:** in the Alibaba title font.
@@ -355,6 +356,24 @@ Checked in the simulator with temporary hooks (since removed): the message after
 - Force each case: an `LV_ASSERT_NULL(NULL)`, an endless loop in an app, and a NULL pointer write. Each should come back on the face with the app's name within about 20 s (a few seconds for the faults).
 - Leave the watch asleep for a few minutes: it must not restart on waking.
 - A normal power on shows no message.
+
+### Quick settings shade (2026-11-27)
+
+Asked for: swipe down on the face for the controls reached most often, the way a swipe up opens the app list.
+
+- **Gesture:** `face_touch_cb` (`ui_watch_face.cpp`) now decides a drag's direction on the first few pixels — up pulls the app list (as before), down pulls the quick settings shade. The shade follows the finger from the top and settles once it has travelled a fifth of the screen; a swipe right closes it, like every other page.
+- **Shell:** a new `WATCH_VIEW_QUICK` and a `quick` panel beside the app `list` in `ui_watch_shell.cpp`, with `watch_shell_quick_drag()/_drag_end()` mirroring the list's open/close. Waking, locking and exiting an app all retract the shade, so it never lingers behind another view.
+- **Panel** (`ui_quick_settings.cpp`): a brightness slider, a Wi-Fi tile, a Torch tile and a Settings shortcut row.
+  - **Brightness:** live `hw_set_disp_backlight()` while dragging, persisted to `brightness_level` once on release (not per step). Same range as Settings (`hw_get_disp_min/max_brightness`).
+  - **Wi-Fi:** a whole-tile tap connects (`hw_wifi_autoconnect()`) or disconnects (new `hw_wifi_disconnect()`, `WiFi.disconnect(false)` on hardware, no-op on desktop). The tile shows a session intent flag seeded from `hw_get_wifi_connected()`, and flips on when a connection lands on its own; the simulator reports no connection, so the toggle there is visual only.
+  - **Torch:** sets the backlight to maximum and, in the simulator, shows a full white overlay with a "tap to turn off" hint; turning it off restores the saved brightness. Owns the backlight while on, so the brightness slider doesn't fight it.
+  - **Settings:** a pill row (`ui_create_menu_row()`) that launches the Settings app, returning to the face.
+- **Onboarding:** the touch-navigation card now reads "swipe up for apps, down for quick settings".
+
+**Not done / deferred:**
+- **Bluetooth toggle.** This build has no global BLE radio owner — NimBLE is brought up and torn down per feature (HID, FIDO, scanner), so a shade toggle would read a meaningless state or tear down a stack an app is using. Left out until a global BLE owner exists. This is why the shade has a Torch tile where the original plan said "BLE".
+- **Torch and the screen timeout:** the idle poll dims the backlight after the display timeout even while the torch is on, which kills the light. A torch should hold the screen awake (call `set_low_power_mode_flag(false)` equivalent) — do this when checking on hardware.
+- **Check on hardware:** the real backlight tracks the slider and the torch; Wi-Fi connect/disconnect from the tile; the swipe-down doesn't fight apps that scroll (it only starts on the face, so it shouldn't).
 
 ### What phase 8c changed (2026-11-05)
 

@@ -816,6 +816,9 @@ void hw_wifi_remember_connected(void);
 void hw_wifi_poll(void);
 bool hw_wifi_saved_password(const char *ssid, char *out, size_t out_len);
 void hw_wifi_autoconnect(void);
+/* Drop the current Wi-Fi connection without clearing the saved networks, so a
+ * later autoconnect can rejoin. No-op on the desktop simulator. */
+void hw_wifi_disconnect(void);
 
 /**
  * @brief Check if the device is connected to a WiFi network.

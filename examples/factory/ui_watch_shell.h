@@ -33,6 +33,7 @@ void ui_launch_app(app_t *app);
 typedef enum {
     WATCH_VIEW_FACE,
     WATCH_VIEW_LIST,
+    WATCH_VIEW_QUICK,   /* Quick settings shade, pulled down from the face */
     WATCH_VIEW_APP,
     WATCH_VIEW_LOCK,    /* Lock mode "Clock": idle clock page before the screen turns off */
 } watch_view_t;
@@ -45,6 +46,10 @@ void watch_shell_poll(void);
 void watch_shell_show_face(bool anim);
 void watch_shell_list_drag(int32_t dy);
 void watch_shell_list_drag_end(bool open);
+/* Quick settings shade: a swipe down on the face pulls it in from the top. dy is
+ * how far down the finger has moved; open decides whether to settle or retract. */
+void watch_shell_quick_drag(int32_t dy);
+void watch_shell_quick_drag_end(bool open);
 bool watch_shell_input_guard_active(void);
 watch_view_t watch_shell_get_view(void);
 void watch_shell_unlock(void);
@@ -86,5 +91,10 @@ void ui_clock_settings_build(lv_obj_t *content);
 lv_obj_t *app_list_create(lv_obj_t *parent);
 void app_list_update(void);
 void app_list_scroll_to_top(void);
+
+/* Quick settings shade (ui_quick_settings.cpp) */
+lv_obj_t *quick_settings_create(lv_obj_t *parent);
+void quick_settings_prepare(void);   /* Sync controls to the hardware before showing */
+void quick_settings_update(void);    /* Refresh the time and live states while shown */
 
 #endif /* FACTORY_WATCH_UI */

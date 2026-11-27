@@ -266,7 +266,7 @@ static void show_touch_guide(void)
     lv_obj_t *description = lv_label_create(panel);
 #if FACTORY_WATCH_UI
     lv_label_set_text(description,
-                      "Swipe right anywhere to go back.\nSwipe up on the watch face for apps.");
+                      "Swipe right anywhere to go back.\nOn the watch face swipe up for apps,\ndown for quick settings.");
 #else
     lv_label_set_text(description,
                       "Swipe inward from either screen edge\nto return to the previous page.");

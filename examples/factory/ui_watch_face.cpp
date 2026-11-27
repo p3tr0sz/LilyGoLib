@@ -72,10 +72,13 @@ static struct {
     uint32_t accent;        /* Accent the slot icons were coloured with */
 } face_ui;
 
+typedef enum { FACE_DRAG_NONE, FACE_DRAG_UP, FACE_DRAG_DOWN } face_drag_dir_t;
+
 static struct {
     lv_point_t start;
     bool tracking;
     bool dragging;
+    face_drag_dir_t dir;    /* Up pulls the app list, down pulls the quick settings shade */
 } face_drag;
 
 watch_slot_setting_t watch_face_slot_resolved(uint8_t index)
@@ -106,7 +109,9 @@ static void face_slot_click_cb(lv_event_t *e)
     watch_shell_launch(app, WATCH_VIEW_FACE);
 }
 
-/* Swipe up: the app list follows the finger, and opens past a fifth of the screen. */
+/* A vertical drag on the face pulls in a panel that follows the finger and
+ * settles once it has travelled a fifth of the screen: up opens the app list,
+ * down opens the quick settings shade. */
 static void face_touch_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -119,21 +124,29 @@ static void face_touch_cb(lv_event_t *e)
         face_drag.start = point;
         face_drag.tracking = true;
         face_drag.dragging = false;
+        face_drag.dir = FACE_DRAG_NONE;
     } else if (code == LV_EVENT_PRESSING && face_drag.tracking) {
-        int32_t dy = face_drag.start.y - point.y;
-        if (!face_drag.dragging && dy > FACE_DRAG_START_PX &&
-                dy > LV_ABS(point.x - face_drag.start.x)) {
+        int32_t up = face_drag.start.y - point.y;    /* >0 when the finger moves up */
+        int32_t down = -up;
+        if (!face_drag.dragging && LV_ABS(up) > FACE_DRAG_START_PX &&
+                LV_ABS(up) > LV_ABS(point.x - face_drag.start.x)) {
             face_drag.dragging = true;
+            face_drag.dir = (up > 0) ? FACE_DRAG_UP : FACE_DRAG_DOWN;
         }
         if (face_drag.dragging) {
-            watch_shell_list_drag(dy);
+            if (face_drag.dir == FACE_DRAG_UP) watch_shell_list_drag(up);
+            else watch_shell_quick_drag(down);
         }
     } else if (code == LV_EVENT_RELEASED && face_drag.tracking) {
         face_drag.tracking = false;
         if (!face_drag.dragging) return;
         face_drag.dragging = false;
-        int32_t dy = face_drag.start.y - point.y;
-        watch_shell_list_drag_end(dy > lv_display_get_vertical_resolution(NULL) / 5);
+        int32_t travel = (face_drag.dir == FACE_DRAG_UP)
+                         ? face_drag.start.y - point.y
+                         : point.y - face_drag.start.y;
+        bool open = travel > lv_display_get_vertical_resolution(NULL) / 5;
+        if (face_drag.dir == FACE_DRAG_UP) watch_shell_list_drag_end(open);
+        else watch_shell_quick_drag_end(open);
         /* A drag that started on a slot must not also open its app. */
         lv_indev_reset(indev, NULL);
     }

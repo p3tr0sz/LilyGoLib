@@ -26,6 +26,8 @@ static lv_obj_t *home_tile;
 static lv_obj_t *face;
 static lv_obj_t *list;
 static lv_obj_t *list_back_target;
+static lv_obj_t *quick;             /* Quick settings shade */
+static lv_obj_t *quick_back_target;
 static lv_timer_t *update_timer;
 static watch_view_t view = WATCH_VIEW_FACE;
 static watch_view_t app_return_view = WATCH_VIEW_LIST;
@@ -87,6 +89,36 @@ static void list_hidden_ready_cb(lv_anim_t *a)
     app_list_scroll_to_top();
 }
 
+static void quick_reset_hidden(void)
+{
+    if (!quick) return;
+    lv_anim_delete(quick, NULL);
+    lv_obj_add_flag(quick, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_pos(quick, 0, -screen_height());
+}
+
+static void quick_animate(int32_t from, int32_t to, uint32_t duration, lv_anim_completed_cb_t ready_cb)
+{
+    lv_anim_delete(quick, NULL);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, quick);
+    lv_anim_set_values(&a, from, to);
+    lv_anim_set_duration(&a, duration);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, anim_set_y);
+    if (ready_cb) {
+        lv_anim_set_completed_cb(&a, ready_cb);
+    }
+    lv_anim_start(&a);
+}
+
+static void quick_hidden_ready_cb(lv_anim_t *a)
+{
+    LV_UNUSED(a);
+    quick_reset_hidden();
+}
+
 watch_view_t watch_shell_get_view(void)
 {
     return view;
@@ -106,6 +138,15 @@ void watch_shell_show_face(bool anim)
 {
     view = WATCH_VIEW_FACE;
     watch_face_update();
+    /* The shade retracts up, the way it came in. */
+    if (quick && !lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)) {
+        if (anim) {
+            quick_animate(lv_obj_get_y(quick), -screen_height(),
+                          WATCH_LIST_CLOSE_MS, quick_hidden_ready_cb);
+        } else {
+            quick_reset_hidden();
+        }
+    }
     if (!anim || lv_obj_has_flag(list, LV_OBJ_FLAG_HIDDEN)) {
         list_reset_hidden();
         return;
@@ -113,6 +154,31 @@ void watch_shell_show_face(bool anim)
     /* Back is a rightward swipe, so the list leaves to the right. */
     list_animate(anim_set_x, lv_obj_get_x(list), screen_width(),
                  WATCH_LIST_CLOSE_MS, list_hidden_ready_cb);
+}
+
+void watch_shell_quick_drag(int32_t dy)
+{
+    if (view != WATCH_VIEW_FACE || !quick) return;
+    int32_t height = screen_height();
+    dy = LV_CLAMP(0, dy, height);
+    lv_anim_delete(quick, NULL);
+    if (lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)) {
+        quick_settings_prepare();
+        lv_obj_remove_flag(quick, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_pos(quick, 0, -height + dy);
+}
+
+void watch_shell_quick_drag_end(bool open)
+{
+    if (view != WATCH_VIEW_FACE || !quick || lv_obj_has_flag(quick, LV_OBJ_FLAG_HIDDEN)) return;
+    if (open) {
+        view = WATCH_VIEW_QUICK;
+        quick_animate(lv_obj_get_y(quick), 0, WATCH_LIST_OPEN_MS, NULL);
+    } else {
+        quick_animate(lv_obj_get_y(quick), -screen_height(),
+                      WATCH_LIST_CLOSE_MS, quick_hidden_ready_cb);
+    }
 }
 
 void watch_shell_list_drag(int32_t dy)
@@ -158,6 +224,7 @@ void watch_shell_on_app_exit(void)
 {
     if (view != WATCH_VIEW_APP) return;
     app_screen_on();
+    quick_reset_hidden();  /* An app opened from the shade must not leave it behind */
     ui_app_accent_pop();   /* back to the theme accent for the launcher/face */
     if (app_return_view == WATCH_VIEW_FACE) {
         list_reset_hidden();
@@ -172,6 +239,7 @@ void watch_shell_on_app_exit(void)
 static void lock_show(void)
 {
     list_reset_hidden();
+    quick_reset_hidden();
     app_list_scroll_to_top();
     view = WATCH_VIEW_LOCK;
     lock_clock_show();
@@ -192,6 +260,7 @@ static void screen_wake(uint8_t brightness)
 {
     lock_clock_hide();
     list_reset_hidden();
+    quick_reset_hidden();
     app_list_scroll_to_top();
     view = WATCH_VIEW_FACE;
     watch_face_update();
@@ -367,6 +436,8 @@ static void update_timer_cb(lv_timer_t *t)
         watch_face_update();
     } else if (view == WATCH_VIEW_LIST) {
         app_list_update();
+    } else if (view == WATCH_VIEW_QUICK) {
+        quick_settings_update();
     }
 }
 
@@ -374,6 +445,14 @@ static void list_back_cb(lv_event_t *e)
 {
     LV_UNUSED(e);
     if (view == WATCH_VIEW_LIST) {
+        watch_shell_show_face(true);
+    }
+}
+
+static void quick_back_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (view == WATCH_VIEW_QUICK) {
         watch_shell_show_face(true);
     }
 }
@@ -394,6 +473,15 @@ void watch_shell_setup(lv_obj_t *tile)
     lv_obj_add_flag(list_back_target, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(list_back_target, list_back_cb, LV_EVENT_CLICKED, NULL);
     ui_enable_edge_swipe_back(list, list_back_target);
+
+    quick = quick_settings_create(home_tile);
+    quick_reset_hidden();
+
+    /* Swipe right on the shade goes back to the face, like every other page. */
+    quick_back_target = lv_obj_create(quick);
+    lv_obj_add_flag(quick_back_target, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(quick_back_target, quick_back_cb, LV_EVENT_CLICKED, NULL);
+    ui_enable_edge_swipe_back(quick, quick_back_target);
 
     update_timer = lv_timer_create(update_timer_cb, WATCH_UPDATE_PERIOD_MS, NULL);
     view = WATCH_VIEW_FACE;
