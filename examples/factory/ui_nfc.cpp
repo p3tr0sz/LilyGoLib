@@ -11,6 +11,9 @@
 
 #if defined(ARDUINO) && !defined(EXCLUDE_NFC)
 
+#include <SD.h>
+#include <time.h>
+
 static lv_obj_t *msgbox = NULL;
 static lv_obj_t *page_container = NULL;
 static lv_obj_t *state_value = NULL;
@@ -183,6 +186,103 @@ static void update_record_view(const LilyGoNfcReaderResult &result)
     }
 }
 
+/* ── Auto-save a read to the SD card ──
+ * Every card that is read is dumped to /nfc/<uid>.txt on the SD card, so reads
+ * aren't lost when you leave the page. One file per card (named by UID, newest
+ * read wins), written once per card presence. The NFC reader and the SD card
+ * share the SPI bus, so this only runs from the reader's UI event callback, after
+ * a read has completed — check on hardware that it doesn't disturb discovery. */
+#define NFC_SAVE_DIR "/nfc"
+
+static char nfc_saved_uid[48];   /* UID already written for the card now present */
+
+static void nfc_reset_saved(void)
+{
+    nfc_saved_uid[0] = '\0';
+}
+
+/* Keep only hex digits from the UID text, for a safe, stable filename. */
+static void nfc_uid_to_filename(const char *uid, char *out, size_t out_len)
+{
+    size_t j = 0;
+    for (size_t i = 0; uid[i] && j + 1 < out_len; i++) {
+        char c = uid[i];
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+            out[j++] = c;
+        }
+    }
+    out[j] = '\0';
+}
+
+static void nfc_save_capture(const LilyGoNfcReaderResult &result)
+{
+    if (!result.uidText[0] || strcmp(result.uidText, "--") == 0) return;
+    if (strcmp(result.uidText, nfc_saved_uid) == 0) return;   /* already saved this card */
+
+    if (!hw_is_sd_insert()) {
+        set_label_text(hint_value, "Insert an SD card to save reads.");
+        return;
+    }
+
+    char fname[48];
+    nfc_uid_to_filename(result.uidText, fname, sizeof(fname));
+    if (!fname[0]) return;
+
+    if (!SD.exists(NFC_SAVE_DIR)) SD.mkdir(NFC_SAVE_DIR);
+
+    char path[80];
+    snprintf(path, sizeof(path), "%s/%s.txt", NFC_SAVE_DIR, fname);
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) {
+        set_label_text(hint_value, "SD write failed.");
+        return;
+    }
+
+    char line[256];
+    time_t now = time(NULL);
+    struct tm tmv;
+    char ts[32] = "";
+    if (now > 0 && localtime_r(&now, &tmv)) {
+        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tmv);
+    }
+
+    f.println("NFC capture");
+    if (ts[0]) { snprintf(line, sizeof(line), "time: %s", ts); f.println(line); }
+    snprintf(line, sizeof(line), "uid: %s", result.uidText); f.println(line);
+    snprintf(line, sizeof(line), "card: %s",
+             result.cardType[0] ? result.cardType : "--"); f.println(line);
+    snprintf(line, sizeof(line), "tech: %s / %s / %s",
+             result.technology, result.interfaceName, result.tagType); f.println(line);
+    if (result.cardInfo[0] && strcmp(result.cardInfo, "--") != 0) {
+        snprintf(line, sizeof(line), "info: %s", result.cardInfo); f.println(line);
+    }
+    if (result.hasNdef) {
+        snprintf(line, sizeof(line), "ndef: %s  v%u.%u  %luB",
+                 result.ndefStateText, result.ndefMajorVersion, result.ndefMinorVersion,
+                 (unsigned long)result.ndefMessageLen);
+    } else {
+        snprintf(line, sizeof(line), "ndef: %s",
+                 result.ndefStateText[0] ? result.ndefStateText : "none");
+    }
+    f.println(line);
+    for (uint8_t i = 0; i < result.recordCount; ++i) {
+        const LilyGoNfcRecord &r = result.records[i];
+        snprintf(line, sizeof(line), "record %u: %s", r.index, r.title); f.println(line);
+        if (r.value[0]) { snprintf(line, sizeof(line), "  value: %s", r.value); f.println(line); }
+        if (r.detail[0]) { snprintf(line, sizeof(line), "  detail: %s", r.detail); f.println(line); }
+    }
+    if (result.rawHexPreview[0] && strcmp(result.rawHexPreview, "--") != 0) {
+        snprintf(line, sizeof(line), "raw: %s", result.rawHexPreview); f.println(line);
+    }
+    f.close();
+
+    strncpy(nfc_saved_uid, result.uidText, sizeof(nfc_saved_uid) - 1);
+    nfc_saved_uid[sizeof(nfc_saved_uid) - 1] = '\0';
+
+    snprintf(line, sizeof(line), "Saved to %s", path);
+    set_label_text(hint_value, line);
+}
+
 static void update_result_view(LilyGoNfcEvent event, const LilyGoNfcReaderResult &result)
 {
     if (!page_container) return;
@@ -257,6 +357,24 @@ static void update_result_view(LilyGoNfcEvent event, const LilyGoNfcReaderResult
             set_label_text(hint_value, NFC_TIPS_STRING);
         }
         set_label_text(raw_value, "--");
+    }
+
+    /* Persist every completed read to the SD card (once per card presence). */
+    switch (event) {
+    case LILYGO_NFC_EVENT_STARTED:
+    case LILYGO_NFC_EVENT_CARD_RELEASED:
+        nfc_reset_saved();
+        break;
+    case LILYGO_NFC_EVENT_NDEF_READ:
+    case LILYGO_NFC_EVENT_NDEF_UNSUPPORTED:
+    case LILYGO_NFC_EVENT_NDEF_ERROR:
+        nfc_save_capture(result);
+        break;
+    case LILYGO_NFC_EVENT_CARD_DETECTED:
+        if (is_uid_only_result(result)) nfc_save_capture(result);
+        break;
+    default:
+        break;
     }
 }
 
