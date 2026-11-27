@@ -9,6 +9,10 @@
 #include "ui_define.h"
 #include <math.h>
 #include <string.h>
+#ifdef ARDUINO
+#include <SD.h>
+#endif
+#include "capture_store.h"
 
 #if !defined(EXCLUDE_CC1101_TOOL)
 
@@ -34,9 +38,30 @@ static uint32_t beacon_count = 0;
 static uint32_t capture_count = 0;
 static uint32_t replay_count = 0;
 
+/* Capture catalog: /subghz/<name>.sub holds the radio params + captured bytes. */
+#define SUBGHZ_CATALOG  "subghz"
+#define MAX_SUBGHZ      24
+static int subghz_counter = 1;
+static lv_obj_t *filename_ta = NULL;
+static lv_obj_t *capture_dd = NULL;
+static char subghz_names[MAX_SUBGHZ][64];
+static int subghz_count = 0;
+
+struct subghz_file_hdr {
+    char magic[4];       /* "SUBG" */
+    uint8_t version;     /* 1 */
+    uint8_t sf;          /* modulation flag (1=OOK, 0=2-FSK) */
+    uint8_t cr;          /* bit rate */
+    uint8_t power;       /* TX power */
+    float freq;
+    float bandwidth;
+    uint8_t len;         /* payload length */
+};
+
 static void radio_timer_task(lv_timer_t *t);
 static void ui_set_msg_label(const char *msg);
 static void replay_last_packet(void);
+static void scan_subghz(void);
 
 static uint8_t find_freq_index(float value)
 {
@@ -117,6 +142,8 @@ static void back_event_handler(lv_event_t *e)
         ui_destroy_app_page(page_container);
         page_container = NULL;
     }
+    filename_ta = NULL;
+    capture_dd = NULL;
 
     menu_show();
 }
@@ -176,7 +203,7 @@ static void _ui_cc1101_obj_event(lv_event_t *e)
     lv_obj_t *obj = (lv_obj_t *)lv_event_get_target(e);
     const char *flag = (const char *)lv_event_get_user_data(e);
 
-    if (*flag != 'b' && *flag != 'r') {
+    if (*flag != 'b' && *flag != 'r' && *flag != 's' && *flag != 'l') {
         selected = lv_dropdown_get_selected(obj);
     }
 
@@ -208,6 +235,18 @@ static void _ui_cc1101_obj_event(lv_event_t *e)
     case 'r':
         replay_last_packet();
         break;
+    case 's':
+        save_subghz_capture(filename_ta ? lv_textarea_get_text(filename_ta) : "");
+        break;
+    case 'l': {
+        const char *bn = NULL;
+        if (capture_dd && subghz_count > 0) {
+            uint16_t i = lv_dropdown_get_selected(capture_dd);
+            if (i < (uint16_t)subghz_count) bn = subghz_names[i];
+        }
+        load_subghz_capture(bn);
+        break;
+    }
     default:
         break;
     }
@@ -374,6 +413,105 @@ static void replay_last_packet(void)
 #endif
 }
 
+/* Rescan /subghz for saved *.sub captures and fill the picker. */
+static void scan_subghz(void)
+{
+    subghz_count = capture_list(SUBGHZ_CATALOG, ".sub", subghz_names, MAX_SUBGHZ);
+    if (!capture_dd) return;
+    if (subghz_count == 0) {
+        lv_dropdown_set_options(capture_dd, "No captures");
+        return;
+    }
+    char opts[MAX_SUBGHZ * 65];
+    opts[0] = '\0';
+    size_t used = 0;
+    for (int i = 0; i < subghz_count; i++) {
+        used += snprintf(opts + used, sizeof(opts) - used, "%s%s",
+                         i ? "\n" : "", subghz_names[i]);
+        if (used >= sizeof(opts)) break;
+    }
+    lv_dropdown_set_options(capture_dd, opts);
+    lv_dropdown_set_selected(capture_dd, 0);
+}
+
+/* Save the last captured packet (and the radio params to replay it) to SD. */
+static void save_subghz_capture(const char *name)
+{
+#ifdef ARDUINO
+    if (last_rx_len == 0) { ui_set_msg_label("No captured packet to save"); return; }
+    if (!hw_is_sd_insert() || !capture_catalog_ensure(SUBGHZ_CATALOG)) {
+        ui_set_msg_label("Insert an SD card to save"); return;
+    }
+    char safe[48];
+    if (!capture_sanitize_name(name, safe, sizeof(safe))) {
+        ui_set_msg_label("Enter a filename"); return;
+    }
+    char path[96];
+    capture_path(SUBGHZ_CATALOG, safe, ".sub", path, sizeof(path));
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) { ui_set_msg_label("SD write failed"); return; }
+
+    subghz_file_hdr h;
+    memset(&h, 0, sizeof(h));
+    memcpy(h.magic, "SUBG", 4);
+    h.version = 1;
+    h.sf = radio_params_copy.sf;
+    h.cr = radio_params_copy.cr;
+    h.power = radio_params_copy.power;
+    h.freq = radio_params_copy.freq;
+    h.bandwidth = radio_params_copy.bandwidth;
+    h.len = last_rx_len;
+    f.write((uint8_t *)&h, sizeof(h));
+    f.write(last_rx_payload, last_rx_len);
+    f.close();
+
+    subghz_counter++;
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Saved %s.sub (%uB)", safe, (unsigned)last_rx_len);
+    ui_set_msg_label(msg);
+    scan_subghz();
+#else
+    (void)name;
+    ui_set_msg_label("Save is hardware only");
+#endif
+}
+
+/* Load a saved capture into last_rx_payload + params, ready for Replay. */
+static void load_subghz_capture(const char *basename)
+{
+#ifdef ARDUINO
+    if (!basename || !basename[0]) { ui_set_msg_label("No capture selected"); return; }
+    char path[96];
+    capture_path(SUBGHZ_CATALOG, basename, ".sub", path, sizeof(path));
+    File f = SD.open(path, FILE_READ);
+    if (!f) { ui_set_msg_label("Open failed"); return; }
+
+    subghz_file_hdr h;
+    if (f.read((uint8_t *)&h, sizeof(h)) != (int)sizeof(h) ||
+            memcmp(h.magic, "SUBG", 4) != 0) {
+        f.close(); ui_set_msg_label("Bad capture file"); return;
+    }
+    uint8_t n = h.len > CC1101_MAX_PAYLOAD ? CC1101_MAX_PAYLOAD : h.len;
+    int got = f.read(last_rx_payload, n);
+    f.close();
+    if (got != (int)n) { ui_set_msg_label("Short read"); return; }
+
+    last_rx_len = n;
+    radio_params_copy.sf = h.sf;
+    radio_params_copy.cr = h.cr;
+    radio_params_copy.power = h.power;
+    radio_params_copy.freq = h.freq;
+    radio_params_copy.bandwidth = h.bandwidth;
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "Loaded %s (%uB) — tap Replay", basename, (unsigned)n);
+    ui_set_msg_label(msg);
+#else
+    (void)basename;
+    ui_set_msg_label("Load is hardware only");
+#endif
+}
+
 static void radio_timer_task(lv_timer_t *t)
 {
     (void)t;
@@ -457,6 +595,60 @@ void ui_cc1101_tool_enter(lv_obj_t *parent)
     create_bandwidth_dropdown(card);
     create_tx_power_dropdown(card);
     create_tx_interval_dropdown(card);
+
+    static const char save_flag = 's';
+    static const char load_flag = 'l';
+
+    card = ui_create_card(page_container, "Save capture");
+    filename_ta = lv_textarea_create(card);
+    lv_textarea_set_one_line(filename_ta, true);
+    lv_textarea_set_max_length(filename_ta, 40);
+    {
+        char default_name[48];
+        capture_make_name(SUBGHZ_CATALOG, subghz_counter, default_name, sizeof(default_name));
+        lv_textarea_set_text(filename_ta, default_name);
+    }
+    lv_obj_set_style_bg_color(filename_ta, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_bg_opa(filename_ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(filename_ta, lv_color_white(), 0);
+    lv_obj_set_style_border_width(filename_ta, 1, 0);
+    lv_obj_set_style_radius(filename_ta, 8, 0);
+    ui_create_card_item(card, LV_SYMBOL_FILE, "Name", filename_ta);
+    {
+        lv_obj_t *save_btn = lv_btn_create(card);
+        lv_obj_set_width(save_btn, LV_PCT(100));
+        lv_obj_set_style_bg_color(save_btn, UI_COLOR_ACCENT, 0);
+        lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(save_btn, 8, 0);
+        lv_obj_set_style_border_width(save_btn, 0, 0);
+        ui_add_accent_focus_style(save_btn);
+        lv_obj_t *l = lv_label_create(save_btn);
+        lv_label_set_text(l, LV_SYMBOL_SAVE " Save to SD");
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_obj_center(l);
+        lv_obj_add_event_cb(save_btn, _ui_cc1101_obj_event, LV_EVENT_CLICKED, (void *)&save_flag);
+    }
+
+    card = ui_create_card(page_container, "Saved captures");
+    capture_dd = lv_dropdown_create(card);
+    lv_dropdown_set_options(capture_dd, "No captures");
+    ui_create_card_item(card, LV_SYMBOL_SD_CARD, "Capture", capture_dd);
+    {
+        lv_obj_t *load_btn = lv_btn_create(card);
+        lv_obj_set_width(load_btn, LV_PCT(100));
+        lv_obj_set_style_bg_color(load_btn, UI_COLOR_CARD_BG, 0);
+        lv_obj_set_style_bg_opa(load_btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(load_btn, 8, 0);
+        lv_obj_set_style_border_width(load_btn, 1, 0);
+        lv_obj_set_style_border_color(load_btn, UI_COLOR_DIVIDER, 0);
+        ui_add_accent_focus_style(load_btn);
+        lv_obj_t *l = lv_label_create(load_btn);
+        lv_label_set_text(l, LV_SYMBOL_DOWNLOAD " Load");
+        lv_obj_set_style_text_color(l, UI_COLOR_TEXT_PRIMARY, 0);
+        lv_obj_center(l);
+        lv_obj_add_event_cb(load_btn, _ui_cc1101_obj_event, LV_EVENT_CLICKED, (void *)&load_flag);
+    }
+    scan_subghz();
 
     timer = lv_timer_create(radio_timer_task, 1000, NULL);
     lv_timer_pause(timer);

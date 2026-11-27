@@ -13,6 +13,10 @@
 
 #include <SD.h>
 #include <string.h>
+#include "capture_store.h"
+
+#define NFC_CATALOG "nfc"
+#define MAX_CAPTURES 24
 
 static lv_obj_t *page_container = NULL;
 static lv_obj_t *state_value = NULL;
@@ -52,6 +56,7 @@ static const char *kDefaultWifiPassword = "12345678";
  * The emulation config holds const char* pointers, so the parsed payload must live
  * in these static buffers for as long as the emulation session runs. */
 static lv_obj_t *replay_btn = NULL;
+static lv_obj_t *capture_dropdown = NULL;   /* pick which saved capture to replay */
 #if FACTORY_WATCH_UI
 static lv_obj_t *replay_row = NULL;
 #endif
@@ -60,6 +65,9 @@ static char replay_text[256];
 static char replay_ssid[64];
 static char replay_pass[64];
 static LilyGoNfcEmulationKind replay_kind = LILYGO_NFC_EMULATION_URL;
+
+static char capture_names[MAX_CAPTURES][64];   /* base names of /nfc/*.replay */
+static int capture_count_n = 0;
 
 /* The watch's plain words, or the original text on other boards. */
 static const char *pick_text(const char *watch, const char *other)
@@ -531,11 +539,38 @@ static void wifi_btn_cb(lv_event_t *e)
     start_template(LILYGO_NFC_EMULATION_WIFI);
 }
 
-/* Parse /nfc/_last.replay ("URL|...", "TEXT|...", "WIFI|ssid|pass") into the
- * replay buffers. Returns false when there's no replayable capture. */
-static bool load_last_replay(void)
+/* Rescan /nfc for saved *.replay captures and fill the picker dropdown. */
+static void scan_captures(void)
 {
-    File f = SD.open("/nfc/_last.replay", FILE_READ);
+    capture_count_n = capture_list(NFC_CATALOG, ".replay", capture_names, MAX_CAPTURES);
+    if (!capture_dropdown) return;
+    if (capture_count_n == 0) {
+        lv_dropdown_set_options(capture_dropdown, "No captures");
+        return;
+    }
+    char opts[MAX_CAPTURES * 65];
+    opts[0] = '\0';
+    size_t used = 0;
+    for (int i = 0; i < capture_count_n; i++) {
+        used += snprintf(opts + used, sizeof(opts) - used, "%s%s",
+                         i ? "\n" : "", capture_names[i]);
+        if (used >= sizeof(opts)) break;
+    }
+    lv_dropdown_set_options(capture_dropdown, opts);
+    lv_dropdown_set_selected(capture_dropdown, 0);
+}
+
+/* Parse a capture file ("URL|...", "TEXT|...", "WIFI|ssid|pass") into the replay
+ * buffers. basename picks /nfc/<basename>.replay; NULL falls back to _last. */
+static bool load_replay(const char *basename)
+{
+    char path[96];
+    if (basename && basename[0]) {
+        capture_path(NFC_CATALOG, basename, ".replay", path, sizeof(path));
+    } else {
+        snprintf(path, sizeof(path), "/%s/_last.replay", NFC_CATALOG);
+    }
+    File f = SD.open(path, FILE_READ);
     if (!f) return false;
     char buf[400];
     size_t n = f.readBytes(buf, sizeof(buf) - 1);
@@ -587,7 +622,12 @@ static void start_replay(void)
                                              "Insert an SD card to replay a capture."));
         return;
     }
-    if (!load_last_replay()) {
+    const char *basename = NULL;
+    if (capture_dropdown && capture_count_n > 0) {
+        uint16_t idx = lv_dropdown_get_selected(capture_dropdown);
+        if (idx < (uint16_t)capture_count_n) basename = capture_names[idx];
+    }
+    if (!load_replay(basename)) {
         set_label_text(hint_value, pick_text("Read a tag first",
                                              "No saved capture to replay. Read a tag first."));
         return;
@@ -697,6 +737,11 @@ static void create_short_controls()
     url_btn = create_template_button(control_panel, "URL", url_btn_cb);
     text_btn = create_template_button(control_panel, "Text", text_btn_cb);
     wifi_btn = create_template_button(control_panel, "WiFi", wifi_btn_cb);
+
+    capture_dropdown = lv_dropdown_create(control_panel);
+    lv_dropdown_set_options(capture_dropdown, "No captures");
+    lv_obj_set_size(capture_dropdown, 120, 28);
+    add_to_group(capture_dropdown);
     replay_btn = create_template_button(control_panel, "Replay", replay_btn_cb);
 }
 
@@ -730,6 +775,18 @@ static void create_large_controls(lv_obj_t *parent)
     url_btn = create_template_button(control_panel, "URL", url_btn_cb);
     text_btn = create_template_button(control_panel, "Text", text_btn_cb);
     wifi_btn = create_template_button(control_panel, "WiFi", wifi_btn_cb);
+
+    lv_obj_t *cap_title = lv_label_create(control_panel);
+    lv_label_set_text(cap_title, "Saved captures");
+    lv_obj_set_width(cap_title, LV_PCT(100));
+    lv_obj_set_style_text_color(cap_title, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_text_font(cap_title, &lv_font_montserrat_12, 0);
+
+    capture_dropdown = lv_dropdown_create(control_panel);
+    lv_dropdown_set_options(capture_dropdown, "No captures");
+    lv_obj_set_size(capture_dropdown, LV_PCT(100), 34);
+    add_to_group(capture_dropdown);
+
     replay_btn = create_template_button(control_panel, "Replay capture", replay_btn_cb);
 
     lv_obj_set_width(url_btn, LV_PCT(100));
@@ -812,6 +869,12 @@ static void build_watch_layout()
     url_row = ui_create_card_action(page_container, LV_SYMBOL_UPLOAD, "Share link", url_btn_cb);
     text_row = ui_create_card_action(page_container, LV_SYMBOL_EDIT, "Share text", text_btn_cb);
     wifi_row = ui_create_card_action(page_container, LV_SYMBOL_WIFI, "Share Wi-Fi", wifi_btn_cb);
+
+    /* Pick a saved capture, then replay it. */
+    lv_obj_t *cap_card = ui_create_card(page_container, NULL);
+    lv_obj_t *cap_row = ui_create_card_picker(cap_card, LV_SYMBOL_SD_CARD, "Capture",
+                                              "No captures", 0, NULL);
+    capture_dropdown = lv_obj_get_child(cap_row, lv_obj_get_child_count(cap_row) - 1);
     replay_row = ui_create_card_action(page_container, LV_SYMBOL_COPY, "Replay capture", replay_btn_cb);
     stop_row = ui_create_card_action(page_container, LV_SYMBOL_STOP, "Stop", stop_btn_cb);
 
@@ -859,6 +922,7 @@ static void back_event_handler(lv_event_t *e)
     text_btn = NULL;
     wifi_btn = NULL;
     replay_btn = NULL;
+    capture_dropdown = NULL;
 #if FACTORY_WATCH_UI
     url_row = NULL;
     text_row = NULL;
@@ -897,6 +961,7 @@ void ui_nfc_emulation_enter(lv_obj_t *parent)
     }
 #endif
 
+    scan_captures();
     update_controls();
 }
 

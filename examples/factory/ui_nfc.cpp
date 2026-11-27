@@ -13,6 +13,7 @@
 
 #include <SD.h>
 #include <time.h>
+#include "capture_store.h"
 
 static lv_obj_t *msgbox = NULL;
 static lv_obj_t *page_container = NULL;
@@ -186,33 +187,22 @@ static void update_record_view(const LilyGoNfcReaderResult &result)
     }
 }
 
-/* ── Auto-save a read to the SD card ──
- * Every card that is read is dumped to /nfc/<uid>.txt on the SD card, so reads
- * aren't lost when you leave the page. One file per card (named by UID, newest
- * read wins), written once per card presence. The NFC reader and the SD card
- * share the SPI bus, so this only runs from the reader's UI event callback, after
- * a read has completed — check on hardware that it doesn't disturb discovery. */
-#define NFC_SAVE_DIR "/nfc"
+/* ── Save a read to the SD card ──
+ * A read is held in memory and written only when you tap Save, under a name you
+ * accept or edit (default "nfc_<n>_<datetime>"). Files land in the /nfc catalog:
+ *   /nfc/<name>.txt     human-readable dump
+ *   /nfc/<name>.replay  one line the NFC Card app can re-emit (URL/Text/WiFi)
+ *   /nfc/_last.replay   pointer to the most recently saved replayable capture
+ * The reader and the SD card share the SPI bus, so Save runs from the UI only,
+ * after a read has completed — check on hardware it doesn't disturb discovery. */
+#define NFC_CATALOG "nfc"
 
-static char nfc_saved_uid[48];   /* UID already written for the card now present */
-
-static void nfc_reset_saved(void)
-{
-    nfc_saved_uid[0] = '\0';
-}
-
-/* Keep only hex digits from the UID text, for a safe, stable filename. */
-static void nfc_uid_to_filename(const char *uid, char *out, size_t out_len)
-{
-    size_t j = 0;
-    for (size_t i = 0; uid[i] && j + 1 < out_len; i++) {
-        char c = uid[i];
-        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-            out[j++] = c;
-        }
-    }
-    out[j] = '\0';
-}
+static LilyGoNfcReaderResult captured_result;   /* the read waiting to be saved */
+static bool have_capture = false;
+static int nfc_counter = 1;
+static lv_obj_t *filename_ta = NULL;
+static lv_obj_t *save_btn = NULL;
+static lv_obj_t *save_status = NULL;
 
 /* Build a one-line, machine-parseable replay record from the first NDEF record
  * that the card emulator can re-emit (URL / Text / Wi-Fi). Returns false when the
@@ -240,27 +230,49 @@ static bool nfc_build_replay_line(const LilyGoNfcReaderResult &result, char *out
     return false;
 }
 
-static void nfc_save_capture(const LilyGoNfcReaderResult &result)
+/* Put a fresh default name in the filename box for the capture just read. */
+static void nfc_set_default_name(void)
+{
+    if (!filename_ta) return;
+    char name[48];
+    capture_make_name(NFC_CATALOG, nfc_counter, name, sizeof(name));
+    lv_textarea_set_text(filename_ta, name);
+}
+
+/* Remember the latest read so Save can write it, and prompt the user to save. */
+static void nfc_capture_latest(const LilyGoNfcReaderResult &result)
 {
     if (!result.uidText[0] || strcmp(result.uidText, "--") == 0) return;
-    if (strcmp(result.uidText, nfc_saved_uid) == 0) return;   /* already saved this card */
+    captured_result = result;
+    have_capture = true;
+    nfc_set_default_name();
+    if (save_btn) lv_obj_clear_state(save_btn, LV_STATE_DISABLED);
+    if (save_status) set_label_text(save_status, "Card read — tap Save to keep it.");
+}
 
-    if (!hw_is_sd_insert()) {
-        set_label_text(hint_value, "Insert an SD card to save reads.");
+/* Write the held capture to /nfc/<name>.txt (+ .replay sidecar) when Save is tapped. */
+static void nfc_write_capture(const char *name)
+{
+    if (!have_capture) {
+        if (save_status) set_label_text(save_status, "Read a card first.");
+        return;
+    }
+    if (!hw_is_sd_insert() || !capture_catalog_ensure(NFC_CATALOG)) {
+        if (save_status) set_label_text(save_status, "Insert an SD card to save.");
+        return;
+    }
+    char safe[48];
+    if (!capture_sanitize_name(name, safe, sizeof(safe))) {
+        if (save_status) set_label_text(save_status, "Enter a filename.");
         return;
     }
 
-    char fname[48];
-    nfc_uid_to_filename(result.uidText, fname, sizeof(fname));
-    if (!fname[0]) return;
-
-    if (!SD.exists(NFC_SAVE_DIR)) SD.mkdir(NFC_SAVE_DIR);
-
-    char path[80];
-    snprintf(path, sizeof(path), "%s/%s.txt", NFC_SAVE_DIR, fname);
+    const LilyGoNfcReaderResult &result = captured_result;
+    char path[96];
+    capture_path(NFC_CATALOG, safe, ".txt", path, sizeof(path));
     File f = SD.open(path, FILE_WRITE);
     if (!f) {
-        set_label_text(hint_value, "SD write failed.");
+        if (save_status) set_label_text(save_status, "SD write failed.");
         return;
     }
 
@@ -268,7 +280,7 @@ static void nfc_save_capture(const LilyGoNfcReaderResult &result)
     time_t now = time(NULL);
     struct tm tmv;
     char ts[32] = "";
-    if (now > 0 && localtime_r(&now, &tmv)) {
+    if (now > 1000000000L && localtime_r(&now, &tmv)) {
         strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tmv);
     }
 
@@ -302,23 +314,26 @@ static void nfc_save_capture(const LilyGoNfcReaderResult &result)
     }
     f.close();
 
-    /* A replay sidecar the NFC Card (emulation) app can re-emit: the whole capture
-     * under /nfc/<uid>.replay, plus /nfc/_last.replay as the most-recent pointer. */
+    /* Replay sidecar the NFC Card (emulation) app can re-emit, plus a _last pointer. */
     char replay[300];
     if (nfc_build_replay_line(result, replay, sizeof(replay))) {
-        char rpath[80];
-        snprintf(rpath, sizeof(rpath), "%s/%s.replay", NFC_SAVE_DIR, fname);
+        char rpath[96];
+        capture_path(NFC_CATALOG, safe, ".replay", rpath, sizeof(rpath));
         File rf = SD.open(rpath, FILE_WRITE);
         if (rf) { rf.println(replay); rf.close(); }
-        File lf = SD.open(NFC_SAVE_DIR "/_last.replay", FILE_WRITE);
+        File lf = SD.open("/" NFC_CATALOG "/_last.replay", FILE_WRITE);
         if (lf) { lf.println(replay); lf.close(); }
     }
 
-    strncpy(nfc_saved_uid, result.uidText, sizeof(nfc_saved_uid) - 1);
-    nfc_saved_uid[sizeof(nfc_saved_uid) - 1] = '\0';
+    nfc_counter++;
+    snprintf(line, sizeof(line), "Saved %s.txt", safe);
+    if (save_status) set_label_text(save_status, line);
+}
 
-    snprintf(line, sizeof(line), "Saved to %s", path);
-    set_label_text(hint_value, line);
+static void save_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    nfc_write_capture(filename_ta ? lv_textarea_get_text(filename_ta) : "");
 }
 
 static void update_result_view(LilyGoNfcEvent event, const LilyGoNfcReaderResult &result)
@@ -397,19 +412,15 @@ static void update_result_view(LilyGoNfcEvent event, const LilyGoNfcReaderResult
         set_label_text(raw_value, "--");
     }
 
-    /* Persist every completed read to the SD card (once per card presence). */
+    /* Hold the latest completed read in memory; the user saves it with the Save card. */
     switch (event) {
-    case LILYGO_NFC_EVENT_STARTED:
-    case LILYGO_NFC_EVENT_CARD_RELEASED:
-        nfc_reset_saved();
-        break;
     case LILYGO_NFC_EVENT_NDEF_READ:
     case LILYGO_NFC_EVENT_NDEF_UNSUPPORTED:
     case LILYGO_NFC_EVENT_NDEF_ERROR:
-        nfc_save_capture(result);
+        nfc_capture_latest(result);
         break;
     case LILYGO_NFC_EVENT_CARD_DETECTED:
-        if (is_uid_only_result(result)) nfc_save_capture(result);
+        if (is_uid_only_result(result)) nfc_capture_latest(result);
         break;
     default:
         break;
@@ -474,6 +485,10 @@ static void back_event_handler(lv_event_t *e)
     record_body = NULL;
     raw_value = NULL;
     hint_value = NULL;
+    filename_ta = NULL;
+    save_btn = NULL;
+    save_status = NULL;
+    have_capture = false;
     menu_show();
 }
 
@@ -502,6 +517,44 @@ void ui_nfc_enter(lv_obj_t *parent)
 
     lv_obj_t *raw_card = ui_create_card(page_container, "Raw NDEF");
     raw_value = create_value_label(raw_card, LV_SYMBOL_LIST, "Hex", "--");
+
+    /* ── Save card: read a card, accept or edit the name, tap Save ── */
+    have_capture = false;
+    lv_obj_t *save_card = ui_create_card(page_container, "Save");
+
+    filename_ta = lv_textarea_create(save_card);
+    lv_textarea_set_one_line(filename_ta, true);
+    lv_textarea_set_max_length(filename_ta, 40);
+    char default_name[48];
+    capture_make_name(NFC_CATALOG, nfc_counter, default_name, sizeof(default_name));
+    lv_textarea_set_text(filename_ta, default_name);
+    lv_obj_set_style_bg_color(filename_ta, lv_color_hex(0x2A2A2A), 0);
+    lv_obj_set_style_bg_opa(filename_ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(filename_ta, lv_color_white(), 0);
+    lv_obj_set_style_border_color(filename_ta, UI_COLOR_DIVIDER, 0);
+    lv_obj_set_style_border_width(filename_ta, 1, 0);
+    lv_obj_set_style_radius(filename_ta, 8, 0);
+    ui_create_card_item(save_card, LV_SYMBOL_FILE, "Name", filename_ta);
+
+    save_btn = lv_btn_create(save_card);
+    lv_obj_set_width(save_btn, LV_PCT(100));
+    lv_obj_set_style_bg_color(save_btn, UI_COLOR_ACCENT, 0);
+    lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(save_btn, 8, 0);
+    lv_obj_set_style_border_width(save_btn, 0, 0);
+    ui_add_accent_focus_style(save_btn);
+    lv_obj_add_event_cb(save_btn, save_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_state(save_btn, LV_STATE_DISABLED);     /* enabled once a card is read */
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, LV_SYMBOL_SAVE " Save to SD");
+    lv_obj_center(save_lbl);
+
+    save_status = lv_label_create(save_card);
+    lv_label_set_text(save_status, "Read a card, then Save.");
+    lv_obj_set_width(save_status, LV_PCT(100));
+    lv_label_set_long_mode(save_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(save_status, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_obj_set_style_text_font(save_status, &lv_font_montserrat_12, 0);
 
     lv_obj_t *hint_card = ui_create_card(page_container, "Hint");
     hint_value = create_value_label(hint_card, LV_SYMBOL_WIFI, "Place", NFC_TIPS_STRING);
