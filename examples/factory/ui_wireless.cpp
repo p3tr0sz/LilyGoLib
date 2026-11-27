@@ -157,6 +157,7 @@ static bool known_password_for_ssid(const char *ssid, char *out, size_t out_len)
 {
     if (!ssid || !out || out_len == 0) return false;
     out[0] = '\0';
+    if (hw_wifi_saved_password(ssid, out, out_len)) return true;
 #ifdef WIFI_SSID
     if (strcmp(ssid, WIFI_SSID) == 0) {
 #ifdef WIFI_PASSWORD

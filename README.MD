@@ -101,6 +101,14 @@ pio run -e twatch_ultra -t erase -t upload      # erase first (after partition c
 pio device monitor -e twatch_ultra              # serial log (115200)
 ```
 
+**Where settings live.** Settings, saved Wi-Fi networks, the app order and the compass calibration
+are JSON files in `config/` on the internal flash (`/flash/config` in the web desktop:
+`settings.json`, `wifi.json`, `app_order.json`, `compass.json`). Every save is also copied to
+`/sd/config/` when a card is in. At boot the flash copy wins. If it's missing (new watch, chip erase,
+partition change), the SD copy is restored. Reflashing the firmware never touches them, not even the
+merged image at `0x0`. Older firmware kept settings in NVS; the first boot of this one moves them
+over. The SD copy holds Wi-Fi passwords in plain text. Web-desktop pairing sessions stay in NVS.
+
 If the USB port keeps dropping, put the watch in
 [download mode](./docs/lilygo-t-watch-ultra.md#t-watch-ultra-enter-download-mode) (hold **BOOT**,
 tap **RST**, release **BOOT**), then tap **RST** when done.
