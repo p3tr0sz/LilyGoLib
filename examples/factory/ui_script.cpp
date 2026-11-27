@@ -95,9 +95,11 @@ static void reload_cb(lv_event_t *e)
 static void back_event_handler(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if (page_container) ui_destroy_app_page(page_container);
     page_container = list_cont = out_cont = out_label = NULL;
     script_log.clear();
     script_names.clear();
+    menu_show();
 }
 
 static void ui_script_enter(lv_obj_t *parent)

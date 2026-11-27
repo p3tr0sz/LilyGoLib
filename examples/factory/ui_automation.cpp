@@ -100,10 +100,12 @@ static void reload_cb(lv_event_t *e)
 static void back_event_handler(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if (page_container) ui_destroy_app_page(page_container);
     page_container = list_cont = NULL;
     rule_ids.clear();
     rule_ons.clear();
     rule_enabled.clear();
+    menu_show();
 }
 
 static void ui_automation_enter(lv_obj_t *parent)

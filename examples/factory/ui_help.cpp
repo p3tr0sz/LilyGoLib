@@ -82,7 +82,9 @@ static void rebuild_list(void)
 static void back_event_handler(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if (page_container) ui_destroy_app_page(page_container);
     page_container = list_cont = NULL;
+    menu_show();
 }
 
 static void ui_help_enter(lv_obj_t *parent)

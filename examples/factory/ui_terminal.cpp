@@ -69,10 +69,12 @@ static void kb_event_cb(lv_event_t *e)
 static void back_event_handler(lv_event_t *e)
 {
     LV_UNUSED(e);
-    /* Objects are children of the page and are freed by the UI framework; just drop our handles.
+    /* Objects are children of the page, so destroying the page frees them.
      * term_cwd is kept so the directory survives re-opening; the visible log is reset. */
+    if (page_container) ui_destroy_app_page(page_container);
     out_cont = out_label = input_ta = keyboard = page_container = NULL;
     term_log.clear();
+    menu_show();
 }
 
 static void ui_terminal_enter(lv_obj_t *parent)

@@ -101,7 +101,9 @@ static void cleanup(void)
 static void back_event_handler(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if (page_container) ui_destroy_app_page(page_container);
     cleanup();
+    menu_show();
 }
 
 static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, lv_obj_t **lbl_out)
