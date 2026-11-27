@@ -1355,6 +1355,7 @@ void hw_set_touch_guide_dismissed(bool dismissed);
 typedef enum {
     WATCH_LOCK_OFF = 0,     /* Screen off when idle */
     WATCH_LOCK_CLOCK,       /* Clock page for one more timeout, then screen off */
+    WATCH_LOCK_AOD,         /* Dim clock kept on when idle (always-on display) */
     WATCH_LOCK_MODE_COUNT,
 } watch_lock_mode_t;
 

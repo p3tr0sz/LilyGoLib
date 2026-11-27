@@ -8,6 +8,7 @@
  *   back (swipe right) returns app -> list (or face, if launched from a face slot) -> face.
  * Idle time on the face or list turns the screen off; any wake source returns to the face.
  * With lock mode "Clock", idle first shows a clock page for one more timeout.
+ * With lock mode "Always on" (AOD), idle keeps the dim clock on instead of turning off.
  */
 #include "ui_define.h"
 #include "ui_watch_shell.h"
@@ -33,8 +34,11 @@ static watch_view_t view = WATCH_VIEW_FACE;
 static watch_view_t app_return_view = WATCH_VIEW_LIST;
 static uint32_t wake_tick;
 static bool wake_guard;
+static bool aod_active;              /* Always-on display: the dim clock is held on */
+static uint8_t aod_saved_brightness;
 #ifndef ARDUINO
 static lv_obj_t *screen_off_overlay;
+static lv_obj_t *aod_dim_overlay;   /* The simulator has no backlight: dim with an overlay */
 #endif
 
 static int32_t screen_width(void)
@@ -247,9 +251,56 @@ static void lock_show(void)
     lv_display_trigger_activity(NULL);
 }
 
+/* ── Always-on display (lock mode "Always on") ──
+ * Keep the dim clock on when idle instead of turning the screen off. A true
+ * always-on display would drop into light sleep and wake a timer each minute to
+ * redraw (watch-ui-roadmap.md "Always-on display"); this first version holds the
+ * clock on at the minimum backlight, so it costs more battery than that — enough
+ * to prove the UX, to be optimised when checked on hardware. The clock page keeps
+ * its own 1 s timer (lock_clock_show) and handles tap/swipe to wake. */
+static uint8_t aod_level(void)
+{
+    uint8_t lo = hw_get_disp_min_brightness();
+    return lo ? lo : 1;
+}
+
+static void aod_clear(void)
+{
+    if (!aod_active) return;
+    aod_active = false;
+#ifndef ARDUINO
+    if (aod_dim_overlay) {
+        lv_obj_delete(aod_dim_overlay);
+        aod_dim_overlay = NULL;
+    }
+#endif
+    hw_inc_brightness(aod_saved_brightness);
+}
+
+static void aod_show(void)
+{
+    lock_show();                    /* shows the clock page; view = WATCH_VIEW_LOCK */
+    aod_active = true;
+    aod_saved_brightness = hw_get_disp_backlight();
+    hw_dec_brightness(aod_level());
+#ifndef ARDUINO
+    /* No backlight on the desktop, so dim the clock with a translucent overlay.
+     * It isn't clickable, so a tap still reaches the clock page and wakes. */
+    aod_dim_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(aod_dim_overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(aod_dim_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(aod_dim_overlay, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(aod_dim_overlay, 0, 0);
+    lv_obj_set_style_radius(aod_dim_overlay, 0, 0);
+    lv_obj_remove_flag(aod_dim_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(aod_dim_overlay, LV_OBJ_FLAG_CLICKABLE);
+#endif
+}
+
 void watch_shell_unlock(void)
 {
     if (view != WATCH_VIEW_LOCK) return;
+    aod_clear();
     lock_clock_hide();
     view = WATCH_VIEW_FACE;
     watch_face_update();
@@ -258,6 +309,7 @@ void watch_shell_unlock(void)
 
 static void screen_wake(uint8_t brightness)
 {
+    aod_clear();
     lock_clock_hide();
     list_reset_hidden();
     quick_reset_hidden();
@@ -331,6 +383,11 @@ void watch_shell_wake(void)
         return;
     }
 #endif
+    if (aod_active) {
+        /* Always-on: a wake source returns to the face and restores the backlight. */
+        watch_shell_unlock();
+        return;
+    }
     /* On hardware the screen is already on: screen_off() returns only after waking. */
     lv_display_trigger_activity(NULL);
 }
@@ -422,10 +479,16 @@ void watch_shell_poll(void)
     uint32_t timeout = hw_get_disp_timeout_ms();
     if (timeout == 0 || !get_enter_low_power_flag()) return;
     if (lv_display_get_inactive_time(NULL) < timeout) return;
-    if (view != WATCH_VIEW_LOCK && hw_get_watch_lock_mode() == WATCH_LOCK_CLOCK) {
+    uint8_t lock_mode = hw_get_watch_lock_mode();
+    if (view != WATCH_VIEW_LOCK && lock_mode == WATCH_LOCK_CLOCK) {
         lock_show();
         return;
     }
+    if (view != WATCH_VIEW_LOCK && lock_mode == WATCH_LOCK_AOD) {
+        aod_show();
+        return;
+    }
+    if (aod_active) return;     /* Always-on: hold the dim clock, never turn the screen off. */
     screen_off();
 }
 

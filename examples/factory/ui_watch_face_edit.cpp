@@ -207,9 +207,10 @@ static void lock_mode_cb(lv_event_t *e)
 void watch_lock_screen_build(lv_obj_t *content)
 {
     lv_obj_t *card = ui_create_card(content, NULL);
-    ui_create_card_picker(card, NULL, "When idle", "Screen off\nClock",
+    ui_create_card_picker(card, NULL, "When idle", "Screen off\nClock\nAlways on",
                           hw_get_watch_lock_mode(), lock_mode_cb);
     add_caption(content, "Clock stays on for one more screen timeout, then the screen turns off. "
+                "Always on keeps a dim clock showing (uses more battery). "
                 "Tap or swipe up to return to the watch face.");
 }
 
