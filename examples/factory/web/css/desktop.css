@@ -52,6 +52,7 @@ a { color: var(--accent); }
 .btn.ghost { background: transparent; border-color: transparent; }
 .btn.icon { width: 38px; padding: 0; }
 .btn svg { width: 18px; height: 18px; flex: none; }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
 
 .field {
   width: 100%; min-height: 40px; padding: 8px 12px;
