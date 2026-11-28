@@ -747,6 +747,12 @@ void ui_launch_app(app_t *app)
         } catch (...) {
             /* A C++ exception while the app opened (out of memory in a std::vector,
              * for example): drop what it built and go back, without a restart. */
+            /* The back handler won't run on this path, so release any hardware or
+             * standalone timer the app grabbed before throwing. Run the exit handler
+             * first, while the half-built page is still valid: the handlers NULL-guard
+             * their widgets, so a partial page is fine, and none of them destroy the
+             * page (lv_obj_clean does that next). */
+            if (app->exit_func_cb) (*app->exit_func_cb)(parent);
             lv_obj_clean(parent);
             hw_crash_note_app(NULL);
             ui_app_accent_pop();   /* an app that threw while opening still restores the accent */

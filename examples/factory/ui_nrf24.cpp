@@ -74,7 +74,10 @@ static void replay_last_packet(void);
 static void scan_nrf24(void);
 static void apply_nrf24_address(uint8_t index);
 
-static void back_event_handler(lv_event_t *e)
+/* Release the radio and the capture timer. Idempotent and safe to call after the
+ * page objects are gone, so both the back handler and exit_func_cb — including the
+ * crash-during-setup path in ui_launch_app() — can call it. */
+static void nrf24_release(void)
 {
     if (timer) {
         lv_timer_delete(timer);
@@ -84,14 +87,17 @@ static void back_event_handler(lv_event_t *e)
     radio_run_mode = RADIO_DISABLE;
     radio_params_copy.mode = RADIO_DISABLE;
     hw_set_nrf24_params(radio_params_copy);
+    filename_ta = NULL;
+    capture_dd = NULL;
+}
 
+static void back_event_handler(lv_event_t *e)
+{
+    nrf24_release();
     if (page_container) {
         ui_destroy_app_page(page_container);
         page_container = NULL;
     }
-    filename_ta = NULL;
-    capture_dd = NULL;
-
     menu_show();
 }
 
@@ -791,7 +797,8 @@ void ui_nrf24_enter(lv_obj_t *parent)
 
 void ui_nrf24_exit(lv_obj_t *parent)
 {
-
+    (void)parent;
+    nrf24_release();
 }
 
 

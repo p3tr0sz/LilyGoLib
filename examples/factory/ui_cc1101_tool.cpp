@@ -126,25 +126,31 @@ static void format_hex_payload(const uint8_t *data, size_t len, char *out, size_
     }
 }
 
-static void back_event_handler(lv_event_t *e)
+/* Release the radio and the capture timer. Idempotent and safe to call after the
+ * page objects are gone (it touches only the timer, the radio and static pointers),
+ * so both the back handler and exit_func_cb — including the crash-during-setup path
+ * in ui_launch_app() — can call it. */
+static void cc1101_release(void)
 {
-    (void)e;
     if (timer) {
         lv_timer_delete(timer);
         timer = NULL;
     }
-
     radio_run_mode = RADIO_DISABLE;
     radio_params_copy.mode = RADIO_DISABLE;
     hw_set_radio_params(radio_params_copy);
+    filename_ta = NULL;
+    capture_dd = NULL;
+}
 
+static void back_event_handler(lv_event_t *e)
+{
+    (void)e;
+    cc1101_release();
     if (page_container) {
         ui_destroy_app_page(page_container);
         page_container = NULL;
     }
-    filename_ta = NULL;
-    capture_dd = NULL;
-
     menu_show();
 }
 
@@ -714,6 +720,7 @@ void ui_cc1101_tool_enter(lv_obj_t *parent)
 void ui_cc1101_tool_exit(lv_obj_t *parent)
 {
     (void)parent;
+    cc1101_release();
 }
 
 app_t ui_cc1101_tool_main = {

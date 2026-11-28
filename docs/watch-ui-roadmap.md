@@ -48,6 +48,7 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 9 | Quick settings shade: swipe down from the face for brightness, Wi-Fi and Torch, plus a Settings shortcut | Done in the simulator; Wi-Fi/backlight on hardware and a Bluetooth toggle still open — see "Quick settings shade" |
 | 10 | Always-on clock: a lock mode that keeps a dim clock on when idle | Done; builds on both targets, but the idle path can't be exercised in the simulator — needs checking on hardware (see "Always-on clock") |
 | 11 | Capture catalogs: save captured signals to the SD card and replay them (NFC, sub-GHz, nRF24) | Done; all on hardware-only code paths — needs checking on hardware (see "Capture catalogs") |
+| 12 | Wi-Fi setup from a phone: a SoftAP captive page takes the home password, typed on the phone | Done; page/endpoints verified in the simulator, the real Wi-Fi join needs checking on hardware (see "Wi-Fi setup from a phone") |
 
 ## Next steps
 
@@ -55,7 +56,7 @@ In order. Details are in the follow-up sections further down.
 
 1. **Get the firmware building, then check everything on the wrist.** `pio run -e twatch_ultra` in `LilyGoLib-PlatformIO` gets past SensorLib (`^0.5.1`) and Button2 (2.7.0), and the factory app and LVGL compile. It stops at `demo_ce.h: No such file or directory` in `src/nfc/LilyGoNfcService.cpp`. That header is in `lewisxhe/ST25R3916-NFC-RFAL` v1.0.1, the library `docs/third_party.md` lists; it combines the `ST25R3916-fork` and `NFC-RFAL-fork` the project pulls in now. Swap those two `lib_deps` for it. Then flash and go through the hardware checks: the phase 4–8c follow-ups and the crash-recovery test.
 2. **Bigger features, in order of value:**
-   - **Wi-Fi from the phone:** set up Wi-Fi over BLE, so there's no password typing.
+   - **Wi-Fi from the phone:** ~~set up Wi-Fi over BLE, so there's no password typing.~~ Done 2026-11-28 (SoftAP captive page, not BLE — the firmware is all NimBLE, so the stock BLE-provisioning path would clash; see "Wi-Fi setup from a phone").
    - **Quick settings:** ~~swipe down on the face for brightness, Wi-Fi and BLE.~~ Done 2026-11-27 (brightness, Wi-Fi, Torch; BLE deferred — see "Quick settings shade").
    - **Always-on clock:** ~~a dim clock that stays on.~~ Done 2026-11-27 (lock mode "Always on"; see "Always-on clock").
    - **Typing:** word completion on the keyboard.
@@ -401,6 +402,32 @@ Asked for: the same principle for every captured signal — read it, save it to 
 - **All hardware-only.** None of the capture, save or replay paths run in the simulator (no NFC/radio chip), so the whole loop is **compile-verified only** — read→save→replay needs a wrist test, watching the NFC/SD SPI sharing and the `.sub`/`.nrf` reload→retransmit.
 - **Sub-GHz / nRF24 replay is replay-attack-shaped**; these tools already ship in this research fork, and the change only adds persistence to match IR and NFC.
 - **Possible follow-ups:** a delete/rename action in the pickers; an IR picker that uses the same `capture_store` list; a capture count/size readout.
+
+### Wi-Fi setup from a phone (2026-11-28)
+
+Asked for: set up Wi-Fi without typing the password on the watch. The roadmap pencilled in BLE provisioning (the ESP BLE Prov app), but the firmware is all NimBLE (HID, scanner, paw mouse), and Espressif's stock provisioning uses the Bluedroid host — the two can't share the radio, the same "no global BLE owner" problem the Quick-settings Bluetooth toggle hit. This fork already has a full web server + SoftAP + captive-portal stack, so a **SoftAP web page** is both cleaner and partly testable in the simulator; chosen over a custom NimBLE GATT service (which would have no off-the-shelf phone app).
+
+- **Flow** (`web_provision.{h,cpp}`): Settings → WiFi → **"Set up from phone"** raises a short-lived WPA2 SoftAP (`T-Watch-Setup`, an 8-digit PIN as the passphrase) and shows the name, PIN and a Wi-Fi-join **QR** on the watch. The phone joins (scan the code or type the PIN once), a captive page lists nearby networks (`GET /prov/scan`), takes the home password on the phone's own keyboard (`POST /prov/connect`), and the watch joins and saves the credentials (`hw_set_wifi_connect` → saved on GOT_IP, so it rejoins on its own next boot). The page polls `GET /prov/status`; the watch page shows Waiting → Connecting → Connected.
+- **Captive hook** (`web_core.cpp`): `web_provision_captive()` runs at the top of `web_api_handle()` while the setup AP is up. It owns `/prov/*` and serves the setup page for any other page request, but **leaves `/api/` alone**, so the web desktop and screen endpoints keep working during setup. The connect is non-blocking (async scan, `WiFi.begin()`) with a 25 s deadline → `failed`.
+- **Interrupt / cleanup:** a swipe-right off the page (`prov_page_delete_cb`) and `ui_wireless_exit()` both call `web_provision_stop()`, which drops the AP, stops the captive DNS and releases the Wi-Fi radio owner. Verified in the simulator: the pill renders, the page pushes with name/PIN/QR, `/prov/scan` lists the sim's four fake networks, connect→status transitions, and backing out returns to the WiFi app with `/prov/scan` 404.
+
+**Not done / deferred:**
+- **The real Wi-Fi join is hardware-only.** The simulator reports no STA connection, so the success transition (Connecting → Connected) can't be exercised there — verify on the wrist, watching SoftAP + STA coexistence (`WIFI_AP_STA`), that creds are saved, and that dropping the AP after a successful join leaves the STA connected.
+- **No auth on the setup page beyond the AP passphrase.** Anyone on the setup AP (which needs the on-screen PIN to join) can drive it; that's the same trust model as the AP itself. Fine for a user-initiated, short-lived setup window.
+- A "Set up from phone" entry could also live in the first-run onboarding, not just Settings → WiFi.
+
+### Interruptible tool operations (2026-11-28)
+
+Asked for: make sure the tools' operations can be safely interrupted, and the watch reacts when it gets stuck. Audited after the capture + provisioning work.
+
+- **React when stuck** already exists: the 20 s UI watchdog (`factory.ino:190`, `hal_interface.cpp`) restarts if `loop()` stalls, and crash recovery returns to the face with a message. LVGL asserts and exceptions-while-opening-an-app are caught too.
+- **Operations don't block the loop:** Wi-Fi scan is async (`scanNetworks(true)`), `WiFi.begin()` returns at once, radio replay is single-shot with a bounded TX timeout, and RX capture is polled on an LVGL timer — so the tools don't spin the loop and rarely approach the watchdog threshold.
+- **Leaving an app releases its hardware:** each tool's `back_event_handler` (the real teardown path — `exit_func_cb` was dead code, never called by the framework) deletes its timer and releases its radio. Consolidated so cleanup is one idempotent helper per tool used by both paths: `cc1101_release()` / `nrf24_release()` (timer + radio → `DISABLE`), NFC's `stop_nfc_page()`, `web_provision_stop()`.
+- **Crash-during-setup gap closed:** `ui_launch_app()`'s exception handler now calls the app's `exit_func_cb` **before** `lv_obj_clean()`, so a timer or radio grabbed before an app threw while opening is released (the back handler never runs on that path). Ordered before the clean, while the half-built page is still valid; every exit handler NULL-guards its widgets and none destroy the page, so it is safe.
+
+**Not done / deferred:**
+- The 20 s watchdog window is long; shortening it risks false reboots during legit slow SD writes or scans — tune only with hardware timing.
+- Static widget pointers aren't reset at `enter()` start (they're NULLed on clean exit instead); a belt-and-braces reset at the top of each `enter()` would remove the last stale-pointer edge. Pre-existing, app-wide.
 
 ### What phase 8c changed (2026-11-05)
 
