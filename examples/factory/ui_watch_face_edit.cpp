@@ -121,20 +121,79 @@ static void picker_apps_refresh(void)
     picker_app_count = watch_app_list_order(picker_apps, sizeof(picker_apps) / sizeof(picker_apps[0]));
 }
 
+/* The options are grouped under category headers, so one line in the radio list
+ * no longer maps straight to a value or app index. This mirror of the lines —
+ * headers included, in the same order — maps a selected line back to what it
+ * means. Rebuilt with the options string; the app order can change in between. */
+enum { LINE_HEADER, LINE_VALUE, LINE_APP };
+#define PICKER_LINE_MAX (SLOT_VALUE_COUNT + sizeof(picker_apps) / sizeof(picker_apps[0]) + 24)
+static struct {
+    uint8_t kind;
+    uint16_t ref;           /* LINE_VALUE: slot_value_types index; LINE_APP: picker_apps index */
+    const char *header;     /* LINE_HEADER: the section title */
+} picker_lines[PICKER_LINE_MAX];
+static uint16_t picker_line_count = 0;
+
+static void picker_line_push(uint8_t kind, uint16_t ref, const char *header)
+{
+    if (picker_line_count >= PICKER_LINE_MAX) return;
+    picker_lines[picker_line_count].kind = kind;
+    picker_lines[picker_line_count].ref = ref;
+    picker_lines[picker_line_count].header = header;
+    picker_line_count++;
+}
+
+/* Values first under "Watch", then the apps grouped by category in chip order,
+ * each app kept in the app list's order within its group. */
+static void picker_lines_build(void)
+{
+    picker_apps_refresh();
+    picker_line_count = 0;
+
+    picker_line_push(LINE_HEADER, 0, "Watch");
+    for (uint16_t i = 0; i < SLOT_VALUE_COUNT; i++) picker_line_push(LINE_VALUE, i, NULL);
+
+    bool emitted[sizeof(picker_apps) / sizeof(picker_apps[0])] = {false};
+    uint32_t ncat = 0;
+    const char *const *cats = watch_app_category_order(&ncat);
+    for (uint32_t c = 0; c < ncat; c++) {
+        if (strcmp(cats[c], "All") == 0) continue;
+        bool header_done = false;
+        for (uint32_t a = 0; a < picker_app_count; a++) {
+            if (emitted[a] || !picker_apps[a]->category) continue;
+            if (strcmp(picker_apps[a]->category, cats[c]) != 0) continue;
+            if (!header_done) { picker_line_push(LINE_HEADER, 0, cats[c]); header_done = true; }
+            picker_line_push(LINE_APP, (uint16_t)a, NULL);
+            emitted[a] = true;
+        }
+    }
+    /* Any app whose category is not a known chip keeps its place under "Other". */
+    bool other_done = false;
+    for (uint32_t a = 0; a < picker_app_count; a++) {
+        if (emitted[a]) continue;
+        if (!other_done) { picker_line_push(LINE_HEADER, 0, "Other"); other_done = true; }
+        picker_line_push(LINE_APP, (uint16_t)a, NULL);
+        emitted[a] = true;
+    }
+}
+
+/* The dropdown line index for a slot's current setting, so its check mark starts
+ * on it. Falls back to the "None" line when the app or value is gone. */
 static uint16_t slot_option_index(const watch_slot_setting_t &slot)
 {
-    if (slot.type == WATCH_SLOT_APP) {
-        for (uint32_t i = 0; i < picker_app_count; i++) {
-            if (app_matches_hash(picker_apps[i], slot.app_hash)) {
-                return SLOT_VALUE_COUNT + i;
+    uint16_t none_line = 0;
+    for (uint16_t i = 0; i < picker_line_count; i++) {
+        if (picker_lines[i].kind == LINE_VALUE) {
+            if (slot_value_types[picker_lines[i].ref] == WATCH_SLOT_NONE) none_line = i;
+            if (slot.type != WATCH_SLOT_APP && slot_value_types[picker_lines[i].ref] == slot.type) {
+                return i;
             }
+        } else if (picker_lines[i].kind == LINE_APP && slot.type == WATCH_SLOT_APP &&
+                   app_matches_hash(picker_apps[picker_lines[i].ref], slot.app_hash)) {
+            return i;
         }
-        return 0;   /* The app is gone, so the face shows nothing there */
     }
-    for (uint16_t i = 0; i < SLOT_VALUE_COUNT; i++) {
-        if (slot_value_types[i] == slot.type) return i;
-    }
-    return 0;
+    return none_line;
 }
 
 static void slot_picker_cb(lv_event_t *e)
@@ -142,13 +201,14 @@ static void slot_picker_cb(lv_event_t *e)
     lv_obj_t *dropdown = lv_event_get_target_obj(e);
     uint8_t index = (uint8_t)(uintptr_t)lv_obj_get_user_data(dropdown);
     uint32_t option = lv_dropdown_get_selected(dropdown);
+    if (option >= picker_line_count || picker_lines[option].kind == LINE_HEADER) return;
 
     watch_slot_setting_t slot = {WATCH_SLOT_NONE, 0};
-    if (option < SLOT_VALUE_COUNT) {
-        slot.type = slot_value_types[option];
-    } else if (option - SLOT_VALUE_COUNT < picker_app_count) {
+    if (picker_lines[option].kind == LINE_VALUE) {
+        slot.type = slot_value_types[picker_lines[option].ref];
+    } else {    /* LINE_APP */
         slot.type = WATCH_SLOT_APP;
-        slot.app_hash = watch_app_name_hash(picker_apps[option - SLOT_VALUE_COUNT]->name);
+        slot.app_hash = watch_app_name_hash(picker_apps[picker_lines[option].ref]->name);
     }
     hw_set_watch_face_slot(index, slot);
     watch_face_rebuild();
@@ -171,19 +231,31 @@ static lv_obj_t *add_caption(lv_obj_t *content, const char *text)
 
 void watch_face_editor_build(lv_obj_t *content)
 {
-    /* Values, then app names, one per line */
+    /* Grouped under category headers, one line each. Header lines carry a marker
+     * byte the radio list draws as a non-selectable section title. */
+    picker_lines_build();
     size_t size = 1;
-    picker_apps_refresh();
-    uint32_t app_count = picker_app_count;
-    for (uint32_t i = 0; i < SLOT_VALUE_COUNT; i++) size += strlen(slot_value_names[i]) + 1;
-    for (uint32_t i = 0; i < app_count; i++) size += strlen(picker_apps[i]->name) + 1;
+    for (uint16_t i = 0; i < picker_line_count; i++) {
+        switch (picker_lines[i].kind) {
+        case LINE_HEADER: size += 1 + strlen(picker_lines[i].header) + 1; break;
+        case LINE_VALUE:  size += strlen(slot_value_names[picker_lines[i].ref]) + 1; break;
+        case LINE_APP:    size += strlen(picker_apps[picker_lines[i].ref]->name) + 1; break;
+        }
+    }
     char *options = (char *)lv_malloc(size);
     if (!options) return;
     options[0] = '\0';
-    for (uint32_t i = 0; i < SLOT_VALUE_COUNT + app_count; i++) {
+    for (uint16_t i = 0; i < picker_line_count; i++) {
         if (i > 0) lv_strcat(options, "\n");
-        lv_strcat(options, i < SLOT_VALUE_COUNT ? slot_value_names[i] :
-                  picker_apps[i - SLOT_VALUE_COUNT]->name);
+        if (picker_lines[i].kind == LINE_HEADER) {
+            char marker[2] = {UI_PICKER_HEADER_PREFIX, '\0'};
+            lv_strcat(options, marker);
+            lv_strcat(options, picker_lines[i].header);
+        } else if (picker_lines[i].kind == LINE_VALUE) {
+            lv_strcat(options, slot_value_names[picker_lines[i].ref]);
+        } else {
+            lv_strcat(options, picker_apps[picker_lines[i].ref]->name);
+        }
     }
 
     lv_obj_t *card = ui_create_card(content, NULL);

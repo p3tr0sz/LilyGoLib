@@ -351,6 +351,10 @@ void ui_status_bar_update(void);
  * page that holds `from` and returns its content. Swiping right pops it. */
 lv_obj_t *ui_push_page(lv_obj_t *from, const char *title);
 void ui_pop_page(lv_obj_t *content);
+/* An option line that begins with this byte is drawn as a non-selectable section
+ * header (caption styling, no check mark) in the radio list a picker opens. It
+ * still holds its option index, so the dropdown's selection stays aligned. */
+#define UI_PICKER_HEADER_PREFIX '\x1F'
 /* ui_create_card_item() calls this for a dropdown row: the dropdown only shows the
  * choice, and tapping the row opens a radio list. Apps don't need to call it. */
 void ui_picker_adopt(lv_obj_t *row, lv_obj_t *title_label, lv_obj_t *dd);

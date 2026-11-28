@@ -71,6 +71,9 @@ const ui_app_entry_t *watch_app_find_by_hash(uint32_t hash);
 /* Apps in the app list's order (the person's saved order, then the rest);
  * returns how many it wrote to out. */
 uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max);
+/* The category chip order ("All" first), shared with the face-corner picker so
+ * its sections match the app list. Writes the entry count to *count. */
+const char *const *watch_app_category_order(uint32_t *count);
 void watch_face_editor_build(lv_obj_t *content);
 void watch_lock_screen_build(lv_obj_t *content);
 /* Open the face editor as an app; slot >= 0 also opens that slot's choices. */

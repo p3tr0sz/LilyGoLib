@@ -162,10 +162,12 @@ static void picker_option_click_cb(lv_event_t *e)
     lv_obj_t *list = lv_obj_get_parent(option);
     uint32_t index = lv_obj_get_index(option);
 
-    /* Each option row ends with its check mark. */
+    /* Each option row ends with its check mark; section headers have none. */
     uint32_t count = lv_obj_get_child_count(list);
     for (uint32_t i = 0; i < count; i++) {
-        lv_obj_t *check = lv_obj_get_child(lv_obj_get_child(list, i), -1);
+        lv_obj_t *opt = lv_obj_get_child(list, i);
+        if (lv_obj_has_flag(opt, LV_OBJ_FLAG_USER_1)) continue;  /* header row */
+        lv_obj_t *check = lv_obj_get_child(opt, -1);
         if (i == index) {
             lv_obj_remove_flag(check, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -199,6 +201,22 @@ static void picker_open_cb(lv_event_t *e)
         len = LV_MIN(len, sizeof(text) - 1);
         memcpy(text, options, len);
         text[len] = '\0';
+
+        /* A section header: non-selectable, caption styling, no check mark. It
+         * keeps its option index so the dropdown's selection stays aligned. */
+        if (text[0] == UI_PICKER_HEADER_PREFIX) {
+            lv_obj_t *header = list_row_create(list);
+            lv_obj_add_flag(header, LV_OBJ_FLAG_USER_1);
+            lv_obj_remove_flag(header, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
+            lv_obj_set_height(header, LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_top(header, 12, 0);
+            lv_obj_t *label = list_row_label(header, text + 1);
+            lv_obj_set_style_text_font(label, UI_FONT_CAPTION, 0);
+            lv_obj_set_style_text_color(label, UI_COLOR_TEXT_SECONDARY, 0);
+            options = end ? end + 1 : options + strlen(options);
+            continue;
+        }
 
         lv_obj_t *option = list_row_create(list);
         list_row_label(option, text);

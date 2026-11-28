@@ -309,6 +309,12 @@ static void app_list_add_arrange_row(lv_obj_t *parent)
     app_list_set_arranging(false);
 }
 
+const char *const *watch_app_category_order(uint32_t *count)
+{
+    if (count) *count = sizeof(APP_CATEGORY_ORDER) / sizeof(APP_CATEGORY_ORDER[0]);
+    return APP_CATEGORY_ORDER;
+}
+
 uint32_t watch_app_list_order(const ui_app_entry_t **out, uint32_t max)
 {
     /* Saved order first (apps that no longer exist are skipped), then any app
