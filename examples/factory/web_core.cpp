@@ -4,6 +4,7 @@
  *            Platform-independent; see web_internal.h for the transport and platform hooks.
  */
 #include "web_internal.h"
+#include "web_provision.h"
 
 #if FACTORY_WEB
 
@@ -1087,6 +1088,8 @@ static bool is(const web_req_t *r, const char *method, const char *path)
 void web_api_handle(web_req_t *r)
 {
     s_last_request_ms = now_ms();
+    /* Wi-Fi setup from a phone owns all traffic while its setup AP is up (captive). */
+    if (web_provision_captive(r)) return;
     if (strncmp(r->path, "/api/", 5) != 0) {
         if (strcmp(r->method, "GET") && strcmp(r->method, "HEAD") && strcmp(r->method, "POST")) {
             web_resp_error(r, 405, "bad_request", "GET or POST");

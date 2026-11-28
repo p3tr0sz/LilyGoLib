@@ -7,6 +7,7 @@
  * 
  */
 #include "ui_define.h"
+#include "web_provision.h"
 
 #include <algorithm>
 
@@ -1089,6 +1090,110 @@ static void back_event_handler(lv_event_t *e)
     menu_show();
 }
 
+#if FACTORY_WATCH_UI && FACTORY_WEB
+/* ── Wi-Fi setup from a phone ──
+ * Raises a short-lived SoftAP; the phone joins it (name + PIN + QR shown here) and a
+ * captive page takes the home network's password, typed on the phone. The watch saves
+ * the credentials and joins. Server side is in web_provision.cpp. */
+static lv_obj_t *prov_page = NULL;
+static lv_obj_t *prov_status_label = NULL;
+static lv_obj_t *prov_hint_label = NULL;
+static lv_timer_t *prov_timer = NULL;
+
+static void prov_page_delete_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    if (prov_timer) { lv_timer_delete(prov_timer); prov_timer = NULL; }
+    prov_page = NULL;
+    prov_status_label = NULL;
+    prov_hint_label = NULL;
+    web_provision_stop();
+}
+
+static void prov_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+    if (!prov_status_label) return;
+    switch (web_provision_state()) {
+    case WEB_PROV_WAITING:
+        lv_label_set_text(prov_status_label, "Waiting for your phone…");
+        lv_obj_set_style_text_color(prov_status_label, UI_COLOR_TEXT_SECONDARY, 0);
+        break;
+    case WEB_PROV_CONNECTING:
+        lv_label_set_text_fmt(prov_status_label, "Connecting to %s…", web_provision_target_ssid());
+        lv_obj_set_style_text_color(prov_status_label, UI_COLOR_TEXT_SECONDARY, 0);
+        break;
+    case WEB_PROV_CONNECTED:
+        lv_label_set_text_fmt(prov_status_label, "Connected to %s", web_provision_target_ssid());
+        lv_obj_set_style_text_color(prov_status_label, UI_COLOR_ACCENT, 0);
+        if (prov_hint_label) lv_label_set_text(prov_hint_label, "Done — you can leave this page.");
+        update_connection_labels();
+        break;
+    case WEB_PROV_FAILED:
+        lv_label_set_text(prov_status_label, "Could not connect. Try again on the phone.");
+        lv_obj_set_style_text_color(prov_status_label, lv_color_hex(0xFF6B35), 0);
+        break;
+    default:
+        break;
+    }
+}
+
+static void open_provision_page(void)
+{
+    if (!web_provision_start()) {
+        ui_toast("Could not start Wi-Fi setup");
+        return;
+    }
+    lv_obj_t *content = ui_push_page(page_container, "Set up from phone");
+    prov_page = content;
+    lv_obj_add_event_cb(content, prov_page_delete_cb, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *card = ui_create_card(content, NULL);
+    ui_create_card_info(card, LV_SYMBOL_WIFI, "Network", web_provision_ap_ssid());
+    ui_create_card_info(card, LV_SYMBOL_SETTINGS, "Password", web_provision_ap_psk());
+
+    /* A QR the phone's camera reads to join the setup AP (WIFI: join format). */
+    char join[96];
+    lv_snprintf(join, sizeof(join), "WIFI:T:WPA;S:%s;P:%s;;",
+                web_provision_ap_ssid(), web_provision_ap_psk());
+    lv_obj_t *qr_box = lv_obj_create(content);
+    lv_obj_remove_style_all(qr_box);
+    lv_obj_set_size(qr_box, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(qr_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(qr_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(qr_box, 12, 0);
+    lv_obj_remove_flag(qr_box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *qr = lv_qrcode_create(qr_box);
+    lv_qrcode_set_size(qr, 200);
+    lv_qrcode_set_dark_color(qr, lv_color_black());
+    lv_qrcode_set_light_color(qr, lv_color_white());
+    lv_qrcode_set_quiet_zone(qr, true);
+    lv_qrcode_update(qr, join, strlen(join));
+
+    prov_hint_label = lv_label_create(content);
+    lv_label_set_long_mode(prov_hint_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(prov_hint_label, LV_PCT(100));
+    lv_obj_set_style_text_color(prov_hint_label, UI_COLOR_TEXT_SECONDARY, 0);
+    lv_label_set_text(prov_hint_label,
+                      "Scan the code, or join this Wi-Fi on your phone and open the page that appears.");
+
+    prov_status_label = lv_label_create(content);
+    lv_label_set_long_mode(prov_status_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(prov_status_label, LV_PCT(100));
+    lv_obj_set_style_text_font(prov_status_label, UI_FONT_BODY, 0);
+    lv_label_set_text(prov_status_label, "Waiting for your phone…");
+    lv_obj_set_style_text_color(prov_status_label, UI_COLOR_TEXT_SECONDARY, 0);
+
+    prov_timer = lv_timer_create(prov_timer_cb, 1000, NULL);
+}
+
+static void prov_start_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    open_provision_page();
+}
+#endif /* FACTORY_WATCH_UI && FACTORY_WEB */
+
 void ui_wireless_enter(lv_obj_t *parent)
 {
     page_container = ui_create_app_page(parent, "WiFi", back_event_handler);
@@ -1117,6 +1222,10 @@ void ui_wireless_enter(lv_obj_t *parent)
                                                    disconnect_event_cb);
 #endif
     ui_require_hold(lv_obj_get_child(forget_row, -1));
+
+#if FACTORY_WATCH_UI && FACTORY_WEB
+    ui_create_card_action(page_container, LV_SYMBOL_DOWNLOAD, "Set up from phone", prov_start_cb);
+#endif
 
     ap_list_card = ui_create_card(page_container, "Networks");
     lv_obj_t *scan_row = ui_create_card_info(ap_list_card, LV_SYMBOL_LIST,
@@ -1159,6 +1268,11 @@ void ui_wireless_enter(lv_obj_t *parent)
 
 void ui_wireless_exit(lv_obj_t *parent)
 {
+#if FACTORY_WATCH_UI && FACTORY_WEB
+    /* Belt and braces: if the app is torn down by any path that skips the setup
+     * page's delete handler, make sure the setup AP is still released. */
+    if (web_provision_active()) web_provision_stop();
+#endif
 }
 
 app_t ui_wireless_main = {
