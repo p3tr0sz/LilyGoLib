@@ -179,6 +179,23 @@ LV_FONT_DECLARE(font_latin_48)
 #define lv_font_montserrat_48 font_latin_48
 #endif
 
+/* ── Title accents ──
+ * Page titles, Wi-Fi SSIDs and the watch-face date use the Alibaba display
+ * font, whose committed tables are ASCII-only (range 32-127), so an accented
+ * character shows a tofu box. tools/gen_title_latin_fonts.py regenerates the
+ * title sizes (12 & 24 px) with the Latin-1 + Latin Extended-A glyphs as
+ * font_alibaba_latin_<size>, each falling back to the stock ASCII
+ * font_alibaba_<size> so plain text and digits are byte-for-byte unchanged.
+ * The 60/100 px clock fonts are only ever digits, so they stay ASCII-only.
+ * The generated font_title_latin.{c,h} are not committed until the Alibaba
+ * TTF is available, so this is gated on the sentinel header: until then the
+ * stock ASCII fonts are used and the build is unaffected. */
+#if FACTORY_WATCH_UI && __has_include("src/font/font_title_latin.h")
+#include "src/font/font_title_latin.h"
+#define font_alibaba_12 font_alibaba_latin_12
+#define font_alibaba_24 font_alibaba_latin_24
+#endif
+
 /* ── Size tokens ──
  * The watch shell's screen is ~315 ppi, so it uses larger type and touch
  * targets. On other boards each font token is the size it replaces. */
