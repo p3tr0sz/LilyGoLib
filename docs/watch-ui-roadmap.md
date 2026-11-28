@@ -46,6 +46,8 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 8b | App list order (drag to reorder, saved) and crash recovery | Done in the simulator; needs checking on hardware |
 | 8c | Arrange apps, names, message pills, screen off in apps, pages follow the finger, fixes for apps outside the simulator | Done; the apps outside the simulator need checking on hardware |
 | 9 | Quick settings shade: swipe down from the face for brightness, Wi-Fi and Torch, plus a Settings shortcut | Done in the simulator; Wi-Fi/backlight on hardware and a Bluetooth toggle still open — see "Quick settings shade" |
+| 10 | Always-on clock: a lock mode that keeps a dim clock on when idle | Done; builds on both targets, but the idle path can't be exercised in the simulator — needs checking on hardware (see "Always-on clock") |
+| 11 | Capture catalogs: save captured signals to the SD card and replay them (NFC, sub-GHz, nRF24) | Done; all on hardware-only code paths — needs checking on hardware (see "Capture catalogs") |
 
 ## Next steps
 
@@ -55,7 +57,7 @@ In order. Details are in the follow-up sections further down.
 2. **Bigger features, in order of value:**
    - **Wi-Fi from the phone:** set up Wi-Fi over BLE, so there's no password typing.
    - **Quick settings:** ~~swipe down on the face for brightness, Wi-Fi and BLE.~~ Done 2026-11-27 (brightness, Wi-Fi, Torch; BLE deferred — see "Quick settings shade").
-   - **Always-on clock:** a dim clock that stays on.
+   - **Always-on clock:** ~~a dim clock that stays on.~~ Done 2026-11-27 (lock mode "Always on"; see "Always-on clock").
    - **Typing:** word completion on the keyboard.
    - **Accents in titles:** in the Alibaba title font.
    - **Steps:** keep today's count across a reboot.
@@ -374,6 +376,31 @@ Asked for: swipe down on the face for the controls reached most often, the way a
 - **Bluetooth toggle.** This build has no global BLE radio owner — NimBLE is brought up and torn down per feature (HID, FIDO, scanner), so a shade toggle would read a meaningless state or tear down a stack an app is using. Left out until a global BLE owner exists. This is why the shade has a Torch tile where the original plan said "BLE".
 - **Torch and the screen timeout:** the idle poll dims the backlight after the display timeout even while the torch is on, which kills the light. A torch should hold the screen awake (call `set_low_power_mode_flag(false)` equivalent) — do this when checking on hardware.
 - **Check on hardware:** the real backlight tracks the slider and the torch; Wi-Fi connect/disconnect from the tile; the swipe-down doesn't fight apps that scroll (it only starts on the face, so it shouldn't).
+
+### Always-on clock (2026-11-27)
+
+Asked for: a dim clock kept on when idle, instead of the screen turning off.
+
+- **A third lock mode.** `watch_lock_mode_t` gains `WATCH_LOCK_AOD` after `OFF` and `CLOCK`. Settings → Watch face → When idle now offers "Screen off / Clock / Always on" (`ui_watch_face_edit.cpp`), with a note that Always on uses more battery.
+- **Behaviour** (`ui_watch_shell.cpp`): when the face goes idle in AOD mode, `aod_show()` shows the clock page (reusing lock mode Clock's page and its 1 s tick) at the minimum backlight and holds it — `watch_shell_poll()` never calls `screen_off()` while `aod_active`. A tap, swipe or button wakes through the clock page's own handler (`watch_shell_unlock()`), which restores the saved backlight. On the desktop, a translucent, non-clickable overlay stands in for the dimmed backlight so a tap still reaches the clock.
+
+**Not done / deferred:**
+- **True low-power AOD.** A real always-on display drops into light sleep and wakes a timer each minute to redraw; this first version just holds the clock on at a low backlight, so it costs more battery. The light-sleep-with-timer-wake optimisation is the obvious next step — do it on hardware.
+- **Can't be verified in the simulator.** The emulator's web desktop keeps the device awake (`web_server_keep_awake()` is true for 60 s after any activity, and `app_dark` is sticky), so the face-idle path shows the "backlight off, app running" overlay instead of the AOD clock. The AOD logic builds on both targets but its on-screen behaviour is **verified by code only** — check it on the wrist.
+
+### Capture catalogs (2026-11-27)
+
+Asked for: the same principle for every captured signal — read it, save it to the SD card under a name you pick, and replay it later. Started from the question "are captured signals saved to specialised catalogs on SD?" (they weren't, except IR).
+
+- **Shared store** (`capture_store.{h,cpp}`): per-type top-level catalogs on the card (`/nfc`, `/subghz`, `/nrf24`; IR already had `/ir`). Common helpers: `capture_make_name()` builds a default `"<type>_<n>_<YYYYMMDD_HHMMSS>"`, `capture_sanitize_name()` keeps a filename safe, `capture_catalog_ensure()`/`capture_path()` build the folder and paths, and `capture_list()` fills the pickers. SD-backed calls are no-ops on the desktop.
+- **NFC reader** (`ui_nfc.cpp`): a read is held in memory; a **Save** card writes it when you tap Save, under a name you accept or edit. Files: `/nfc/<name>.txt` (human-readable dump) and `/nfc/<name>.replay` (one line the emulator can re-emit), plus `/nfc/_last.replay`. (Replaces the earlier auto-save-on-read.)
+- **NFC emulation** (`ui_nfc_emulation.cpp`): a **Capture** picker lists `/nfc/*.replay`; "Replay capture" re-emits the selected URL / Text / Wi-Fi NDEF. UID / access-card cloning is out — the emulator presents its own UID and can't spoof one.
+- **CC1101 sub-GHz** (`ui_cc1101_tool.cpp`) and **nRF24** (`ui_nrf24.cpp`): a captured packet, previously held only in RAM and lost on exit, now has a Save card (`/subghz/<name>.sub`, `/nrf24/<name>.nrf` — a small binary header of the radio params plus the bytes) and a Saved-captures picker with Load, which reloads the params and payload ready for Replay.
+
+**Not done / deferred:**
+- **All hardware-only.** None of the capture, save or replay paths run in the simulator (no NFC/radio chip), so the whole loop is **compile-verified only** — read→save→replay needs a wrist test, watching the NFC/SD SPI sharing and the `.sub`/`.nrf` reload→retransmit.
+- **Sub-GHz / nRF24 replay is replay-attack-shaped**; these tools already ship in this research fork, and the change only adds persistence to match IR and NFC.
+- **Possible follow-ups:** a delete/rename action in the pickers; an IR picker that uses the same `capture_store` list; a capture count/size readout.
 
 ### What phase 8c changed (2026-11-05)
 
