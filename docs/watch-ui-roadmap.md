@@ -49,6 +49,10 @@ Every control is used with one gesture: a tap, a vertical scroll, a swipe right 
 | 10 | Always-on clock: a lock mode that keeps a dim clock on when idle | Done; builds on both targets, but the idle path can't be exercised in the simulator — needs checking on hardware (see "Always-on clock") |
 | 11 | Capture catalogs: save captured signals to the SD card and replay them (NFC, sub-GHz, nRF24) | Done; all on hardware-only code paths — needs checking on hardware (see "Capture catalogs") |
 | 12 | Wi-Fi setup from a phone: a SoftAP captive page takes the home password, typed on the phone | Done; page/endpoints verified in the simulator, the real Wi-Fi join needs checking on hardware (see "Wi-Fi setup from a phone") |
+| 13 | Corner picker grouping: the face-corner app chooser grouped by category | Done; verified in the simulator (see "Corner picker grouping") |
+| 14 | Steps across a reboot: today's step count persisted to SD/flash | Done; builds on both targets, the real pedometer restore needs checking on hardware (see "Steps across a reboot") |
+| 15 | Keyboard word completion: a suggestion bar above the on-screen keyboard | Done; verified in the simulator (see "Keyboard word completion") |
+| 16 | Accents in titles: accented glyphs in the Alibaba title fonts | Wired (builds on both targets) but dormant — the glyph font needs generating from the Alibaba TTF (see "Accents in titles") |
 
 ## Next steps
 
@@ -59,10 +63,10 @@ In order. Details are in the follow-up sections further down.
    - **Wi-Fi from the phone:** ~~set up Wi-Fi over BLE, so there's no password typing.~~ Done 2026-11-28 (SoftAP captive page, not BLE — the firmware is all NimBLE, so the stock BLE-provisioning path would clash; see "Wi-Fi setup from a phone").
    - **Quick settings:** ~~swipe down on the face for brightness, Wi-Fi and BLE.~~ Done 2026-11-27 (brightness, Wi-Fi, Torch; BLE deferred — see "Quick settings shade").
    - **Always-on clock:** ~~a dim clock that stays on.~~ Done 2026-11-27 (lock mode "Always on"; see "Always-on clock").
-   - **Typing:** word completion on the keyboard.
-   - **Accents in titles:** in the Alibaba title font.
-   - **Steps:** keep today's count across a reboot.
-   - **Corner picker:** group the apps instead of one 35-row list.
+   - **Typing:** ~~word completion on the keyboard.~~ Done 2026-11-28 (suggestion bar above the keys; see "Keyboard word completion").
+   - **Accents in titles:** ~~in the Alibaba title font.~~ Wired 2026-11-28, font generation pending the Alibaba TTF (see "Accents in titles").
+   - **Steps:** ~~keep today's count across a reboot.~~ Done 2026-11-28 (`steps.json`; see "Steps across a reboot").
+   - **Corner picker:** ~~group the apps instead of one 35-row list.~~ Done 2026-11-28 (grouped by category; see "Corner picker grouping").
 
 ## Next phases
 
@@ -428,6 +432,46 @@ Asked for: make sure the tools' operations can be safely interrupted, and the wa
 **Not done / deferred:**
 - The 20 s watchdog window is long; shortening it risks false reboots during legit slow SD writes or scans — tune only with hardware timing.
 - Static widget pointers aren't reset at `enter()` start (they're NULLed on clean exit instead); a belt-and-braces reset at the top of each `enter()` would remove the last stale-pointer edge. Pre-existing, app-wide.
+
+### Corner picker grouping (2026-11-28)
+
+Asked for: the face-corner app chooser was one flat ~35-row list; group it by category.
+
+- **`ui_watch_face_edit.cpp`:** the chooser now builds a line model (`picker_lines[]` of header / value / app entries): a "Watch" header with the six non-app corner values (None, Battery, Wi-Fi, Date, Steps, Calories) first, then apps grouped by category in the app-list chip order (WiFi, Bluetooth, RF, IR, NFC, USB, GNSS, Sensors, Media, Clock, Security, Tools), each keeping its within-group order, then an "Other" catch-all. Selection maps the dropdown line index back through the model, so picking still sets the corner and returns to the face; headers are non-selectable.
+- **`ui_watch_pages.cpp`:** the generic watch picker renders an option whose text starts with a marker byte (`UI_PICKER_HEADER_PREFIX`, `ui_define.h`) as a non-selectable section header (caption font, no check mark, not clickable). Other callers never emit the marker, so they're unchanged.
+- **`ui_app_list.cpp` / `ui_watch_shell.h`:** `watch_app_category_order()` exposes the existing `APP_CATEGORY_ORDER[]` so the chooser reuses the exact chip order (no second ordering to drift). App categories come from `ui_app_category_for()` as before.
+- Verified in the simulator: the "Watch" header + values, then "RF → LoRa Hub", "NFC → NFC", etc., current value check-marked.
+
+### Steps across a reboot (2026-11-28)
+
+Asked for: today's step count should survive a reboot (the BHI260 pedometer resets to 0 on boot).
+
+- **`hal_interface.cpp`** (behind `ARDUINO && USING_BHI260_SENSOR`): the pedometer already tracked `step_count_today` + day and zeroed on a day change, but lost it on boot. Added `steps.json` persistence through the existing `hw_config_*` store (FFat, mirrored to `/sd/config`, like the magnetometer calibration): `step_count_save()` writes `{year, day, steps}`; `step_count_load_once()` restores on the first post-boot step access only if the saved year **and** `tm_yday` match today (new day → stays 0); the restored total becomes the base that the session's sensor deltas add onto. Day/year rollover while running zeroes it.
+- **`hw_steps_poll()`** (new, called from `factory.ino` `loop()` next to `hw_wifi_poll()`): a throttled writer — saves when the count moved ≥ 10 steps or the day rolled, at most once per 30 s. No-op on other boards and the desktop sim.
+- Builds on both targets. The real pedometer restore across a power cycle, the FFat/SD mirror, and midnight rollover are hardware-only — needs checking on the wrist.
+
+### Keyboard word completion (2026-11-28)
+
+Asked for: cut the two-taps-per-letter cost with word suggestions.
+
+- **`word_list.{c,h}`** (new): ~300 common English words, lowercase ASCII, frequency-ish order. `word_suggest(prefix, out, max)` returns up to `max` longer words that start with the prefix.
+- **`ui_watch_pages.cpp`** (`ui_open_text_page`, behind `FACTORY_WATCH_UI`): a suggestion row of up to 3 pills sits between the field and the key grid, built only for normal text fields (**not** password or number-only). `kb_partial_word()` reads the trailing run of letters; `kb_refresh_suggestions()` updates the pills after every key edit (the row keeps a fixed height so the grid never jumps); tapping a pill deletes the partial word and inserts the full word + a space through the keyboard's existing write-back path.
+- Verified in the simulator: "w" → wait / walk / want; tapping inserts "want "; password fields show no row. Existing keyboard behaviour (groups, number pad, backspace, ✓ write-back, swipe-right cancel) intact.
+
+**Not done / deferred:** suggestions are list-order, not scored; accented-language words get none (ASCII list only, to save flash).
+
+### Accents in titles (2026-11-28)
+
+Asked for: page titles and the face use the Alibaba display fonts (ASCII-only), so accented characters show tofu boxes. Give them Latin glyphs the way the Montserrat body fonts got them (`font_latin.c`).
+
+- **Wired, but the glyph font is not generated yet** (so this is dormant — zero flash cost, titles still tofu on accents until it's built).
+- **`tools/gen_title_latin_fonts.py`** (new): the title-font twin of `tools/gen_latin_fonts.py` — a Pillow rasteriser that emits `font_alibaba_latin_12/24` (Latin-1 + Latin-Extended-A + the typographic extras) with `.fallback` to the stock `font_alibaba_<size>`, reading the metrics from the committed base fonts. Only the 12 and 24 px title sizes (the 60/100 px clock fonts stay digits-only on purpose).
+- **`ui_define.h`:** under `#if FACTORY_WATCH_UI && __has_include("src/font/font_title_latin.h")`, redirects `font_alibaba_12/24` to the Latin versions — the same macro trick the body fonts use, so every title call site flips over with no `.cpp` edits, and the build is byte-identical until the font exists.
+
+**Not done / deferred — to finish it:**
+- The Alibaba source TTF (`ALIBABA-PUHUITI-BOLD.TTF`, per the `font_alibaba_*.c` banners) is **not vendored in the repo**, and Pillow isn't installed here. Generate with: `pip install Pillow` then `python3 -I examples/factory/tools/gen_title_latin_fonts.py /path/to/ALIBABA-PUHUITI-BOLD.TTF`, which writes `src/font/font_title_latin.{c,h}`; the `__has_include` gate then turns titles over on the next build. Commit those two generated files.
+- Estimated flash: ~40–70 KB (≈234 glyphs × 2 sizes at bpp4); confirm from the firmware `Flash:` line (currently ~63% and tight).
+- Then verify on hardware: an SSID / title / date with accents renders the letter, not a box; plain-ASCII titles and the clock digits look identical.
 
 ### What phase 8c changed (2026-11-05)
 
