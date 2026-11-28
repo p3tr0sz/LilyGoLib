@@ -1420,6 +1420,9 @@ void hw_add_watch_timer_recent(uint32_t seconds);
 void hw_set_step_counter_enabled(bool enabled);
 /* Steps since midnight; false while no pedometer is available. */
 bool hw_get_step_count(uint32_t &steps);
+/* Persists today's step count (steps.json) so it survives a reboot; call from the
+ * main loop. Writes only when the count changed meaningfully, and is throttled. */
+void hw_steps_poll(void);
 
 /**
  * @brief Get the display timeout in milliseconds.

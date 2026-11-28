@@ -200,6 +200,7 @@ void loop()
 #endif
     lv_timer_handler();
     hw_wifi_poll();
+    hw_steps_poll();
     instanceLockGive();
     delay(5);
 }

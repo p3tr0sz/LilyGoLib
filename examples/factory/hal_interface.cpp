@@ -4723,19 +4723,69 @@ void hw_unregister_imu_process()
 
 /* ── Pedometer ── */
 #if defined(ARDUINO) && defined(USING_BHI260_SENSOR)
+#define STEPS_FILE "steps.json"
+/* Persist once the running total has moved at least this far from the saved value, */
+#define STEP_SAVE_THRESHOLD 10
+/* and no more often than this (flash/SD writes are expensive). */
+#define STEP_SAVE_INTERVAL_MS 30000
+
 static bool step_counter_wanted = false;
 static bool step_counter_configured = false;
 static bool step_counter_have_raw = false;
 static uint32_t step_counter_last_raw = 0;
 static uint32_t step_count_today = 0;
 static int step_count_day = -1;     /* tm_yday that step_count_today belongs to */
+static int step_count_year = -1;    /* tm_year, so a reboot a year later doesn't match */
+static bool step_count_persist_loaded = false;
+static uint32_t step_count_saved_value = 0;
+static int step_count_saved_day = -1;
+static int step_count_saved_year = -1;
+
+static void step_count_save(void)
+{
+    char json[96];
+    snprintf(json, sizeof(json), "{\"year\":%d,\"day\":%d,\"steps\":%lu}\n",
+             step_count_year, step_count_day, (unsigned long)step_count_today);
+    if (hw_config_write(STEPS_FILE, json)) {
+        step_count_saved_value = step_count_today;
+        step_count_saved_day = step_count_day;
+        step_count_saved_year = step_count_year;
+    }
+}
+
+/* Restore today's total from steps.json the first time steps are touched after boot.
+ * The sensor resets to 0 on boot, so the restored value becomes the base the fresh
+ * session deltas add onto; a saved count from another day is ignored (new day = 0). */
+static void step_count_load_once(void)
+{
+    if (step_count_persist_loaded) return;
+    step_count_persist_loaded = true;
+
+    struct tm timeinfo = {};
+    hw_get_date_time(timeinfo);
+    step_count_day = timeinfo.tm_yday;
+    step_count_year = timeinfo.tm_year;
+
+    std::string json;
+    double y = 0, d = 0, s = 0;
+    if (hw_config_read(STEPS_FILE, json) && cfg_json_num(json, "year", &y) &&
+            cfg_json_num(json, "day", &d) && cfg_json_num(json, "steps", &s) &&
+            (int)y == step_count_year && (int)d == step_count_day) {
+        step_count_today = (uint32_t)s;
+    }
+    step_count_saved_value = step_count_today;
+    step_count_saved_day = step_count_day;
+    step_count_saved_year = step_count_year;
+}
 
 static void step_count_roll_day(void)
 {
+    step_count_load_once();
     struct tm timeinfo = {};
     hw_get_date_time(timeinfo);
-    if (timeinfo.tm_yday != step_count_day) {
+    if (timeinfo.tm_yday != step_count_day || timeinfo.tm_year != step_count_year) {
         step_count_day = timeinfo.tm_yday;
+        step_count_year = timeinfo.tm_year;
         step_count_today = 0;
     }
 }
@@ -4813,6 +4863,29 @@ bool hw_get_step_count(uint32_t &steps)
 #else
     steps = 6420;   /* Desktop: fixed value for repeatable screenshots */
     return true;
+#endif
+}
+
+/* Persist today's step total so it survives a reboot. Called from the main loop;
+ * writes steps.json only when the count has moved meaningfully (or the day rolled),
+ * and not more than once per STEP_SAVE_INTERVAL_MS. */
+void hw_steps_poll(void)
+{
+#if defined(ARDUINO) && defined(USING_BHI260_SENSOR)
+    if (!step_count_persist_loaded) return;     /* Nothing read since boot yet */
+
+    bool day_changed = step_count_day != step_count_saved_day ||
+                       step_count_year != step_count_saved_year;
+    uint32_t delta = step_count_today >= step_count_saved_value
+                     ? step_count_today - step_count_saved_value
+                     : step_count_saved_value - step_count_today;
+    if (!day_changed && delta < STEP_SAVE_THRESHOLD) return;
+
+    static uint32_t last_save_ms = 0;
+    uint32_t now = millis();
+    if (last_save_ms != 0 && now - last_save_ms < STEP_SAVE_INTERVAL_MS) return;
+    last_save_ms = now;
+    step_count_save();
 #endif
 }
 
