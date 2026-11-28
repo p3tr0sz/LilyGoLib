@@ -13,6 +13,7 @@
  * actions that can't be undone.
  */
 #include "ui_define.h"
+#include "word_list.h"
 
 #if FACTORY_WATCH_UI
 
@@ -368,6 +369,14 @@ typedef enum {
 #define KB_OK_SIZE  60      /* The round ✓ beside the field; every key grid is three wide */
 #define KB_MAP_MAX  32
 
+/* ── Word suggestions ──
+ * A row of pills between the field and the keys offers completions for the word
+ * being typed. The row keeps its height whether or not pills are shown, so the
+ * key grid below never jumps. Only normal text fields get it (no passwords, no
+ * number-only pads). */
+#define KB_SUGGEST_N    3
+#define KB_SUGGEST_H    54
+
 /* Group 0 is the keypad's "1": punctuation, in two rows instead of two cases. */
 #define KB_PUNCT    ".,?!"
 static const char *const kb_groups[] = {KB_PUNCT, "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"};
@@ -495,6 +504,9 @@ typedef struct {
     lv_obj_t *edit;         /* The copy on the page */
     lv_obj_t *keys;         /* The button matrix */
     lv_obj_t *eye_icon;     /* Password fields: the show/hide toggle's icon */
+    lv_obj_t *suggest_row;  /* Row of completion pills, or NULL when disabled */
+    lv_obj_t *suggest_btn[KB_SUGGEST_N];
+    lv_obj_t *suggest_lbl[KB_SUGGEST_N];
     kb_view_t view;
     bool numeric;
     const char *map[KB_MAP_MAX];
@@ -618,6 +630,87 @@ static void kb_snap_scroll(lv_obj_t *edit)
     lv_obj_scroll_to_y(edit, 0, LV_ANIM_OFF);
 }
 
+/* The run of ASCII letters at the end of the field — the word being typed. The
+ * keyboard only ever appends at the end (the field isn't clickable and has no
+ * cursor keys), so the trailing run is the current partial word. Accented
+ * letters are multi-byte UTF-8, so they break the run and simply get no
+ * suggestions. Returns the length in bytes; copies it into buf when given. */
+static int kb_partial_word(text_page_t *st, char *buf, int bufsz)
+{
+    const char *t = lv_textarea_get_text(st->edit);
+    int len = t ? (int)strlen(t) : 0;
+    int i = len;
+    while (i > 0) {
+        unsigned char c = (unsigned char)t[i - 1];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+            --i;
+        } else {
+            break;
+        }
+    }
+    int plen = len - i;
+    if (buf && bufsz > 0) {
+        int n = plen < bufsz - 1 ? plen : bufsz - 1;
+        memcpy(buf, t + len - n, (size_t)n);
+        buf[n] = '\0';
+        return n;
+    }
+    return plen;
+}
+
+static void kb_refresh_suggestions(text_page_t *st)
+{
+    if (!st->suggest_row) return;
+
+    char partial[32];
+    int plen = kb_partial_word(st, partial, sizeof(partial));
+    const char *words[KB_SUGGEST_N];
+    int n = 0;
+    /* Digit/symbol views type non-letters, so the trailing run is usually empty
+     * there and the pills clear on their own. */
+    if (plen > 0 && plen < (int)sizeof(partial) - 1) {
+        n = word_suggest(partial, words, KB_SUGGEST_N);
+    }
+
+    for (int i = 0; i < KB_SUGGEST_N; ++i) {
+        if (i < n) {
+            lv_label_set_text(st->suggest_lbl[i], words[i]);
+            lv_obj_remove_flag(st->suggest_btn[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_label_set_text(st->suggest_lbl[i], "");
+            lv_obj_add_flag(st->suggest_btn[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* Replace the partial word with the chosen word plus a trailing space, using
+ * the same edit path as the keys so the cursor and scroll stay correct. */
+static void kb_apply_word(text_page_t *st, const char *word)
+{
+    if (!word || !word[0]) return;
+    int plen = kb_partial_word(st, NULL, 0);
+    for (int i = 0; i < plen; ++i) {
+        lv_textarea_delete_char(st->edit);
+    }
+    lv_textarea_add_text(st->edit, word);
+    lv_textarea_add_char(st->edit, ' ');
+    if (st->view == KB_LETTERS) kb_show(st, KB_GROUPS, 0);
+    kb_refresh_suggestions(st);
+    kb_snap_scroll(st->edit);
+}
+
+static void kb_suggest_cb(lv_event_t *e)
+{
+    text_page_t *st = (text_page_t *)lv_event_get_user_data(e);
+    lv_obj_t *btn = lv_event_get_target_obj(e);
+    lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+    if (!lbl) return;
+    const char *word = lv_label_get_text(lbl);
+    if (!word || !word[0]) return;
+    hw_feedback();
+    kb_apply_word(st, word);
+}
+
 static void kb_commit(text_page_t *st)
 {
     lv_obj_t *content = lv_obj_get_parent(st->keys);
@@ -663,6 +756,7 @@ static void kb_event_cb(lv_event_t *e)
         /* A letter is one pick; digits and symbols often come in runs. */
         if (st->view == KB_LETTERS) kb_show(st, KB_GROUPS, 0);
     }
+    kb_refresh_suggestions(st);
     kb_snap_scroll(st->edit);
 }
 
@@ -793,6 +887,52 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_center(ok_icon);
     lv_obj_add_event_cb(ok, kb_ok_cb, LV_EVENT_CLICKED, state);
 
+    /* Suggestion row — normal text fields only. Created before the key grid so
+     * flex lays it out between the field and the keys; its fixed height makes
+     * the grid (which grows) a little shorter. Password and number-only fields
+     * get no row, so their layout is exactly as before. */
+    if (!password && !text_is_numeric(ta)) {
+        lv_obj_t *row = lv_obj_create(content);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, LV_PCT(100), KB_SUGGEST_H);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, TEXT_KEY_GAP, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, UI_FLAG_SWIPE_BACK_OK);
+        state->suggest_row = row;
+
+        for (int i = 0; i < KB_SUGGEST_N; ++i) {
+            lv_obj_t *pill = lv_button_create(row);
+            lv_obj_set_height(pill, LV_PCT(100));
+            lv_obj_set_flex_grow(pill, 1);
+            lv_obj_set_style_radius(pill, KB_SUGGEST_H / 2, 0);
+            lv_obj_set_style_border_width(pill, 0, 0);
+            lv_obj_set_style_shadow_width(pill, 0, 0);
+            lv_obj_set_style_pad_hor(pill, 8, 0);
+            lv_obj_set_style_bg_color(pill, UI_COLOR_CARD_BG, 0);
+            lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+            lv_obj_set_style_bg_color(pill, UI_COLOR_CARD_FOCUS, LV_STATE_PRESSED);
+            lv_obj_set_style_outline_width(pill, 0, LV_STATE_FOCUSED);
+            lv_obj_set_style_outline_width(pill, 0, LV_STATE_FOCUS_KEY);
+            lv_group_remove_obj(pill);
+            lv_obj_add_flag(pill, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(pill, UI_FLAG_SWIPE_BACK_OK);
+            lv_obj_add_event_cb(pill, kb_suggest_cb, LV_EVENT_CLICKED, state);
+
+            lv_obj_t *lbl = lv_label_create(pill);
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(lbl, LV_PCT(100));
+            lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_color(lbl, UI_COLOR_TEXT_PRIMARY, 0);
+            lv_label_set_text(lbl, "");
+            lv_obj_center(lbl);
+            state->suggest_btn[i] = pill;
+            state->suggest_lbl[i] = lbl;
+        }
+    }
+
     lv_obj_t *kb = lv_buttonmatrix_create(content);
     state->keys = kb;
     state->numeric = text_is_numeric(ta);
@@ -818,6 +958,7 @@ void ui_open_text_page(lv_obj_t *from, const char *title, lv_obj_t *ta)
     lv_obj_add_flag(kb, UI_FLAG_SWIPE_BACK_OK);
     lv_obj_add_event_cb(kb, kb_event_cb, LV_EVENT_VALUE_CHANGED, state);
     kb_show(state, state->numeric ? KB_NUMPAD : KB_GROUPS, 0);
+    kb_refresh_suggestions(state);
     kb_snap_scroll(edit);
 }
 
