@@ -642,11 +642,11 @@ static bool run_sys_deferred_step()
 
     case UI_SYS_BUILD_DISPLAY_TIMEOUT:
 #if FACTORY_WATCH_UI
-        ui_create_card_picker(sys_deferred_card, NULL, "Timeout", DISP_TIMEOUT_OPTIONS,
+        ui_create_card_picker(sys_deferred_card, NULL, "Sleep", DISP_TIMEOUT_OPTIONS,
                               disp_timeout_to_index(local_param.disp_timeout_second),
                               disp_timeout_cb);
 #else
-        ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "Timeout",
+        ui_create_card_slider(sys_deferred_card, LV_SYMBOL_SETTINGS, "Sleep",
                               0, 180, local_param.disp_timeout_second, disp_timeout_cb);
 #endif
         sys_deferred_step = UI_SYS_BUILD_DISPLAY_NAV;
