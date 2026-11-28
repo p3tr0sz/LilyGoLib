@@ -11,3 +11,6 @@ test
 # Simulator runtime card/flash folders (host builds)
 sim_sd/
 sim_flash/
+
+# Arduino .ino preprocessed to .cpp by the PlatformIO build (regenerated each build)
+*.ino.cpp
